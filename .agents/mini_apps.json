@@ -1,0 +1,15 @@
+{
+  "app_id": "69f75d3111c34fd423e2d359",
+  "slug": "untitled-app-23e2d359",
+  "pages": {
+    "Home": {
+      "title": "Home"
+    },
+    "Create": {
+      "title": "Create"
+    },
+    "Editor": {
+      "title": "Editor"
+    }
+  }
+}
