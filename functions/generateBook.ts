@@ -1,7 +1,5 @@
 import base44 from "npm:@base44/sdk";
 
-const client = base44({ appId: Deno.env.get("BASE44_APP_ID") });
-
 const GEMINI_API_KEY = Deno.env.get("GEMINI_API_KEY");
 const GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent";
 
@@ -14,13 +12,42 @@ async function callGemini(prompt: string): Promise<string> {
       generationConfig: { temperature: 0.8, maxOutputTokens: 8192 }
     })
   });
+
   const data = await res.json();
-  if (!res.ok) throw new Error(data.error?.message || "Gemini API error");
-  return data.candidates?.[0]?.content?.parts?.[0]?.text || "";
+
+  // Handle Gemini-specific quota/rate limit errors
+  if (!res.ok) {
+    const errMsg = data.error?.message || "";
+    const errCode = data.error?.code;
+    const errStatus = data.error?.status;
+
+    if (res.status === 429 || errStatus === "RESOURCE_EXHAUSTED") {
+      throw new Error("QUOTA_EXCEEDED: You've reached Gemini's free daily limit. Please wait until tomorrow (limits reset at midnight Pacific Time) and try again.");
+    }
+    if (res.status === 403) {
+      throw new Error("API_KEY_ERROR: Invalid or unauthorized Gemini API key. Please check your key at https://aistudio.google.com/app/apikey");
+    }
+    if (res.status === 400) {
+      throw new Error(`INVALID_REQUEST: ${errMsg}`);
+    }
+    throw new Error(`GEMINI_ERROR: ${errMsg || `HTTP ${res.status}`}`);
+  }
+
+  const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
+  if (!text) {
+    // Check for safety blocks
+    const blockReason = data.candidates?.[0]?.finishReason;
+    if (blockReason === "SAFETY") {
+      throw new Error("SAFETY_BLOCK: Gemini blocked this content for safety reasons. Try rephrasing your topic.");
+    }
+    throw new Error("EMPTY_RESPONSE: Gemini returned an empty response. Please try again.");
+  }
+
+  return text;
 }
 
 export default async function handler(req: Request) {
-  const { action, bookId, topic, genre, targetAudience, chapterIndex, outline, existingChapters } = await req.json();
+  const { action, topic, genre, targetAudience, chapterIndex, outline, existingChapters } = await req.json();
 
   try {
     if (action === "generate_outline") {
@@ -50,14 +77,14 @@ Format your response as JSON like this:
 
       const result = await callGemini(prompt);
       const jsonMatch = result.match(/\{[\s\S]*\}/);
-      if (!jsonMatch) throw new Error("Could not parse outline JSON");
-      const outline = JSON.parse(jsonMatch[0]);
-      return Response.json({ success: true, outline });
+      if (!jsonMatch) throw new Error("Could not parse outline JSON from Gemini response. Please try again.");
+      const outlineData = JSON.parse(jsonMatch[0]);
+      return Response.json({ success: true, outline: outlineData });
 
     } else if (action === "generate_chapter") {
       const chapter = outline.chapters[chapterIndex];
       const prevChapters = existingChapters?.slice(0, chapterIndex).map((c: any) => c.title).join(", ") || "None yet";
-      
+
       const prompt = `You are a bestselling author writing a chapter for a ${genre} book titled "${outline.title}".
 
 Book Description: ${outline.description}
@@ -94,16 +121,16 @@ Generate the following as JSON:
 {
   "seo_title": "...(max 200 chars, keyword-rich)",
   "seo_description": "...(400-600 words, compelling, keyword-rich, formatted for Amazon KDP)",
-  "primary_keywords": ["...", "..."] (7 keywords Amazon KDP allows),
-  "bisac_categories": ["...", "..."] (2-3 best BISAC categories),
-  "a_plus_content_hook": "...(1 paragraph hook for A+ content)",
-  "back_cover_copy": "...(compelling back cover text)",
-  "author_bio_template": "...(fill-in author bio template)"
+  "primary_keywords": ["...", "..."],
+  "bisac_categories": ["...", "..."],
+  "a_plus_content_hook": "...",
+  "back_cover_copy": "...",
+  "author_bio_template": "..."
 }`;
 
       const result = await callGemini(prompt);
       const jsonMatch = result.match(/\{[\s\S]*\}/);
-      if (!jsonMatch) throw new Error("Could not parse SEO JSON");
+      if (!jsonMatch) throw new Error("Could not parse SEO JSON. Please try again.");
       const seo = JSON.parse(jsonMatch[0]);
       return Response.json({ success: true, seo });
 
@@ -118,7 +145,7 @@ Description: ${outline.description}
 
 Create a detailed, specific prompt for generating a professional, eye-catching book cover that would sell well on Amazon. 
 Include: art style, color palette, imagery, mood, composition. 
-Make it highly specific and visual. No text instructions (the title will be added separately).
+Make it highly specific and visual. No text in the image.
 
 Return just the image prompt, nothing else.`;
 
@@ -128,7 +155,30 @@ Return just the image prompt, nothing else.`;
     } else {
       return Response.json({ error: "Unknown action" }, { status: 400 });
     }
+
   } catch (err: any) {
-    return Response.json({ error: err.message }, { status: 500 });
+    const msg = err.message || "Unknown error";
+
+    // Return structured error so frontend can show the right message
+    if (msg.startsWith("QUOTA_EXCEEDED:")) {
+      return Response.json({
+        error: msg.replace("QUOTA_EXCEEDED: ", ""),
+        errorType: "quota_exceeded"
+      }, { status: 429 });
+    }
+    if (msg.startsWith("API_KEY_ERROR:")) {
+      return Response.json({
+        error: msg.replace("API_KEY_ERROR: ", ""),
+        errorType: "api_key_error"
+      }, { status: 403 });
+    }
+    if (msg.startsWith("SAFETY_BLOCK:")) {
+      return Response.json({
+        error: msg.replace("SAFETY_BLOCK: ", ""),
+        errorType: "safety_block"
+      }, { status: 400 });
+    }
+
+    return Response.json({ error: msg, errorType: "general" }, { status: 500 });
   }
 }
