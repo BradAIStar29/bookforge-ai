@@ -39,13 +39,13 @@ async function callGemini(prompt) {
     const errMsg = data.error?.message || "";
     const errStatus = data.error?.status;
     if (res.status === 429 || errStatus === "RESOURCE_EXHAUSTED") throw new Error("QUOTA_EXCEEDED: You've reached Gemini's free daily limit. Limits reset at midnight Pacific Time.");
-    if (res.status === 403) throw new Error("API_KEY_ERROR: Invalid Gemini API key. Check https://aistudio.google.com/app/apikey");
+    if (res.status === 403) throw new Error("API_KEY_ERROR: Invalid Gemini API key.");
     throw new Error("GEMINI_ERROR: " + (errMsg || "HTTP " + res.status));
   }
   const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
   if (!text) {
-    if (data.candidates?.[0]?.finishReason === "SAFETY") throw new Error("SAFETY_BLOCK: Content blocked for safety. Try rephrasing your topic.");
-    throw new Error("EMPTY_RESPONSE: Empty response from Gemini. Please try again.");
+    if (data.candidates?.[0]?.finishReason === "SAFETY") throw new Error("SAFETY_BLOCK: Content blocked. Try rephrasing.");
+    throw new Error("EMPTY_RESPONSE: Empty response from Gemini.");
   }
   return text;
 }
@@ -66,7 +66,7 @@ export default async function handler(req) {
       const raw = await callGemini(
         "You are a bestselling book author. Create a book outline.\nTopic: " + topic +
         "\nGenre: " + genre + "\nTarget Audience: " + targetAudience +
-        "\n\nRespond with ONLY this JSON (no markdown, no explanation):\n{\"title\":\"\",\"subtitle\":\"\",\"description\":\"\",\"chapters\":[{\"number\":1,\"title\":\"\",\"description\":\"\"}],\"themes\":[\"\"],\"estimated_word_count\":50000}"
+        "\n\nRespond with ONLY valid JSON (no markdown fences):\n{\"title\":\"\",\"subtitle\":\"\",\"description\":\"\",\"chapters\":[{\"number\":1,\"title\":\"\",\"description\":\"\"}],\"themes\":[\"\"],\"estimated_word_count\":50000}"
       );
       const jsonMatch = raw.match(/\{[\s\S]*\}/);
       if (!jsonMatch) throw new Error("Could not parse outline. Please try again.");
@@ -77,16 +77,16 @@ export default async function handler(req) {
       const prev = (existingChapters || []).slice(0, chapterIndex).map(c => c.title).join(", ") || "None";
       const content = await callGemini(
         "Write Chapter " + ch.number + ": \"" + ch.title + "\" for a " + genre + " book titled \"" + outline.title + "\".\n" +
-        "Description: " + ch.description + "\nPrevious chapters: " + prev + "\nAudience: " + targetAudience +
-        "\n\nWrite 2,500-3,500 words with headings/subheadings. Make it high quality and engaging."
+        "Description: " + ch.description + "\nPrev chapters: " + prev + "\nAudience: " + targetAudience +
+        "\n\nWrite 2,500-3,500 words with subheadings. High quality and engaging."
       );
       result = { content, chapterIndex };
 
     } else if (action === "generate_seo") {
       const raw = await callGemini(
-        "Amazon KDP SEO expert. Generate metadata for:\nTitle: " + outline.title +
+        "Amazon KDP SEO expert. Generate metadata.\nTitle: " + outline.title +
         "\nGenre: " + genre + "\nDesc: " + outline.description +
-        "\n\nRespond with ONLY this JSON:\n{\"seo_title\":\"\",\"seo_description\":\"\",\"primary_keywords\":[\"\"],\"bisac_categories\":[\"\"],\"back_cover_copy\":\"\",\"author_bio_template\":\"\"}"
+        "\n\nRespond with ONLY valid JSON:\n{\"seo_title\":\"\",\"seo_description\":\"\",\"primary_keywords\":[\"\"],\"bisac_categories\":[\"\"],\"back_cover_copy\":\"\",\"author_bio_template\":\"\"}"
       );
       const jsonMatch = raw.match(/\{[\s\S]*\}/);
       if (!jsonMatch) throw new Error("Could not parse SEO data. Please try again.");
@@ -96,7 +96,7 @@ export default async function handler(req) {
       const coverPrompt = await callGemini(
         "Create a detailed AI image prompt for a professional book cover.\nTitle: \"" + outline.title +
         "\"\nGenre: " + genre + "\nDesc: " + outline.description +
-        "\nInclude: art style, colors, imagery, mood, composition. No text. Return only the prompt."
+        "\nArt style, colors, imagery, mood, composition. No text in image. Return only the prompt."
       );
       result = { coverPrompt: coverPrompt.trim() };
 

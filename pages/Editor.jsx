@@ -1,25 +1,22 @@
 import { useState, useEffect } from "react";
-import { Book } from "@/api/entities";
+import { Book, GeminiUsage } from "@/api/entities";
 import { Link, useSearchParams } from "react-router-dom";
 import { generateBook, generateImage } from "@/api/functions";
 
 const tabs = ["📋 Outline", "✍️ Write", "🎨 Cover", "🔍 SEO", "📤 Publish"];
+const DAILY_LIMIT = 1500;
 
-function QuotaBanner({ onDismiss }) {
+function QuotaBanner({ usage, onDismiss }) {
   return (
     <div className="bg-amber-500/20 border border-amber-500/40 rounded-xl p-5 mb-6 flex items-start gap-4">
       <span className="text-3xl">⏳</span>
       <div className="flex-1">
         <p className="text-amber-300 font-semibold text-base">Gemini Free Daily Limit Reached</p>
         <p className="text-amber-200/70 text-sm mt-1">
-          You've used up Gemini's free quota for today. Limits reset at <strong>midnight Pacific Time</strong>. Come back tomorrow to continue generating — your progress is saved!
+          You've used all <strong>{DAILY_LIMIT}</strong> free requests for today. Limits reset at <strong>midnight Pacific Time</strong>. Your progress is saved — come back tomorrow!
         </p>
-        <a
-          href="https://aistudio.google.com/app/apikey"
-          target="_blank"
-          rel="noopener noreferrer"
-          className="inline-block mt-2 text-amber-300 text-xs underline hover:text-amber-200"
-        >
+        <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noopener noreferrer"
+          className="inline-block mt-2 text-amber-300 text-xs underline hover:text-amber-200">
           Upgrade to a paid Gemini plan for unlimited access →
         </a>
       </div>
@@ -28,8 +25,8 @@ function QuotaBanner({ onDismiss }) {
   );
 }
 
-function ErrorBanner({ error, errorType, onDismiss }) {
-  if (errorType === "quota_exceeded") return <QuotaBanner onDismiss={onDismiss} />;
+function ErrorBanner({ error, errorType, onDismiss, usage }) {
+  if (errorType === "quota_exceeded") return <QuotaBanner usage={usage} onDismiss={onDismiss} />;
   return (
     <div className="bg-red-500/20 border border-red-500/30 text-red-300 rounded-xl p-4 mb-6 flex justify-between items-start">
       <span className="text-sm">{error}</span>
@@ -52,12 +49,41 @@ export default function Editor() {
   const [success, setSuccess] = useState("");
   const [selectedChapter, setSelectedChapter] = useState(0);
   const [quotaHit, setQuotaHit] = useState(false);
+  const [usage, setUsage] = useState({ count: 0, limit: DAILY_LIMIT, remaining: DAILY_LIMIT, pct: 0 });
 
   useEffect(() => {
-    if (bookId) {
-      Book.get(bookId).then(b => { setBook(b); setLoading(false); });
-    }
+    if (bookId) Book.get(bookId).then(b => { setBook(b); setLoading(false); });
+    loadUsage();
   }, [bookId]);
+
+  const loadUsage = async () => {
+    const today = new Date().toISOString().split("T")[0];
+    try {
+      const records = await GeminiUsage.filter({ date: today });
+      const count = records[0]?.request_count || 0;
+      const pct = Math.round((count / DAILY_LIMIT) * 100);
+      setUsage({ count, limit: DAILY_LIMIT, remaining: DAILY_LIMIT - count, pct });
+      if (count >= DAILY_LIMIT) setQuotaHit(true);
+    } catch { }
+  };
+
+  const incrementUsage = async () => {
+    const today = new Date().toISOString().split("T")[0];
+    try {
+      const records = await GeminiUsage.filter({ date: today });
+      let newCount;
+      if (records.length === 0) {
+        await GeminiUsage.create({ date: today, request_count: 1, daily_limit: DAILY_LIMIT });
+        newCount = 1;
+      } else {
+        newCount = (records[0].request_count || 0) + 1;
+        await GeminiUsage.update(records[0].id, { request_count: newCount });
+      }
+      const pct = Math.round((newCount / DAILY_LIMIT) * 100);
+      setUsage({ count: newCount, limit: DAILY_LIMIT, remaining: DAILY_LIMIT - newCount, pct });
+      if (newCount >= DAILY_LIMIT) setQuotaHit(true);
+    } catch { }
+  };
 
   const saveBook = async (updates) => {
     const updated = await Book.update(bookId, updates);
@@ -75,7 +101,7 @@ export default function Editor() {
   const dismissError = () => { setError(""); setErrorType("general"); };
 
   const generateChapter = async (idx) => {
-    if (quotaHit) { setError("Daily quota reached. Please try again tomorrow."); setErrorType("quota_exceeded"); return; }
+    if (quotaHit) { setErrorType("quota_exceeded"); setError("quota"); return; }
     setGeneratingChapter(idx);
     setError("");
     try {
@@ -89,7 +115,7 @@ export default function Editor() {
         existingChapters: book.chapters,
       });
       if (res.error) { handleError(res); return; }
-
+      await incrementUsage();
       const updatedChapters = [...(book.chapters || [])];
       updatedChapters[idx] = { ...updatedChapters[idx], content: res.content, generated: true };
       const wordCount = updatedChapters.reduce((acc, c) => acc + (c.content?.split(/\s+/).length || 0), 0);
@@ -97,8 +123,7 @@ export default function Editor() {
       setSuccess(`Chapter ${idx + 1} generated! ✍️`);
       setTimeout(() => setSuccess(""), 3000);
     } catch (e) {
-      setError(e.message);
-      setErrorType("general");
+      setError(e.message); setErrorType("general");
     } finally {
       setGeneratingChapter(null);
     }
@@ -107,24 +132,20 @@ export default function Editor() {
   const generateAllChapters = async () => {
     const ungenerated = (book.chapters || []).map((c, i) => i).filter(i => !book.chapters[i].generated);
     for (const idx of ungenerated) {
-      if (quotaHit) break; // Stop as soon as quota is hit
+      if (quotaHit) break;
       await generateChapter(idx);
+      if (quotaHit) break;
     }
   };
 
   const generateSEO = async () => {
-    if (quotaHit) { setError("Daily quota reached. Please try again tomorrow."); setErrorType("quota_exceeded"); return; }
-    setGenerating(true);
-    setError("");
+    if (quotaHit) { setErrorType("quota_exceeded"); setError("quota"); return; }
+    setGenerating(true); setError("");
     try {
       const outline = JSON.parse(book.outline || "{}");
-      const res = await generateBook({
-        action: "generate_seo",
-        outline,
-        genre: book.genre,
-        targetAudience: book.target_audience,
-      });
+      const res = await generateBook({ action: "generate_seo", outline, genre: book.genre, targetAudience: book.target_audience });
       if (res.error) { handleError(res); return; }
+      await incrementUsage();
       await saveBook({
         seo_title: res.seo.seo_title,
         seo_description: res.seo.seo_description,
@@ -134,50 +155,31 @@ export default function Editor() {
       });
       setSuccess("SEO metadata generated! 🔍");
       setTimeout(() => setSuccess(""), 3000);
-    } catch (e) {
-      setError(e.message);
-      setErrorType("general");
-    } finally {
-      setGenerating(false);
-    }
+    } catch (e) { setError(e.message); setErrorType("general"); }
+    finally { setGenerating(false); }
   };
 
   const generateCover = async () => {
-    if (quotaHit) { setError("Daily quota reached. Please try again tomorrow."); setErrorType("quota_exceeded"); return; }
-    setGenerating(true);
-    setError("");
+    if (quotaHit) { setErrorType("quota_exceeded"); setError("quota"); return; }
+    setGenerating(true); setError("");
     try {
       const outline = JSON.parse(book.outline || "{}");
-      const promptRes = await generateBook({
-        action: "generate_cover_prompt",
-        outline,
-        genre: book.genre,
-        targetAudience: book.target_audience,
-      });
+      const promptRes = await generateBook({ action: "generate_cover_prompt", outline, genre: book.genre, targetAudience: book.target_audience });
       if (promptRes.error) { handleError(promptRes); return; }
-
+      await incrementUsage();
       const fullPrompt = `Professional book cover for "${book.title}". ${promptRes.coverPrompt}. High quality, commercial publishing standard, dramatic lighting, eye-catching composition.`;
       const imgRes = await generateImage({ prompt: fullPrompt });
       await saveBook({ cover_image_url: imgRes.url });
       setSuccess("Cover generated! 🎨");
       setTimeout(() => setSuccess(""), 3000);
-    } catch (e) {
-      setError(e.message);
-      setErrorType("general");
-    } finally {
-      setGenerating(false);
-    }
+    } catch (e) { setError(e.message); setErrorType("general"); }
+    finally { setGenerating(false); }
   };
 
   const downloadBook = () => {
-    if (!book.chapters?.some(c => c.content)) {
-      setError("Generate at least one chapter before downloading");
-      setErrorType("general");
-      return;
-    }
+    if (!book.chapters?.some(c => c.content)) { setError("Generate at least one chapter first."); setErrorType("general"); return; }
     const content = `# ${book.title}\n## ${book.subtitle || ""}\n\n${book.description || ""}\n\n---\n\n` +
       (book.chapters || []).map(c => `# Chapter ${c.number}: ${c.title}\n\n${c.content || "(Not yet generated)"}`).join("\n\n---\n\n");
-
     const blob = new Blob([content], { type: "text/markdown" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -193,12 +195,8 @@ export default function Editor() {
     setTimeout(() => setSuccess(""), 4000);
   };
 
-  if (loading) return (
-    <div className="min-h-screen bg-slate-900 flex items-center justify-center text-white/50">Loading...</div>
-  );
-  if (!book) return (
-    <div className="min-h-screen bg-slate-900 flex items-center justify-center text-white/50">Book not found</div>
-  );
+  if (loading) return <div className="min-h-screen bg-slate-900 flex items-center justify-center text-white/50">Loading...</div>;
+  if (!book) return <div className="min-h-screen bg-slate-900 flex items-center justify-center text-white/50">Book not found</div>;
 
   const outline = (() => { try { return JSON.parse(book.outline || "{}"); } catch { return {}; } })();
   const generatedCount = (book.chapters || []).filter(c => c.generated).length;
@@ -217,12 +215,25 @@ export default function Editor() {
               <p className="text-white/40 text-xs">{book.genre} · {book.target_audience}</p>
             </div>
           </div>
-          <div className="flex items-center gap-3">
-            <div className="text-white/50 text-sm">{book.word_count?.toLocaleString() || 0} words</div>
-            <div className="h-2 w-24 bg-white/10 rounded-full overflow-hidden">
-              <div className="h-full bg-gradient-to-r from-purple-500 to-pink-500 transition-all" style={{width: `${progress}%`}} />
+          <div className="flex items-center gap-4">
+            {/* Gemini Usage Counter */}
+            <div className="flex items-center gap-2 bg-white/5 border border-white/10 rounded-lg px-3 py-1.5">
+              <span className="text-white/40 text-xs">Gemini</span>
+              <div className="w-20 h-1.5 bg-white/10 rounded-full overflow-hidden">
+                <div className={`h-full rounded-full transition-all ${usage.pct >= 90 ? "bg-red-500" : usage.pct >= 70 ? "bg-amber-500" : "bg-green-500"}`}
+                  style={{ width: `${Math.min(usage.pct, 100)}%` }} />
+              </div>
+              <span className={`text-xs font-medium ${usage.pct >= 90 ? "text-red-400" : usage.pct >= 70 ? "text-amber-400" : "text-green-400"}`}>
+                {usage.count}/{usage.limit}
+              </span>
             </div>
-            <span className="text-white/50 text-xs">{generatedCount}/{totalChapters} chapters</span>
+            <div className="text-white/50 text-sm">{book.word_count?.toLocaleString() || 0} words</div>
+            <div className="flex items-center gap-2">
+              <div className="h-2 w-20 bg-white/10 rounded-full overflow-hidden">
+                <div className="h-full bg-gradient-to-r from-purple-500 to-pink-500 transition-all" style={{ width: `${progress}%` }} />
+              </div>
+              <span className="text-white/50 text-xs">{generatedCount}/{totalChapters} ch</span>
+            </div>
           </div>
         </div>
         <div className="max-w-7xl mx-auto px-6 flex gap-1">
@@ -236,10 +247,8 @@ export default function Editor() {
       </div>
 
       <div className="max-w-7xl mx-auto px-6 py-8">
-        {error && <ErrorBanner error={error} errorType={errorType} onDismiss={dismissError} />}
-        {success && (
-          <div className="bg-green-500/20 border border-green-500/30 text-green-300 rounded-xl p-4 mb-6">✅ {success}</div>
-        )}
+        {error && <ErrorBanner error={error} errorType={errorType} usage={usage} onDismiss={dismissError} />}
+        {success && <div className="bg-green-500/20 border border-green-500/30 text-green-300 rounded-xl p-4 mb-6">✅ {success}</div>}
 
         {/* OUTLINE TAB */}
         {activeTab === 0 && (
@@ -296,15 +305,14 @@ export default function Editor() {
                     <button key={i} onClick={() => setSelectedChapter(i)}
                       className={`w-full text-left px-3 py-2.5 rounded-lg transition-all text-sm flex items-center justify-between ${selectedChapter === i ? "bg-purple-500/20 text-white border border-purple-500/40" : "text-white/60 hover:bg-white/5"}`}>
                       <span className="truncate">{ch.number}. {ch.title}</span>
-                      {generatingChapter === i ? (
-                        <svg className="animate-spin h-3 w-3 text-purple-400 flex-shrink-0" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>
-                      ) : ch.generated ? <span className="text-green-400 text-xs flex-shrink-0">✓</span> : null}
+                      {generatingChapter === i
+                        ? <svg className="animate-spin h-3 w-3 text-purple-400 flex-shrink-0" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>
+                        : ch.generated ? <span className="text-green-400 text-xs flex-shrink-0">✓</span> : null}
                     </button>
                   ))}
                 </div>
               </div>
             </div>
-
             <div className="lg:col-span-2">
               {book.chapters?.[selectedChapter] && (
                 <div className="bg-white/5 border border-white/10 rounded-2xl p-6">
@@ -313,12 +321,11 @@ export default function Editor() {
                       <h2 className="text-white text-xl font-bold">Chapter {book.chapters[selectedChapter].number}: {book.chapters[selectedChapter].title}</h2>
                       <p className="text-white/40 text-sm mt-1">{book.chapters[selectedChapter].description}</p>
                     </div>
-                    <button onClick={() => generateChapter(selectedChapter)}
-                      disabled={generatingChapter !== null || quotaHit}
+                    <button onClick={() => generateChapter(selectedChapter)} disabled={generatingChapter !== null || quotaHit}
                       className="bg-gradient-to-r from-purple-500 to-pink-500 text-white px-4 py-2 rounded-xl text-sm font-semibold hover:opacity-90 disabled:opacity-50 flex items-center gap-2 ml-4 flex-shrink-0">
-                      {generatingChapter === selectedChapter ? (
-                        <><svg className="animate-spin h-4 w-4" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>Writing...</>
-                      ) : book.chapters[selectedChapter].generated ? "♻️ Regenerate" : "✨ Generate"}
+                      {generatingChapter === selectedChapter
+                        ? <><svg className="animate-spin h-4 w-4" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>Writing...</>
+                        : book.chapters[selectedChapter].generated ? "♻️ Regenerate" : "✨ Generate"}
                     </button>
                   </div>
                   {book.chapters[selectedChapter].content ? (
@@ -328,7 +335,7 @@ export default function Editor() {
                   ) : (
                     <div className="text-center py-16 text-white/30">
                       <div className="text-4xl mb-3">✍️</div>
-                      <p>{quotaHit ? "Daily quota reached — come back tomorrow!" : "Click \"Generate\" to write this chapter with Gemini AI"}</p>
+                      <p>{quotaHit ? "⏳ Daily quota reached — come back tomorrow!" : "Click \"Generate\" to write this chapter with Gemini AI"}</p>
                     </div>
                   )}
                 </div>
@@ -344,9 +351,7 @@ export default function Editor() {
               <h2 className="text-white text-2xl font-bold mb-2">Book Cover</h2>
               <p className="text-white/50 mb-8">AI generates a professional, marketable cover for your book</p>
               {book.cover_image_url ? (
-                <div className="mb-6">
-                  <img src={book.cover_image_url} alt="Book Cover" className="max-w-sm mx-auto rounded-2xl shadow-2xl shadow-purple-900/50" />
-                </div>
+                <div className="mb-6"><img src={book.cover_image_url} alt="Book Cover" className="max-w-sm mx-auto rounded-2xl shadow-2xl shadow-purple-900/50" /></div>
               ) : (
                 <div className="w-64 h-96 bg-white/5 border-2 border-dashed border-white/20 rounded-2xl mx-auto mb-8 flex items-center justify-center">
                   <div className="text-center text-white/30"><div className="text-5xl mb-2">🎨</div><p className="text-sm">Cover will appear here</p></div>
@@ -354,9 +359,9 @@ export default function Editor() {
               )}
               <button onClick={generateCover} disabled={generating || quotaHit}
                 className="bg-gradient-to-r from-purple-500 to-pink-500 text-white px-8 py-4 rounded-xl font-semibold text-lg hover:opacity-90 disabled:opacity-50 flex items-center gap-2 mx-auto">
-                {generating ? (
-                  <><svg className="animate-spin h-5 w-5" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>Generating cover...</>
-                ) : book.cover_image_url ? "🔄 Regenerate Cover" : "🎨 Generate Cover"}
+                {generating
+                  ? <><svg className="animate-spin h-5 w-5" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>Generating cover...</>
+                  : book.cover_image_url ? "🔄 Regenerate Cover" : "🎨 Generate Cover"}
               </button>
               {quotaHit && <p className="text-amber-400/70 text-sm mt-3">⏳ Daily quota reached — try again tomorrow</p>}
             </div>
@@ -373,7 +378,7 @@ export default function Editor() {
                   <p className="text-white/50 text-sm">Optimized for Amazon KDP & all major platforms</p>
                 </div>
                 <button onClick={generateSEO} disabled={generating || quotaHit}
-                  className="bg-gradient-to-r from-purple-500 to-pink-500 text-white px-5 py-2.5 rounded-xl font-semibold hover:opacity-90 disabled:opacity-50 flex items-center gap-2">
+                  className="bg-gradient-to-r from-purple-500 to-pink-500 text-white px-5 py-2.5 rounded-xl font-semibold hover:opacity-90 disabled:opacity-50">
                   {generating ? "Generating..." : "🔍 Generate SEO"}
                 </button>
               </div>
@@ -404,9 +409,7 @@ export default function Editor() {
                             <div>
                               <label className="text-white/50 text-xs uppercase tracking-wider block mb-2">BISAC Categories</label>
                               <div className="flex flex-wrap gap-2">
-                                {n.bisac_categories.map((c, i) => (
-                                  <span key={i} className="bg-blue-500/20 text-blue-300 px-3 py-1 rounded-full text-sm">{c}</span>
-                                ))}
+                                {n.bisac_categories.map((c, i) => <span key={i} className="bg-blue-500/20 text-blue-300 px-3 py-1 rounded-full text-sm">{c}</span>)}
                               </div>
                             </div>
                           )}
@@ -454,23 +457,23 @@ export default function Editor() {
                   ))}
                 </div>
               </div>
-
               <div className="mb-8">
                 <h3 className="text-white font-semibold mb-4">📥 Download Your Book</h3>
                 <button onClick={downloadBook}
                   className="w-full border border-purple-500/40 bg-purple-500/10 text-purple-300 py-3 rounded-xl hover:bg-purple-500/20 transition-colors font-medium">
                   Download as Markdown (convert to EPUB/PDF with Calibre)
                 </button>
-                <p className="text-white/30 text-xs mt-2 text-center">Use <a href="https://calibre-ebook.com" target="_blank" rel="noopener noreferrer" className="underline hover:text-white/50">Calibre (free)</a> or Reedsy to convert to EPUB/PDF for KDP upload</p>
+                <p className="text-white/30 text-xs mt-2 text-center">
+                  Use <a href="https://calibre-ebook.com" target="_blank" rel="noopener noreferrer" className="underline hover:text-white/50">Calibre (free)</a> to convert to EPUB/PDF for KDP upload
+                </p>
               </div>
-
               <h3 className="text-white font-semibold mb-4">🚀 Free Publishing Platforms</h3>
               <div className="space-y-3">
                 {[
                   { name: "Amazon KDP", icon: "📦", description: "Upload EPUB/PDF directly. 35-70% royalties. Largest marketplace.", url: "https://kdp.amazon.com", color: "from-orange-500/20 to-orange-600/10 border-orange-500/30", badge: "Most Popular" },
-                  { name: "Smashwords", icon: "📚", description: "Free publishing, distributes to Apple Books, B&N, Kobo & more automatically.", url: "https://www.smashwords.com", color: "from-blue-500/20 to-blue-600/10 border-blue-500/30", badge: "Multi-platform" },
+                  { name: "Smashwords", icon: "📚", description: "Free publishing, distributes to Apple Books, B&N, Kobo & more.", url: "https://www.smashwords.com", color: "from-blue-500/20 to-blue-600/10 border-blue-500/30", badge: "Multi-platform" },
                   { name: "Draft2Digital", icon: "✍️", description: "Free formatting tools, distributes to 40+ retailers.", url: "https://www.draft2digital.com", color: "from-teal-500/20 to-teal-600/10 border-teal-500/30", badge: "Best Tools" },
-                  { name: "Lulu", icon: "🌟", description: "Print-on-demand + ebook. Sell on your own site or their marketplace.", url: "https://www.lulu.com", color: "from-pink-500/20 to-pink-600/10 border-pink-500/30", badge: "Print + Digital" },
+                  { name: "Lulu", icon: "🌟", description: "Print-on-demand + ebook. Sell on your own site or marketplace.", url: "https://www.lulu.com", color: "from-pink-500/20 to-pink-600/10 border-pink-500/30", badge: "Print + Digital" },
                   { name: "PublishDrive", icon: "🚀", description: "Distribute to 400+ stores including Amazon, Google Play, Apple Books.", url: "https://publishdrive.com", color: "from-purple-500/20 to-purple-600/10 border-purple-500/30", badge: "400+ Stores" },
                 ].map((platform) => (
                   <a key={platform.name} href={platform.url} target="_blank" rel="noopener noreferrer"
@@ -491,7 +494,6 @@ export default function Editor() {
                   </a>
                 ))}
               </div>
-
               <div className="mt-6 pt-6 border-t border-white/10">
                 <button onClick={markPublished}
                   className="w-full bg-gradient-to-r from-purple-500 to-pink-500 text-white py-3 rounded-xl font-semibold hover:opacity-90">

@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { Book } from "@/api/entities";
+import { Book, GeminiUsage } from "@/api/entities";
 import { Link } from "react-router-dom";
 
 const statusColors = {
@@ -12,21 +12,32 @@ const statusColors = {
 };
 
 const statusIcons = {
-  idea: "💡",
-  outlining: "📋",
-  writing: "✍️",
-  editing: "✏️",
-  ready: "✅",
-  published: "🚀",
+  idea: "💡", outlining: "📋", writing: "✍️", editing: "✏️", ready: "✅", published: "🚀",
 };
 
 export default function Home() {
   const [books, setBooks] = useState([]);
+  const [usage, setUsage] = useState(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    Book.list().then(setBooks).finally(() => setLoading(false));
+    Promise.all([
+      Book.list(),
+      fetchUsage(),
+    ]).then(([b]) => { setBooks(b); setLoading(false); });
   }, []);
+
+  const fetchUsage = async () => {
+    const today = new Date().toISOString().split("T")[0];
+    try {
+      const records = await GeminiUsage.filter({ date: today });
+      const count = records[0]?.request_count || 0;
+      const limit = 1500;
+      setUsage({ count, limit, remaining: limit - count, pct: Math.round((count / limit) * 100) });
+    } catch {
+      setUsage(null);
+    }
+  };
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900">
@@ -40,16 +51,49 @@ export default function Home() {
               <p className="text-white/50 text-xs">Bestseller Generator & Publisher</p>
             </div>
           </div>
-          <Link
-            to="/create"
-            className="bg-gradient-to-r from-purple-500 to-pink-500 text-white px-5 py-2.5 rounded-xl font-semibold hover:opacity-90 transition-opacity flex items-center gap-2"
-          >
-            <span>+</span> New Book
-          </Link>
+          <div className="flex items-center gap-4">
+            {/* Gemini Usage Counter */}
+            {usage !== null && (
+              <div className="bg-white/5 border border-white/10 rounded-xl px-4 py-2 flex items-center gap-3">
+                <div className="text-right">
+                  <div className="text-white/80 text-xs font-medium">Gemini Today</div>
+                  <div className={`text-sm font-bold ${usage.pct >= 90 ? "text-red-400" : usage.pct >= 70 ? "text-amber-400" : "text-green-400"}`}>
+                    {usage.count} / {usage.limit}
+                  </div>
+                </div>
+                <div className="w-16">
+                  <div className="h-1.5 bg-white/10 rounded-full overflow-hidden">
+                    <div
+                      className={`h-full rounded-full transition-all ${usage.pct >= 90 ? "bg-red-500" : usage.pct >= 70 ? "bg-amber-500" : "bg-green-500"}`}
+                      style={{ width: `${Math.min(usage.pct, 100)}%` }}
+                    />
+                  </div>
+                  <div className="text-white/30 text-xs mt-0.5 text-center">{usage.remaining} left</div>
+                </div>
+              </div>
+            )}
+            <Link
+              to="/create"
+              className="bg-gradient-to-r from-purple-500 to-pink-500 text-white px-5 py-2.5 rounded-xl font-semibold hover:opacity-90 transition-opacity flex items-center gap-2"
+            >
+              <span>+</span> New Book
+            </Link>
+          </div>
         </div>
       </div>
 
       <div className="max-w-7xl mx-auto px-6 py-10">
+        {/* Quota Warning */}
+        {usage && usage.pct >= 90 && (
+          <div className="bg-amber-500/20 border border-amber-500/40 rounded-xl p-4 mb-8 flex items-center gap-3">
+            <span className="text-2xl">⏳</span>
+            <div>
+              <p className="text-amber-300 font-semibold">Gemini quota almost full ({usage.remaining} requests left today)</p>
+              <p className="text-amber-200/60 text-sm">Limits reset at midnight Pacific Time. Save your work and continue tomorrow.</p>
+            </div>
+          </div>
+        )}
+
         {/* Stats */}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-10">
           {[
@@ -86,7 +130,6 @@ export default function Home() {
             {books.map((book) => (
               <Link key={book.id} to={`/editor?id=${book.id}`} className="group">
                 <div className="bg-white/5 border border-white/10 rounded-2xl overflow-hidden hover:border-purple-500/50 transition-all hover:bg-white/8">
-                  {/* Cover */}
                   <div className="aspect-[3/2] bg-gradient-to-br from-purple-800/50 to-pink-800/50 relative overflow-hidden">
                     {book.cover_image_url ? (
                       <img src={book.cover_image_url} alt={book.title} className="w-full h-full object-cover" />
@@ -99,7 +142,6 @@ export default function Home() {
                       </span>
                     </div>
                   </div>
-                  {/* Info */}
                   <div className="p-5">
                     <h3 className="text-white font-bold text-lg leading-tight mb-1 line-clamp-2">{book.title || "Untitled Book"}</h3>
                     {book.subtitle && <p className="text-white/50 text-sm mb-2 line-clamp-1">{book.subtitle}</p>}
