@@ -19,12 +19,16 @@ export default function Home() {
   const [books, setBooks] = useState([]);
   const [usage, setUsage] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [apiKey, setApiKey] = useState(() => localStorage.getItem("gemini_api_key") || "");
+  const [showKeyInput, setShowKeyInput] = useState(false);
+  const [keyInput, setKeyInput] = useState("");
 
   useEffect(() => {
-    Promise.all([
-      Book.list(),
-      fetchUsage(),
-    ]).then(([b]) => { setBooks(b); setLoading(false); });
+    Promise.all([Book.list(), fetchUsage()]).then(([b]) => {
+      setBooks(b);
+      setLoading(false);
+    });
+    if (!localStorage.getItem("gemini_api_key")) setShowKeyInput(true);
   }, []);
 
   const fetchUsage = async () => {
@@ -34,9 +38,15 @@ export default function Home() {
       const count = records[0]?.request_count || 0;
       const limit = 1500;
       setUsage({ count, limit, remaining: limit - count, pct: Math.round((count / limit) * 100) });
-    } catch {
-      setUsage(null);
-    }
+    } catch { setUsage(null); }
+  };
+
+  const saveApiKey = () => {
+    if (!keyInput.trim()) return;
+    localStorage.setItem("gemini_api_key", keyInput.trim());
+    setApiKey(keyInput.trim());
+    setShowKeyInput(false);
+    setKeyInput("");
   };
 
   return (
@@ -52,6 +62,11 @@ export default function Home() {
             </div>
           </div>
           <div className="flex items-center gap-4">
+            {/* API Key status */}
+            <button onClick={() => { setKeyInput(apiKey); setShowKeyInput(true); }}
+              className={`text-xs px-3 py-1.5 rounded-lg border transition-all ${apiKey ? "border-green-500/40 text-green-400 bg-green-500/10" : "border-red-500/40 text-red-400 bg-red-500/10 animate-pulse"}`}>
+              {apiKey ? "🔑 API Key Set" : "⚠️ Set API Key"}
+            </button>
             {/* Gemini Usage Counter */}
             {usage !== null && (
               <div className="bg-white/5 border border-white/10 rounded-xl px-4 py-2 flex items-center gap-3">
@@ -63,24 +78,57 @@ export default function Home() {
                 </div>
                 <div className="w-16">
                   <div className="h-1.5 bg-white/10 rounded-full overflow-hidden">
-                    <div
-                      className={`h-full rounded-full transition-all ${usage.pct >= 90 ? "bg-red-500" : usage.pct >= 70 ? "bg-amber-500" : "bg-green-500"}`}
-                      style={{ width: `${Math.min(usage.pct, 100)}%` }}
-                    />
+                    <div className={`h-full rounded-full transition-all ${usage.pct >= 90 ? "bg-red-500" : usage.pct >= 70 ? "bg-amber-500" : "bg-green-500"}`}
+                      style={{ width: `${Math.min(usage.pct, 100)}%` }} />
                   </div>
                   <div className="text-white/30 text-xs mt-0.5 text-center">{usage.remaining} left</div>
                 </div>
               </div>
             )}
-            <Link
-              to="/create"
-              className="bg-gradient-to-r from-purple-500 to-pink-500 text-white px-5 py-2.5 rounded-xl font-semibold hover:opacity-90 transition-opacity flex items-center gap-2"
-            >
+            <Link to="/create"
+              className="bg-gradient-to-r from-purple-500 to-pink-500 text-white px-5 py-2.5 rounded-xl font-semibold hover:opacity-90 transition-opacity flex items-center gap-2">
               <span>+</span> New Book
             </Link>
           </div>
         </div>
       </div>
+
+      {/* API Key Modal */}
+      {showKeyInput && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-slate-800 border border-white/10 rounded-2xl p-8 max-w-md w-full">
+            <div className="text-4xl mb-4 text-center">🔑</div>
+            <h2 className="text-white text-xl font-bold text-center mb-2">Enter Gemini API Key</h2>
+            <p className="text-white/50 text-sm text-center mb-6">
+              Your key is stored locally in your browser only — never sent anywhere except directly to Google's Gemini API.
+            </p>
+            <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noopener noreferrer"
+              className="block text-center text-purple-400 text-sm underline mb-6 hover:text-purple-300">
+              Get a free API key at Google AI Studio →
+            </a>
+            <input
+              type="password"
+              placeholder="AIza..."
+              value={keyInput}
+              onChange={e => setKeyInput(e.target.value)}
+              onKeyDown={e => e.key === "Enter" && saveApiKey()}
+              className="w-full bg-white/10 border border-white/20 rounded-xl px-4 py-3 text-white placeholder-white/30 focus:outline-none focus:border-purple-500 mb-4 font-mono text-sm"
+            />
+            <div className="flex gap-3">
+              {apiKey && (
+                <button onClick={() => setShowKeyInput(false)}
+                  className="flex-1 border border-white/20 text-white/70 py-3 rounded-xl hover:bg-white/5 transition-colors">
+                  Cancel
+                </button>
+              )}
+              <button onClick={saveApiKey} disabled={!keyInput.trim()}
+                className="flex-1 bg-gradient-to-r from-purple-500 to-pink-500 text-white py-3 rounded-xl font-semibold hover:opacity-90 disabled:opacity-50">
+                Save Key
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <div className="max-w-7xl mx-auto px-6 py-10">
         {/* Quota Warning */}
@@ -118,10 +166,8 @@ export default function Home() {
             <div className="text-6xl mb-4">📖</div>
             <h2 className="text-white text-2xl font-bold mb-2">No books yet</h2>
             <p className="text-white/50 mb-6">Start your first bestseller with AI-powered generation</p>
-            <Link
-              to="/create"
-              className="bg-gradient-to-r from-purple-500 to-pink-500 text-white px-8 py-3 rounded-xl font-semibold hover:opacity-90 transition-opacity inline-block"
-            >
+            <Link to="/create"
+              className="bg-gradient-to-r from-purple-500 to-pink-500 text-white px-8 py-3 rounded-xl font-semibold hover:opacity-90 transition-opacity inline-block">
               Create Your First Book
             </Link>
           </div>
@@ -131,11 +177,9 @@ export default function Home() {
               <Link key={book.id} to={`/editor?id=${book.id}`} className="group">
                 <div className="bg-white/5 border border-white/10 rounded-2xl overflow-hidden hover:border-purple-500/50 transition-all hover:bg-white/8">
                   <div className="aspect-[3/2] bg-gradient-to-br from-purple-800/50 to-pink-800/50 relative overflow-hidden">
-                    {book.cover_image_url ? (
-                      <img src={book.cover_image_url} alt={book.title} className="w-full h-full object-cover" />
-                    ) : (
-                      <div className="w-full h-full flex items-center justify-center text-5xl opacity-30">📚</div>
-                    )}
+                    {book.cover_image_url
+                      ? <img src={book.cover_image_url} alt={book.title} className="w-full h-full object-cover" />
+                      : <div className="w-full h-full flex items-center justify-center text-5xl opacity-30">📚</div>}
                     <div className="absolute top-3 right-3">
                       <span className={`text-xs px-2.5 py-1 rounded-full font-medium ${statusColors[book.status] || "bg-gray-100 text-gray-600"}`}>
                         {statusIcons[book.status]} {book.status}

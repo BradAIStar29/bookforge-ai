@@ -8,7 +8,7 @@ const DAILY_LIMIT = 1500;
 const tabs = ["📋 Outline", "✍️ Write", "🎨 Cover", "🔍 SEO", "📤 Publish"];
 
 async function callGemini(prompt) {
-  const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
+  const apiKey = localStorage.getItem("gemini_api_key") || "";
   const res = await fetch(`${GEMINI_URL}?key=${apiKey}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },

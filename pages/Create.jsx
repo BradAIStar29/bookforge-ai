@@ -18,7 +18,7 @@ const audiences = [
 ];
 
 async function callGemini(prompt) {
-  const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
+  const apiKey = localStorage.getItem("gemini_api_key") || "";
   const res = await fetch(`${GEMINI_URL}?key=${apiKey}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -61,6 +61,7 @@ export default function Create() {
   const [form, setForm] = useState({ topic: "", genre: "", targetAudience: "" });
 
   const handleGenerate = async () => {
+    if (!localStorage.getItem("gemini_api_key")) { setError("Please set your Gemini API key first — click the \"Set API Key\" button on the home page."); return; }
     if (!form.topic || !form.genre || !form.targetAudience) { setError("Please fill in all fields"); return; }
     setLoading(true); setError("");
     try {
