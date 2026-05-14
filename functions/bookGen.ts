@@ -25,7 +25,7 @@ async function getTodayUsage() {
   return { count, limit: DAILY_LIMIT, remaining: DAILY_LIMIT - count };
 }
 
-async function callGemini(prompt) {
+async function callGemini(prompt: string): Promise<string> {
   const res = await fetch(`${GEMINI_URL}?key=${GEMINI_API_KEY}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -38,19 +38,19 @@ async function callGemini(prompt) {
   if (!res.ok) {
     const errMsg = data.error?.message || "";
     const errStatus = data.error?.status;
-    if (res.status === 429 || errStatus === "RESOURCE_EXHAUSTED") throw new Error("QUOTA_EXCEEDED: You've reached Gemini's free daily limit. Limits reset at midnight Pacific Time.");
+    if (res.status === 429 || errStatus === "RESOURCE_EXHAUSTED") throw new Error("QUOTA_EXCEEDED: Daily limit reached. Resets at midnight Pacific Time.");
     if (res.status === 403) throw new Error("API_KEY_ERROR: Invalid Gemini API key.");
     throw new Error("GEMINI_ERROR: " + (errMsg || "HTTP " + res.status));
   }
   const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
   if (!text) {
     if (data.candidates?.[0]?.finishReason === "SAFETY") throw new Error("SAFETY_BLOCK: Content blocked. Try rephrasing.");
-    throw new Error("EMPTY_RESPONSE: Empty response from Gemini.");
+    throw new Error("EMPTY_RESPONSE: No response from Gemini.");
   }
   return text;
 }
 
-export default async function handler(req) {
+export default async function handler(req: Request) {
   const body = await req.json();
   const { action, topic, genre, targetAudience, chapterIndex, outline, existingChapters } = body;
 
@@ -60,13 +60,13 @@ export default async function handler(req) {
   }
 
   try {
-    let result = {};
+    let result: Record<string, any> = {};
 
     if (action === "generate_outline") {
       const raw = await callGemini(
-        "You are a bestselling book author. Create a book outline.\nTopic: " + topic +
+        "You are a bestselling book author. Create a detailed book outline.\nTopic: " + topic +
         "\nGenre: " + genre + "\nTarget Audience: " + targetAudience +
-        "\n\nRespond with ONLY valid JSON (no markdown fences):\n{\"title\":\"\",\"subtitle\":\"\",\"description\":\"\",\"chapters\":[{\"number\":1,\"title\":\"\",\"description\":\"\"}],\"themes\":[\"\"],\"estimated_word_count\":50000}"
+        '\n\nRespond with ONLY valid JSON, no markdown:\n{"title":"","subtitle":"","description":"","chapters":[{"number":1,"title":"","description":""}],"themes":[""],"estimated_word_count":50000}'
       );
       const jsonMatch = raw.match(/\{[\s\S]*\}/);
       if (!jsonMatch) throw new Error("Could not parse outline. Please try again.");
@@ -74,11 +74,11 @@ export default async function handler(req) {
 
     } else if (action === "generate_chapter") {
       const ch = outline.chapters[chapterIndex];
-      const prev = (existingChapters || []).slice(0, chapterIndex).map(c => c.title).join(", ") || "None";
+      const prev = (existingChapters || []).slice(0, chapterIndex).map((c: any) => c.title).join(", ") || "None";
       const content = await callGemini(
-        "Write Chapter " + ch.number + ": \"" + ch.title + "\" for a " + genre + " book titled \"" + outline.title + "\".\n" +
-        "Description: " + ch.description + "\nPrev chapters: " + prev + "\nAudience: " + targetAudience +
-        "\n\nWrite 2,500-3,500 words with subheadings. High quality and engaging."
+        'Write Chapter ' + ch.number + ': "' + ch.title + '" for a ' + genre + ' book titled "' + outline.title + '".\n' +
+        "Description: " + ch.description + "\nPrevious chapters: " + prev + "\nAudience: " + targetAudience +
+        "\n\nWrite 2,500-3,500 words with headings/subheadings. High quality and engaging."
       );
       result = { content, chapterIndex };
 
@@ -86,7 +86,7 @@ export default async function handler(req) {
       const raw = await callGemini(
         "Amazon KDP SEO expert. Generate metadata.\nTitle: " + outline.title +
         "\nGenre: " + genre + "\nDesc: " + outline.description +
-        "\n\nRespond with ONLY valid JSON:\n{\"seo_title\":\"\",\"seo_description\":\"\",\"primary_keywords\":[\"\"],\"bisac_categories\":[\"\"],\"back_cover_copy\":\"\",\"author_bio_template\":\"\"}"
+        '\n\nRespond with ONLY valid JSON:\n{"seo_title":"","seo_description":"","primary_keywords":[""],"bisac_categories":[""],"back_cover_copy":"","author_bio_template":""}'
       );
       const jsonMatch = raw.match(/\{[\s\S]*\}/);
       if (!jsonMatch) throw new Error("Could not parse SEO data. Please try again.");
@@ -94,9 +94,8 @@ export default async function handler(req) {
 
     } else if (action === "generate_cover_prompt") {
       const coverPrompt = await callGemini(
-        "Create a detailed AI image prompt for a professional book cover.\nTitle: \"" + outline.title +
-        "\"\nGenre: " + genre + "\nDesc: " + outline.description +
-        "\nArt style, colors, imagery, mood, composition. No text in image. Return only the prompt."
+        'Book cover image prompt for: "' + outline.title + '"\nGenre: ' + genre + "\nDesc: " + outline.description +
+        "\nArt style, colors, imagery, mood. No text in image. Return only the prompt."
       );
       result = { coverPrompt: coverPrompt.trim() };
 
@@ -107,7 +106,7 @@ export default async function handler(req) {
     const usage = await trackUsage();
     return Response.json({ success: true, ...result, usage });
 
-  } catch (err) {
+  } catch (err: any) {
     const msg = err.message || "Unknown error";
     if (msg.startsWith("QUOTA_EXCEEDED:")) return Response.json({ error: msg.replace("QUOTA_EXCEEDED: ", ""), errorType: "quota_exceeded" }, { status: 429 });
     if (msg.startsWith("API_KEY_ERROR:")) return Response.json({ error: msg.replace("API_KEY_ERROR: ", ""), errorType: "api_key_error" }, { status: 403 });
