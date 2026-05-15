@@ -17,30 +17,40 @@ const audiences = [
   "Parents", "Students", "Seniors", "Women", "Men", "Beginners", "Advanced Readers"
 ];
 
-async function callGemini(prompt) {
-  const apiKey = localStorage.getItem("gemini_api_key") || "";
-  const res = await fetch(`${GEMINI_URL}?key=${apiKey}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      contents: [{ parts: [{ text: prompt }] }],
-      generationConfig: { temperature: 0.8, maxOutputTokens: 8192 }
-    })
-  });
-  const data = await res.json();
-  if (!res.ok) {
-    const errStatus = data.error?.status;
-    if (res.status === 429 || errStatus === "RESOURCE_EXHAUSTED") throw { type: "quota_exceeded", message: "Daily Gemini limit reached. Resets at midnight Pacific Time." };
-    if (res.status === 403) throw { type: "api_key_error", message: "Invalid Gemini API key." };
-    throw { type: "general", message: data.error?.message || "Gemini API error" };
+async function callGemini(prompt, apiKey) {
+  if (!apiKey) throw new Error("NO_KEY");
+  let res, data;
+  try {
+    res = await fetch(`${GEMINI_URL}?key=${apiKey}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: prompt }] }],
+        generationConfig: { temperature: 0.8, maxOutputTokens: 8192 }
+      })
+    });
+    data = await res.json();
+  } catch (networkErr) {
+    throw new Error("Network error — check your internet connection and try again.");
   }
-  const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
-  if (!text) throw { type: "general", message: "Empty response from Gemini. Please try again." };
+  if (!res.ok) {
+    const errStatus = data?.error?.status || "";
+    const errMsg = data?.error?.message || "";
+    if (res.status === 400 && errMsg.toLowerCase().includes("api key")) throw new Error("BAD_KEY");
+    if (res.status === 400) throw new Error("Bad request: " + errMsg);
+    if (res.status === 401 || res.status === 403) throw new Error("BAD_KEY");
+    if (res.status === 429 || errStatus === "RESOURCE_EXHAUSTED") throw new Error("QUOTA");
+    throw new Error("Gemini error " + res.status + ": " + (errMsg || "unknown"));
+  }
+  const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+  if (!text) {
+    if (data?.candidates?.[0]?.finishReason === "SAFETY") throw new Error("Content blocked for safety reasons. Try rephrasing your topic.");
+    throw new Error("Empty response from Gemini. Please try again.");
+  }
   return text;
 }
 
 function trackUsage() {
-  // fire-and-forget: never blocks or throws
   const today = new Date().toISOString().split("T")[0];
   GeminiUsage.filter({ date: today }).then(records => {
     if (records.length === 0) {
@@ -57,33 +67,67 @@ export default function Create() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [outline, setOutline] = useState(null);
-
   const [form, setForm] = useState({ topic: "", genre: "", targetAudience: "" });
 
+  // API key state — read from localStorage, editable inline
+  const [apiKey, setApiKey] = useState(() => localStorage.getItem("gemini_api_key") || "");
+  const [showKeyEdit, setShowKeyEdit] = useState(false);
+  const [keyDraft, setKeyDraft] = useState("");
+
+  const saveKey = () => {
+    const trimmed = keyDraft.trim();
+    if (!trimmed) return;
+    localStorage.setItem("gemini_api_key", trimmed);
+    setApiKey(trimmed);
+    setShowKeyEdit(false);
+    setKeyDraft("");
+    setError("");
+  };
+
   const handleGenerate = async () => {
-    if (!localStorage.getItem("gemini_api_key")) { setError("Please set your Gemini API key first — click the \"Set API Key\" button on the home page."); return; }
-    if (!form.topic || !form.genre || !form.targetAudience) { setError("Please fill in all fields"); return; }
-    setLoading(true); setError("");
+    const key = localStorage.getItem("gemini_api_key") || "";
+    if (!key) {
+      setShowKeyEdit(true);
+      setError("Enter your Gemini API key above to get started.");
+      return;
+    }
+    if (!form.topic || !form.genre || !form.targetAudience) {
+      setError("Please fill in all fields.");
+      return;
+    }
+    setLoading(true);
+    setError("");
     try {
       const raw = await callGemini(
-        "You are a bestselling book author. Create a detailed book outline.\nTopic: " + form.topic +
-        "\nGenre: " + form.genre + "\nTarget Audience: " + form.targetAudience +
-        '\n\nRespond with ONLY valid JSON (no markdown, no explanation):\n{"title":"","subtitle":"","description":"","chapters":[{"number":1,"title":"","description":""}],"themes":[""],"estimated_word_count":50000}'
+        "You are a bestselling book author. Create a detailed book outline.\n" +
+        "Topic: " + form.topic + "\nGenre: " + form.genre + "\nTarget Audience: " + form.targetAudience +
+        '\n\nRespond with ONLY valid JSON (no markdown fences, no explanation):\n' +
+        '{"title":"","subtitle":"","description":"","chapters":[{"number":1,"title":"","description":""}],"themes":[""],"estimated_word_count":50000}',
+        key
       );
-      trackUsage(); // fire-and-forget
+      trackUsage();
       const jsonMatch = raw.match(/\{[\s\S]*\}/);
-      if (!jsonMatch) throw { type: "general", message: "Could not parse outline. Please try again." };
+      if (!jsonMatch) throw new Error("Could not parse the outline Gemini returned. Please try again.");
       setOutline(JSON.parse(jsonMatch[0]));
       setStep(2);
     } catch (e) {
-      setError(e.message || "Something went wrong");
+      const msg = e.message || "Something went wrong";
+      if (msg === "NO_KEY" || msg === "BAD_KEY") {
+        setShowKeyEdit(true);
+        setError("Your Gemini API key is missing or invalid. Please enter a valid key below.");
+      } else if (msg === "QUOTA") {
+        setError("You've hit Gemini's free daily limit. It resets at midnight Pacific Time.");
+      } else {
+        setError(msg);
+      }
     } finally {
       setLoading(false);
     }
   };
 
   const handleConfirm = async () => {
-    setLoading(true); setError("");
+    setLoading(true);
+    setError("");
     try {
       const book = await Book.create({
         title: outline.title,
@@ -98,7 +142,7 @@ export default function Create() {
       });
       navigate(`/editor?id=${book.id}`);
     } catch (e) {
-      setError(e.message);
+      setError("Failed to save book: " + (e.message || "unknown error"));
     } finally {
       setLoading(false);
     }
@@ -114,6 +158,52 @@ export default function Create() {
       </div>
 
       <div className="max-w-3xl mx-auto px-6 py-10">
+
+        {/* API Key Banner */}
+        <div className="mb-6">
+          {!apiKey || showKeyEdit ? (
+            <div className="bg-amber-500/15 border border-amber-500/40 rounded-xl p-5">
+              <p className="text-amber-300 font-semibold mb-1">🔑 Gemini API Key Required</p>
+              <p className="text-amber-200/60 text-sm mb-3">
+                Get a free key at{" "}
+                <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noopener noreferrer" className="underline text-amber-300">
+                  aistudio.google.com/app/apikey
+                </a>
+                {" "}— stored only in your browser.
+              </p>
+              <div className="flex gap-2">
+                <input
+                  type="password"
+                  placeholder="Paste your API key here (AIza...)"
+                  value={keyDraft}
+                  onChange={e => setKeyDraft(e.target.value)}
+                  onKeyDown={e => e.key === "Enter" && saveKey()}
+                  className="flex-1 bg-white/10 border border-white/20 rounded-lg px-4 py-2 text-white placeholder-white/30 focus:outline-none focus:border-amber-500 font-mono text-sm"
+                />
+                <button onClick={saveKey} disabled={!keyDraft.trim()}
+                  className="bg-amber-500 text-black px-4 py-2 rounded-lg font-semibold text-sm hover:bg-amber-400 disabled:opacity-40">
+                  Save
+                </button>
+                {apiKey && (
+                  <button onClick={() => { setShowKeyEdit(false); setKeyDraft(""); }}
+                    className="text-white/40 hover:text-white px-3 py-2 text-sm">
+                    Cancel
+                  </button>
+                )}
+              </div>
+            </div>
+          ) : (
+            <div className="flex items-center justify-between bg-green-500/10 border border-green-500/30 rounded-xl px-5 py-3">
+              <span className="text-green-400 text-sm">✅ Gemini API key is set</span>
+              <button onClick={() => { setKeyDraft(apiKey); setShowKeyEdit(true); }}
+                className="text-green-400/60 hover:text-green-300 text-xs underline">
+                Change
+              </button>
+            </div>
+          )}
+        </div>
+
+        {/* Step indicator */}
         <div className="flex items-center gap-3 mb-10">
           {["Book Concept", "Review Outline"].map((label, i) => (
             <div key={i} className="flex items-center gap-2">
@@ -127,7 +217,7 @@ export default function Create() {
         </div>
 
         {error && (
-          <div className="bg-red-500/20 border border-red-500/30 text-red-300 rounded-xl p-4 mb-6">{error}</div>
+          <div className="bg-red-500/20 border border-red-500/30 text-red-300 rounded-xl p-4 mb-6 text-sm">{error}</div>
         )}
 
         {step === 1 && (
@@ -137,15 +227,19 @@ export default function Create() {
             <div className="space-y-6">
               <div>
                 <label className="text-white/80 text-sm font-medium block mb-2">Your Book Idea or Topic *</label>
-                <textarea className="w-full bg-white/10 border border-white/20 rounded-xl px-4 py-3 text-white placeholder-white/30 focus:outline-none focus:border-purple-500 resize-none"
-                  rows={4} placeholder="E.g. 'A practical guide to building passive income through digital products'"
-                  value={form.topic} onChange={e => setForm({...form, topic: e.target.value})} />
+                <textarea
+                  className="w-full bg-white/10 border border-white/20 rounded-xl px-4 py-3 text-white placeholder-white/30 focus:outline-none focus:border-purple-500 resize-none"
+                  rows={4}
+                  placeholder="E.g. 'A practical guide to building passive income through digital products'"
+                  value={form.topic}
+                  onChange={e => setForm({ ...form, topic: e.target.value })}
+                />
               </div>
               <div>
                 <label className="text-white/80 text-sm font-medium block mb-2">Genre *</label>
                 <div className="grid grid-cols-3 gap-2">
                   {genres.map(g => (
-                    <button key={g} onClick={() => setForm({...form, genre: g})}
+                    <button key={g} onClick={() => setForm({ ...form, genre: g })}
                       className={`text-xs px-3 py-2 rounded-lg border transition-all ${form.genre === g ? "border-purple-500 bg-purple-500/20 text-white" : "border-white/20 text-white/50 hover:border-white/40"}`}>
                       {g}
                     </button>
@@ -156,17 +250,25 @@ export default function Create() {
                 <label className="text-white/80 text-sm font-medium block mb-2">Target Audience *</label>
                 <div className="grid grid-cols-3 gap-2">
                   {audiences.map(a => (
-                    <button key={a} onClick={() => setForm({...form, targetAudience: a})}
+                    <button key={a} onClick={() => setForm({ ...form, targetAudience: a })}
                       className={`text-xs px-3 py-2 rounded-lg border transition-all ${form.targetAudience === a ? "border-purple-500 bg-purple-500/20 text-white" : "border-white/20 text-white/50 hover:border-white/40"}`}>
                       {a}
                     </button>
                   ))}
                 </div>
               </div>
-              <button onClick={handleGenerate} disabled={loading || !form.topic || !form.genre || !form.targetAudience}
+              <button
+                onClick={handleGenerate}
+                disabled={loading || !form.topic || !form.genre || !form.targetAudience}
                 className="w-full bg-gradient-to-r from-purple-500 to-pink-500 text-white py-4 rounded-xl font-semibold text-lg hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2">
                 {loading ? (
-                  <><svg className="animate-spin h-5 w-5" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>Generating outline with Gemini...</>
+                  <>
+                    <svg className="animate-spin h-5 w-5" fill="none" viewBox="0 0 24 24">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+                    </svg>
+                    Generating outline with Gemini...
+                  </>
                 ) : "✨ Generate Book Outline"}
               </button>
             </div>
@@ -213,8 +315,8 @@ export default function Create() {
                 Regenerate
               </button>
               <button onClick={handleConfirm} disabled={loading}
-                className="flex-grow-2 flex-1 bg-gradient-to-r from-purple-500 to-pink-500 text-white py-3 px-8 rounded-xl font-semibold hover:opacity-90 disabled:opacity-50 flex items-center justify-center gap-2">
-                {loading ? "Creating..." : "✅ Start Writing This Book →"}
+                className="flex-1 bg-gradient-to-r from-purple-500 to-pink-500 text-white py-3 px-8 rounded-xl font-semibold hover:opacity-90 disabled:opacity-50 flex items-center justify-center gap-2">
+                {loading ? "Saving..." : "✅ Start Writing This Book →"}
               </button>
             </div>
           </div>
