@@ -164,23 +164,57 @@ export default function Editor() {
     finally { setGenerating(false); }
   };
 
+  const [customCoverPrompt, setCustomCoverPrompt] = useState("");
+  const [coverPromptMode, setCoverPromptMode] = useState("auto"); // "auto" | "custom"
+  const [generatedCoverPrompt, setGeneratedCoverPrompt] = useState("");
+
   const generateCover = async () => {
     if (quotaHit) { setErrorType("quota_exceeded"); setError("quota"); return; }
     setGenerating(true); setError("");
     try {
-      const outline = JSON.parse(book.outline || "{}");
-      const coverPrompt = await callGemini(
-        'Book cover image prompt for: "' + outline.title + '"\nGenre: ' + book.genre + "\nDesc: " + outline.description +
-        "\nDetailed art style, colors, imagery, mood, composition. No text in image. Return only the prompt."
-      );
-      incrementUsage(); // fire-and-forget
-      const fullPrompt = `Professional book cover for "${book.title}". ${coverPrompt.trim()}. High quality, commercial publishing standard, eye-catching composition. No text.`;
-      const encodedPrompt = encodeURIComponent(fullPrompt);
-      const coverUrl = `https://image.pollinations.ai/prompt/${encodedPrompt}?width=800&height=1200&nologo=true&seed=${Date.now()}`;
+      let finalPrompt = "";
+      if (coverPromptMode === "custom" && customCoverPrompt.trim()) {
+        finalPrompt = customCoverPrompt.trim() + ". Professional book cover composition, high quality digital art, no text, no letters, no words.";
+      } else {
+        const outline = JSON.parse(book.outline || "{}");
+        const aiPrompt = await callGemini(
+          'Create a detailed image generation prompt for a book cover.\n' +
+          'Book title: "' + outline.title + '"\n' +
+          'Genre: ' + book.genre + '\n' +
+          'Description: ' + outline.description + '\n\n' +
+          'Requirements:\n' +
+          '- Describe the visual scene, characters, mood, color palette, lighting, and art style in detail\n' +
+          '- For romance/love stories: explicitly describe the characters and their interaction\n' +
+          '- Be very specific about character appearance, gender, ethnicity, age\n' +
+          '- No text, letters, words, or title in the image\n' +
+          '- Professional book cover quality\n\n' +
+          'Return ONLY the image prompt, nothing else.'
+        );
+        incrementUsage();
+        finalPrompt = aiPrompt.trim() + ". Professional book cover, high quality digital art, cinematic lighting, no text, no letters, no words in image.";
+        setGeneratedCoverPrompt(finalPrompt);
+      }
+      // Use multiple image services with fallback
+      const seed = Date.now();
+      const encodedPrompt = encodeURIComponent(finalPrompt);
+      const coverUrl = `https://image.pollinations.ai/prompt/${encodedPrompt}?width=832&height=1216&model=flux&nologo=true&enhance=true&seed=${seed}`;
       await saveBook({ cover_image_url: coverUrl });
       setSuccess("Cover generated! 🎨");
       setTimeout(() => setSuccess(""), 3000);
     } catch (e) { handleApiError(e); }
+    finally { setGenerating(false); }
+  };
+
+  const regenerateCoverWithSeed = async () => {
+    if (!book.cover_image_url) return;
+    setGenerating(true); setError("");
+    try {
+      const url = new URL(book.cover_image_url);
+      url.searchParams.set("seed", Date.now().toString());
+      await saveBook({ cover_image_url: url.toString() });
+      setSuccess("New variation generated! 🎨");
+      setTimeout(() => setSuccess(""), 3000);
+    } catch(e) { handleApiError(e); }
     finally { setGenerating(false); }
   };
 
@@ -356,22 +390,92 @@ export default function Editor() {
 
         {/* COVER TAB */}
         {activeTab === 2 && (
-          <div className="max-w-2xl mx-auto">
-            <div className="bg-white/5 border border-white/10 rounded-2xl p-8 text-center">
-              <h2 className="text-white text-2xl font-bold mb-2">Book Cover</h2>
-              <p className="text-white/50 mb-8">AI generates a professional, marketable cover for your book</p>
-              {book.cover_image_url
-                ? <div className="mb-6"><img src={book.cover_image_url} alt="Book Cover" className="max-w-sm mx-auto rounded-2xl shadow-2xl shadow-purple-900/50" /></div>
-                : <div className="w-64 h-96 bg-white/5 border-2 border-dashed border-white/20 rounded-2xl mx-auto mb-8 flex items-center justify-center">
-                    <div className="text-center text-white/30"><div className="text-5xl mb-2">🎨</div><p className="text-sm">Cover will appear here</p></div>
-                  </div>}
-              <button onClick={generateCover} disabled={generating || quotaHit}
-                className="bg-gradient-to-r from-purple-500 to-pink-500 text-white px-8 py-4 rounded-xl font-semibold text-lg hover:opacity-90 disabled:opacity-50 flex items-center gap-2 mx-auto">
-                {generating
-                  ? <><svg className="animate-spin h-5 w-5" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>Generating...</>
-                  : book.cover_image_url ? "🔄 Regenerate Cover" : "🎨 Generate Cover"}
-              </button>
-              {quotaHit && <p className="text-amber-400/70 text-sm mt-3">⏳ Daily quota reached — try again tomorrow</p>}
+          <div className="max-w-5xl mx-auto">
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+              {/* Left: Preview */}
+              <div className="flex flex-col items-center">
+                <h2 className="text-white text-xl font-bold mb-4 self-start">Cover Preview</h2>
+                {book.cover_image_url ? (
+                  <div className="w-full">
+                    <img src={book.cover_image_url} alt="Book Cover"
+                      className="w-full max-w-xs mx-auto rounded-2xl shadow-2xl shadow-purple-900/50 block" />
+                    <div className="flex gap-2 mt-4 justify-center">
+                      <button onClick={regenerateCoverWithSeed} disabled={generating}
+                        className="text-sm border border-white/20 text-white/60 px-4 py-2 rounded-lg hover:bg-white/5 disabled:opacity-40">
+                        🎲 New Variation
+                      </button>
+                      <a href={book.cover_image_url} target="_blank" rel="noopener noreferrer"
+                        className="text-sm border border-white/20 text-white/60 px-4 py-2 rounded-lg hover:bg-white/5">
+                        ⬇️ Download
+                      </a>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="w-full max-w-xs aspect-[2/3] bg-white/5 border-2 border-dashed border-white/20 rounded-2xl flex items-center justify-center">
+                    <div className="text-center text-white/30">
+                      <div className="text-5xl mb-2">🎨</div>
+                      <p className="text-sm">Cover will appear here</p>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Right: Controls */}
+              <div className="space-y-5">
+                <h2 className="text-white text-xl font-bold">Cover Settings</h2>
+
+                {/* Mode toggle */}
+                <div className="bg-white/5 border border-white/10 rounded-xl p-1 flex gap-1">
+                  <button onClick={() => setCoverPromptMode("auto")}
+                    className={`flex-1 py-2 rounded-lg text-sm font-medium transition-all ${coverPromptMode === "auto" ? "bg-purple-500 text-white" : "text-white/50 hover:text-white"}`}>
+                    ✨ AI Auto-Generate
+                  </button>
+                  <button onClick={() => setCoverPromptMode("custom")}
+                    className={`flex-1 py-2 rounded-lg text-sm font-medium transition-all ${coverPromptMode === "custom" ? "bg-purple-500 text-white" : "text-white/50 hover:text-white"}`}>
+                    ✏️ Custom Prompt
+                  </button>
+                </div>
+
+                {coverPromptMode === "auto" ? (
+                  <div className="bg-white/5 border border-white/10 rounded-xl p-4">
+                    <p className="text-white/70 text-sm mb-2">Gemini will analyze your book and write a detailed cover prompt automatically.</p>
+                    {generatedCoverPrompt && (
+                      <div className="mt-3">
+                        <p className="text-white/40 text-xs uppercase tracking-wider mb-1">Last generated prompt:</p>
+                        <p className="text-white/50 text-xs leading-relaxed italic">{generatedCoverPrompt}</p>
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <div>
+                    <label className="text-white/70 text-sm font-medium block mb-2">Describe your cover scene</label>
+                    <textarea
+                      value={customCoverPrompt}
+                      onChange={e => setCustomCoverPrompt(e.target.value)}
+                      placeholder="E.g. Two young men in their early 20s, one tall with dark hair and one with curly red hair, standing close together on a rainy city street at night, looking at each other with longing, warm ambient lighting from streetlamps, cinematic romantic mood, painterly digital art style..."
+                      rows={7}
+                      className="w-full bg-white/10 border border-white/20 rounded-xl px-4 py-3 text-white placeholder-white/30 focus:outline-none focus:border-purple-500 resize-none text-sm"
+                    />
+                    <p className="text-white/30 text-xs mt-1">Be specific — describe characters, setting, mood, colors, art style. The more detail, the better.</p>
+                  </div>
+                )}
+
+                <button onClick={generateCover} disabled={generating || quotaHit || (coverPromptMode === "custom" && !customCoverPrompt.trim())}
+                  className="w-full bg-gradient-to-r from-purple-500 to-pink-500 text-white py-4 rounded-xl font-semibold text-lg hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2">
+                  {generating
+                    ? <><svg className="animate-spin h-5 w-5" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>Generating cover...</>
+                    : book.cover_image_url ? "🔄 Regenerate Cover" : "🎨 Generate Cover"}
+                </button>
+                {quotaHit && <p className="text-amber-400/70 text-sm">⏳ Daily Gemini quota reached — try again tomorrow</p>}
+
+                <div className="bg-white/5 border border-white/10 rounded-xl p-4 text-xs text-white/40 space-y-1">
+                  <p>💡 <strong className="text-white/60">Tips for great covers:</strong></p>
+                  <p>• Describe character genders, ages, appearance explicitly</p>
+                  <p>• Specify art style (photorealistic, painterly, illustrated, etc.)</p>
+                  <p>• Include mood, lighting, and color palette</p>
+                  <p>• Use "New Variation" to get different interpretations of the same prompt</p>
+                </div>
+              </div>
             </div>
           </div>
         )}
