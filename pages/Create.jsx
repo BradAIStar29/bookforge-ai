@@ -1,5 +1,4 @@
 import { useState } from "react";
-import { Book, GeminiUsage } from "@/api/entities";
 import { useNavigate, Link } from "react-router-dom";
 
 const GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent";
@@ -17,7 +16,25 @@ const audiences = [
   "Parents", "Students", "Seniors", "Women", "Men", "Beginners", "Advanced Readers"
 ];
 
-async function callGemini(prompt, apiKey) {
+function getBooks() {
+  try { return JSON.parse(localStorage.getItem("bfai_books") || "[]"); } catch { return []; }
+}
+
+function saveBooks(books) {
+  localStorage.setItem("bfai_books", JSON.stringify(books));
+}
+
+function trackUsage() {
+  try {
+    const today = new Date().toISOString().split("T")[0];
+    const data = JSON.parse(localStorage.getItem("bfai_usage") || "{}");
+    const count = (data.date === today ? data.count : 0) + 1;
+    localStorage.setItem("bfai_usage", JSON.stringify({ date: today, count }));
+  } catch {}
+}
+
+async function callGemini(prompt) {
+  const apiKey = localStorage.getItem("gemini_api_key") || "";
   if (!apiKey) throw new Error("NO_KEY");
   let res, data;
   try {
@@ -30,35 +47,21 @@ async function callGemini(prompt, apiKey) {
       })
     });
     data = await res.json();
-  } catch (networkErr) {
-    throw new Error("Network error — check your internet connection and try again.");
-  }
+  } catch { throw new Error("Network error — check your connection and try again."); }
   if (!res.ok) {
-    const errStatus = data?.error?.status || "";
     const errMsg = data?.error?.message || "";
+    const errStatus = data?.error?.status || "";
     if (res.status === 400 && errMsg.toLowerCase().includes("api key")) throw new Error("BAD_KEY");
-    if (res.status === 400) throw new Error("Bad request: " + errMsg);
     if (res.status === 401 || res.status === 403) throw new Error("BAD_KEY");
     if (res.status === 429 || errStatus === "RESOURCE_EXHAUSTED") throw new Error("QUOTA");
     throw new Error("Gemini error " + res.status + ": " + (errMsg || "unknown"));
   }
   const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
   if (!text) {
-    if (data?.candidates?.[0]?.finishReason === "SAFETY") throw new Error("Content blocked for safety reasons. Try rephrasing your topic.");
+    if (data?.candidates?.[0]?.finishReason === "SAFETY") throw new Error("Content blocked for safety. Try rephrasing your topic.");
     throw new Error("Empty response from Gemini. Please try again.");
   }
   return text;
-}
-
-function trackUsage() {
-  const today = new Date().toISOString().split("T")[0];
-  GeminiUsage.filter({ date: today }).then(records => {
-    if (records.length === 0) {
-      GeminiUsage.create({ date: today, request_count: 1, daily_limit: DAILY_LIMIT }).catch(() => {});
-    } else {
-      GeminiUsage.update(records[0].id, { request_count: (records[0].request_count || 0) + 1 }).catch(() => {});
-    }
-  }).catch(() => {});
 }
 
 export default function Create() {
@@ -68,8 +71,6 @@ export default function Create() {
   const [error, setError] = useState("");
   const [outline, setOutline] = useState(null);
   const [form, setForm] = useState({ topic: "", genre: "", targetAudience: "" });
-
-  // API key state — read from localStorage, editable inline
   const [apiKey, setApiKey] = useState(() => localStorage.getItem("gemini_api_key") || "");
   const [showKeyEdit, setShowKeyEdit] = useState(false);
   const [keyDraft, setKeyDraft] = useState("");
@@ -86,66 +87,48 @@ export default function Create() {
 
   const handleGenerate = async () => {
     const key = localStorage.getItem("gemini_api_key") || "";
-    if (!key) {
-      setShowKeyEdit(true);
-      setError("Enter your Gemini API key above to get started.");
-      return;
-    }
-    if (!form.topic || !form.genre || !form.targetAudience) {
-      setError("Please fill in all fields.");
-      return;
-    }
-    setLoading(true);
-    setError("");
+    if (!key) { setShowKeyEdit(true); setError("Enter your Gemini API key above to get started."); return; }
+    if (!form.topic || !form.genre || !form.targetAudience) { setError("Please fill in all fields."); return; }
+    setLoading(true); setError("");
     try {
       const raw = await callGemini(
         "You are a bestselling book author. Create a detailed book outline.\n" +
         "Topic: " + form.topic + "\nGenre: " + form.genre + "\nTarget Audience: " + form.targetAudience +
         '\n\nRespond with ONLY valid JSON (no markdown fences, no explanation):\n' +
-        '{"title":"","subtitle":"","description":"","chapters":[{"number":1,"title":"","description":""}],"themes":[""],"estimated_word_count":50000}',
-        key
+        '{"title":"","subtitle":"","description":"","chapters":[{"number":1,"title":"","description":""}],"themes":[""],"estimated_word_count":50000}'
       );
       trackUsage();
       const jsonMatch = raw.match(/\{[\s\S]*\}/);
-      if (!jsonMatch) throw new Error("Could not parse the outline Gemini returned. Please try again.");
+      if (!jsonMatch) throw new Error("Could not parse the outline. Please try again.");
       setOutline(JSON.parse(jsonMatch[0]));
       setStep(2);
     } catch (e) {
       const msg = e.message || "Something went wrong";
-      if (msg === "NO_KEY" || msg === "BAD_KEY") {
-        setShowKeyEdit(true);
-        setError("Your Gemini API key is missing or invalid. Please enter a valid key below.");
-      } else if (msg === "QUOTA") {
-        setError("You've hit Gemini's free daily limit. It resets at midnight Pacific Time.");
-      } else {
-        setError(msg);
-      }
-    } finally {
-      setLoading(false);
-    }
+      if (msg === "NO_KEY" || msg === "BAD_KEY") { setShowKeyEdit(true); setError("Your Gemini API key is missing or invalid."); }
+      else if (msg === "QUOTA") setError("You've hit Gemini's free daily limit. Resets at midnight Pacific Time.");
+      else setError(msg);
+    } finally { setLoading(false); }
   };
 
-  const handleConfirm = async () => {
-    setLoading(true);
-    setError("");
-    try {
-      const book = await Book.create({
-        title: outline.title,
-        subtitle: outline.subtitle,
-        genre: form.genre,
-        target_audience: form.targetAudience,
-        description: outline.description,
-        chapters: outline.chapters.map(c => ({ ...c, content: "", generated: false })),
-        outline: JSON.stringify(outline),
-        status: "outlining",
-        word_count: 0,
-      });
-      navigate(`/editor?id=${book.id}`);
-    } catch (e) {
-      setError("Failed to save book: " + (e.message || "unknown error"));
-    } finally {
-      setLoading(false);
-    }
+  const handleConfirm = () => {
+    const newBook = {
+      id: "book_" + Date.now(),
+      title: outline.title,
+      subtitle: outline.subtitle,
+      genre: form.genre,
+      target_audience: form.targetAudience,
+      description: outline.description,
+      chapters: outline.chapters.map(c => ({ ...c, content: "", generated: false })),
+      outline: JSON.stringify(outline),
+      status: "outlining",
+      word_count: 0,
+      cover_image_url: "",
+      created_date: new Date().toISOString(),
+    };
+    const books = getBooks();
+    books.unshift(newBook);
+    saveBooks(books);
+    navigate(`/editor?id=${newBook.id}`);
   };
 
   return (
@@ -158,7 +141,6 @@ export default function Create() {
       </div>
 
       <div className="max-w-3xl mx-auto px-6 py-10">
-
         {/* API Key Banner */}
         <div className="mb-6">
           {!apiKey || showKeyEdit ? (
@@ -172,11 +154,8 @@ export default function Create() {
                 {" "}— stored only in your browser.
               </p>
               <div className="flex gap-2">
-                <input
-                  type="password"
-                  placeholder="Paste your API key here (AIza...)"
-                  value={keyDraft}
-                  onChange={e => setKeyDraft(e.target.value)}
+                <input type="password" placeholder="Paste your API key here (AIza...)"
+                  value={keyDraft} onChange={e => setKeyDraft(e.target.value)}
                   onKeyDown={e => e.key === "Enter" && saveKey()}
                   className="flex-1 bg-white/10 border border-white/20 rounded-lg px-4 py-2 text-white placeholder-white/30 focus:outline-none focus:border-amber-500 font-mono text-sm"
                 />
@@ -186,9 +165,7 @@ export default function Create() {
                 </button>
                 {apiKey && (
                   <button onClick={() => { setShowKeyEdit(false); setKeyDraft(""); }}
-                    className="text-white/40 hover:text-white px-3 py-2 text-sm">
-                    Cancel
-                  </button>
+                    className="text-white/40 hover:text-white px-3 py-2 text-sm">Cancel</button>
                 )}
               </div>
             </div>
@@ -196,9 +173,7 @@ export default function Create() {
             <div className="flex items-center justify-between bg-green-500/10 border border-green-500/30 rounded-xl px-5 py-3">
               <span className="text-green-400 text-sm">✅ Gemini API key is set</span>
               <button onClick={() => { setKeyDraft(apiKey); setShowKeyEdit(true); }}
-                className="text-green-400/60 hover:text-green-300 text-xs underline">
-                Change
-              </button>
+                className="text-green-400/60 hover:text-green-300 text-xs underline">Change</button>
             </div>
           )}
         </div>
@@ -207,18 +182,16 @@ export default function Create() {
         <div className="flex items-center gap-3 mb-10">
           {["Book Concept", "Review Outline"].map((label, i) => (
             <div key={i} className="flex items-center gap-2">
-              <div className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold transition-colors ${step > i + 1 ? "bg-green-500 text-white" : step === i + 1 ? "bg-purple-500 text-white" : "bg-white/10 text-white/40"}`}>
-                {step > i + 1 ? "✓" : i + 1}
+              <div className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold transition-colors ${step > i+1 ? "bg-green-500 text-white" : step === i+1 ? "bg-purple-500 text-white" : "bg-white/10 text-white/40"}`}>
+                {step > i+1 ? "✓" : i+1}
               </div>
-              <span className={`text-sm ${step === i + 1 ? "text-white" : "text-white/40"}`}>{label}</span>
+              <span className={`text-sm ${step === i+1 ? "text-white" : "text-white/40"}`}>{label}</span>
               {i < 1 && <div className="w-12 h-px bg-white/20" />}
             </div>
           ))}
         </div>
 
-        {error && (
-          <div className="bg-red-500/20 border border-red-500/30 text-red-300 rounded-xl p-4 mb-6 text-sm">{error}</div>
-        )}
+        {error && <div className="bg-red-500/20 border border-red-500/30 text-red-300 rounded-xl p-4 mb-6 text-sm">{error}</div>}
 
         {step === 1 && (
           <div className="bg-white/5 border border-white/10 rounded-2xl p-8">
@@ -227,19 +200,15 @@ export default function Create() {
             <div className="space-y-6">
               <div>
                 <label className="text-white/80 text-sm font-medium block mb-2">Your Book Idea or Topic *</label>
-                <textarea
-                  className="w-full bg-white/10 border border-white/20 rounded-xl px-4 py-3 text-white placeholder-white/30 focus:outline-none focus:border-purple-500 resize-none"
-                  rows={4}
-                  placeholder="E.g. 'A practical guide to building passive income through digital products'"
-                  value={form.topic}
-                  onChange={e => setForm({ ...form, topic: e.target.value })}
-                />
+                <textarea className="w-full bg-white/10 border border-white/20 rounded-xl px-4 py-3 text-white placeholder-white/30 focus:outline-none focus:border-purple-500 resize-none"
+                  rows={4} placeholder="E.g. 'Two college athletes discover love across rival teams'"
+                  value={form.topic} onChange={e => setForm({...form, topic: e.target.value})} />
               </div>
               <div>
                 <label className="text-white/80 text-sm font-medium block mb-2">Genre *</label>
                 <div className="grid grid-cols-3 gap-2">
                   {genres.map(g => (
-                    <button key={g} onClick={() => setForm({ ...form, genre: g })}
+                    <button key={g} onClick={() => setForm({...form, genre: g})}
                       className={`text-xs px-3 py-2 rounded-lg border transition-all ${form.genre === g ? "border-purple-500 bg-purple-500/20 text-white" : "border-white/20 text-white/50 hover:border-white/40"}`}>
                       {g}
                     </button>
@@ -250,25 +219,17 @@ export default function Create() {
                 <label className="text-white/80 text-sm font-medium block mb-2">Target Audience *</label>
                 <div className="grid grid-cols-3 gap-2">
                   {audiences.map(a => (
-                    <button key={a} onClick={() => setForm({ ...form, targetAudience: a })}
+                    <button key={a} onClick={() => setForm({...form, targetAudience: a})}
                       className={`text-xs px-3 py-2 rounded-lg border transition-all ${form.targetAudience === a ? "border-purple-500 bg-purple-500/20 text-white" : "border-white/20 text-white/50 hover:border-white/40"}`}>
                       {a}
                     </button>
                   ))}
                 </div>
               </div>
-              <button
-                onClick={handleGenerate}
-                disabled={loading || !form.topic || !form.genre || !form.targetAudience}
+              <button onClick={handleGenerate} disabled={loading || !form.topic || !form.genre || !form.targetAudience}
                 className="w-full bg-gradient-to-r from-purple-500 to-pink-500 text-white py-4 rounded-xl font-semibold text-lg hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2">
                 {loading ? (
-                  <>
-                    <svg className="animate-spin h-5 w-5" fill="none" viewBox="0 0 24 24">
-                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
-                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
-                    </svg>
-                    Generating outline with Gemini...
-                  </>
+                  <><svg className="animate-spin h-5 w-5" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>Generating outline with Gemini...</>
                 ) : "✨ Generate Book Outline"}
               </button>
             </div>
@@ -293,13 +254,11 @@ export default function Create() {
                 <h3 className="text-white/70 text-xs uppercase tracking-wider mb-3">Chapters ({outline.chapters?.length})</h3>
                 <div className="space-y-2 max-h-80 overflow-y-auto pr-2">
                   {outline.chapters?.map((ch, i) => (
-                    <div key={i} className="bg-white/5 rounded-lg p-3">
-                      <div className="flex items-start gap-3">
-                        <span className="text-purple-400 font-bold text-sm min-w-[24px]">{ch.number}.</span>
-                        <div>
-                          <p className="text-white text-sm font-medium">{ch.title}</p>
-                          <p className="text-white/40 text-xs mt-0.5">{ch.description}</p>
-                        </div>
+                    <div key={i} className="bg-white/5 rounded-lg p-3 flex items-start gap-3">
+                      <span className="text-purple-400 font-bold text-sm min-w-[24px]">{ch.number}.</span>
+                      <div>
+                        <p className="text-white text-sm font-medium">{ch.title}</p>
+                        <p className="text-white/40 text-xs mt-0.5">{ch.description}</p>
                       </div>
                     </div>
                   ))}
@@ -311,12 +270,12 @@ export default function Create() {
             </div>
             <div className="flex gap-4">
               <button onClick={() => { setStep(1); setOutline(null); }}
-                className="flex-1 border border-white/20 text-white/70 py-3 rounded-xl hover:bg-white/5 transition-colors">
+                className="flex-1 border border-white/20 text-white/70 py-3 rounded-xl hover:bg-white/5">
                 Regenerate
               </button>
-              <button onClick={handleConfirm} disabled={loading}
-                className="flex-1 bg-gradient-to-r from-purple-500 to-pink-500 text-white py-3 px-8 rounded-xl font-semibold hover:opacity-90 disabled:opacity-50 flex items-center justify-center gap-2">
-                {loading ? "Saving..." : "✅ Start Writing This Book →"}
+              <button onClick={handleConfirm}
+                className="flex-1 bg-gradient-to-r from-purple-500 to-pink-500 text-white py-3 px-8 rounded-xl font-semibold hover:opacity-90 flex items-center justify-center gap-2">
+                ✅ Start Writing This Book →
               </button>
             </div>
           </div>

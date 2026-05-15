@@ -1,53 +1,76 @@
 import { useState, useEffect } from "react";
-import { Book, GeminiUsage } from "@/api/entities";
-import { Link, useSearchParams } from "react-router-dom";
-
+import { Link, useSearchParams, useNavigate } from "react-router-dom";
 
 const GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent";
 const DAILY_LIMIT = 1500;
 const tabs = ["📋 Outline", "✍️ Write", "🎨 Cover", "🔍 SEO", "📤 Publish"];
 
+// ── localStorage helpers ─────────────────────────────────────────────────────
+function getBooks() {
+  try { return JSON.parse(localStorage.getItem("bfai_books") || "[]"); } catch { return []; }
+}
+function saveBooks(books) { localStorage.setItem("bfai_books", JSON.stringify(books)); }
+function getBook(id) { return getBooks().find(b => b.id === id) || null; }
+function updateBook(id, updates) {
+  const books = getBooks();
+  const idx = books.findIndex(b => b.id === id);
+  if (idx === -1) return null;
+  books[idx] = { ...books[idx], ...updates };
+  saveBooks(books);
+  return books[idx];
+}
+function trackUsage() {
+  try {
+    const today = new Date().toISOString().split("T")[0];
+    const data = JSON.parse(localStorage.getItem("bfai_usage") || "{}");
+    const count = (data.date === today ? data.count : 0) + 1;
+    localStorage.setItem("bfai_usage", JSON.stringify({ date: today, count }));
+    return count;
+  } catch { return 0; }
+}
+function getUsageCount() {
+  try {
+    const today = new Date().toISOString().split("T")[0];
+    const data = JSON.parse(localStorage.getItem("bfai_usage") || "{}");
+    return data.date === today ? (data.count || 0) : 0;
+  } catch { return 0; }
+}
+
+// ── Gemini ───────────────────────────────────────────────────────────────────
 async function callGemini(prompt) {
   const apiKey = localStorage.getItem("gemini_api_key") || "";
-  const res = await fetch(`${GEMINI_URL}?key=${apiKey}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      contents: [{ parts: [{ text: prompt }] }],
-      generationConfig: { temperature: 0.8, maxOutputTokens: 8192 }
-    })
-  });
-  const data = await res.json();
+  if (!apiKey) throw { type: "api_key_error", message: "No Gemini API key set. Go back to Home and add your key." };
+  let res, data;
+  try {
+    res = await fetch(`${GEMINI_URL}?key=${apiKey}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: prompt }] }],
+        generationConfig: { temperature: 0.8, maxOutputTokens: 8192 }
+      })
+    });
+    data = await res.json();
+  } catch { throw { type: "general", message: "Network error — check your connection." }; }
   if (!res.ok) {
-    const errStatus = data.error?.status;
+    const errStatus = data?.error?.status || "";
+    const errMsg = data?.error?.message || "";
+    if (res.status === 401 || res.status === 403) throw { type: "api_key_error", message: "Invalid Gemini API key." };
     if (res.status === 429 || errStatus === "RESOURCE_EXHAUSTED") throw { type: "quota_exceeded", message: "Daily Gemini limit reached. Resets at midnight Pacific Time." };
-    if (res.status === 403) throw { type: "api_key_error", message: "Invalid Gemini API key." };
-    throw { type: "general", message: data.error?.message || "Gemini API error" };
+    throw { type: "general", message: "Gemini error " + res.status + ": " + (errMsg || "unknown") };
   }
-  const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
+  const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
   if (!text) {
-    if (data.candidates?.[0]?.finishReason === "SAFETY") throw { type: "safety_block", message: "Content blocked for safety. Try rephrasing." };
+    if (data?.candidates?.[0]?.finishReason === "SAFETY") throw { type: "safety_block", message: "Content blocked for safety. Try rephrasing." };
     throw { type: "general", message: "Empty response from Gemini. Please try again." };
   }
   return text;
 }
 
-function QuotaBanner({ onDismiss }) {
-  return (
-    <div className="bg-amber-500/20 border border-amber-500/40 rounded-xl p-5 mb-6 flex items-start gap-4">
-      <span className="text-3xl">⏳</span>
-      <div className="flex-1">
-        <p className="text-amber-300 font-semibold">Gemini Free Daily Limit Reached</p>
-        <p className="text-amber-200/70 text-sm mt-1">You've used all {DAILY_LIMIT} free requests today. Limits reset at <strong>midnight Pacific Time</strong>. Your progress is saved!</p>
-        <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noopener noreferrer" className="inline-block mt-2 text-amber-300 text-xs underline">Upgrade for unlimited access →</a>
-      </div>
-      <button onClick={onDismiss} className="text-amber-400/50 hover:text-amber-300">✕</button>
-    </div>
-  );
-}
-
+// ── Component ────────────────────────────────────────────────────────────────
 export default function Editor() {
   const [searchParams] = useSearchParams();
+  const navigate = useNavigate();
   const bookId = searchParams.get("id");
 
   const [book, setBook] = useState(null);
@@ -60,43 +83,31 @@ export default function Editor() {
   const [success, setSuccess] = useState("");
   const [selectedChapter, setSelectedChapter] = useState(0);
   const [quotaHit, setQuotaHit] = useState(false);
-  const [usage, setUsage] = useState({ count: 0, limit: DAILY_LIMIT, remaining: DAILY_LIMIT, pct: 0 });
+  const [usageCount, setUsageCount] = useState(0);
+  const [customCoverPrompt, setCustomCoverPrompt] = useState("");
+  const [coverPromptMode, setCoverPromptMode] = useState("auto");
+  const [generatedCoverPrompt, setGeneratedCoverPrompt] = useState("");
 
   useEffect(() => {
-    if (bookId) Book.get(bookId).then(b => { setBook(b); setLoading(false); });
-    loadUsage();
+    if (!bookId) { navigate("/"); return; }
+    const b = getBook(bookId);
+    if (b) { setBook(b); } else { navigate("/"); }
+    setLoading(false);
+    const count = getUsageCount();
+    setUsageCount(count);
+    if (count >= DAILY_LIMIT) setQuotaHit(true);
   }, [bookId]);
 
-  const loadUsage = () => {
-    const today = new Date().toISOString().split("T")[0];
-    GeminiUsage.filter({ date: today }).then(records => {
-      const count = records[0]?.request_count || 0;
-      const pct = Math.round((count / DAILY_LIMIT) * 100);
-      setUsage({ count, limit: DAILY_LIMIT, remaining: DAILY_LIMIT - count, pct });
-      if (count >= DAILY_LIMIT) setQuotaHit(true);
-    }).catch(() => {});
-  };
-
-  const incrementUsage = () => {
-    const today = new Date().toISOString().split("T")[0];
-    GeminiUsage.filter({ date: today }).then(records => {
-      if (records.length === 0) {
-        GeminiUsage.create({ date: today, request_count: 1, daily_limit: DAILY_LIMIT }).catch(() => {});
-        setUsage(u => ({ ...u, count: 1, remaining: DAILY_LIMIT - 1, pct: 0 }));
-      } else {
-        const newCount = (records[0].request_count || 0) + 1;
-        GeminiUsage.update(records[0].id, { request_count: newCount }).catch(() => {});
-        const pct = Math.round((newCount / DAILY_LIMIT) * 100);
-        setUsage({ count: newCount, limit: DAILY_LIMIT, remaining: DAILY_LIMIT - newCount, pct });
-        if (newCount >= DAILY_LIMIT) setQuotaHit(true);
-      }
-    }).catch(() => {});
-  };
-
-  const saveBook = async (updates) => {
-    const updated = await Book.update(bookId, updates);
-    setBook(updated);
+  const saveBook = (updates) => {
+    const updated = updateBook(bookId, updates);
+    if (updated) setBook(updated);
     return updated;
+  };
+
+  const incrementUsageState = () => {
+    const count = trackUsage();
+    setUsageCount(count);
+    if (count >= DAILY_LIMIT) setQuotaHit(true);
   };
 
   const handleApiError = (e) => {
@@ -107,7 +118,7 @@ export default function Editor() {
   };
 
   const generateChapter = async (idx) => {
-    if (quotaHit) { setErrorType("quota_exceeded"); setError("quota"); return; }
+    if (quotaHit) { setErrorType("quota_exceeded"); setError("Daily Gemini limit reached. Resets at midnight Pacific Time."); return; }
     setGeneratingChapter(idx); setError("");
     try {
       const outline = JSON.parse(book.outline || "{}");
@@ -116,13 +127,13 @@ export default function Editor() {
       const content = await callGemini(
         'Write Chapter ' + ch.number + ': "' + ch.title + '" for a ' + book.genre + ' book titled "' + outline.title + '".\n' +
         "Description: " + ch.description + "\nPrevious chapters: " + prev + "\nAudience: " + book.target_audience +
-        "\n\nWrite 2,500-3,500 words with headings/subheadings. High quality and engaging."
+        "\n\nWrite 2,500–3,500 words with headings and subheadings. Make it engaging and high quality."
       );
-      incrementUsage(); // fire-and-forget
+      incrementUsageState();
       const updatedChapters = [...(book.chapters || [])];
       updatedChapters[idx] = { ...updatedChapters[idx], content, generated: true };
       const wordCount = updatedChapters.reduce((acc, c) => acc + (c.content?.split(/\s+/).length || 0), 0);
-      await saveBook({ chapters: updatedChapters, word_count: wordCount, status: "writing" });
+      saveBook({ chapters: updatedChapters, word_count: wordCount, status: "writing" });
       setSuccess(`Chapter ${idx + 1} generated! ✍️`);
       setTimeout(() => setSuccess(""), 3000);
     } catch (e) { handleApiError(e); }
@@ -138,7 +149,7 @@ export default function Editor() {
   };
 
   const generateSEO = async () => {
-    if (quotaHit) { setErrorType("quota_exceeded"); setError("quota"); return; }
+    if (quotaHit) { setErrorType("quota_exceeded"); setError("Daily Gemini limit reached."); return; }
     setGenerating(true); setError("");
     try {
       const outline = JSON.parse(book.outline || "{}");
@@ -147,11 +158,11 @@ export default function Editor() {
         "\nGenre: " + book.genre + "\nDesc: " + outline.description +
         '\n\nRespond with ONLY valid JSON:\n{"seo_title":"","seo_description":"","primary_keywords":[""],"bisac_categories":[""],"back_cover_copy":"","author_bio_template":""}'
       );
-      incrementUsage(); // fire-and-forget
+      incrementUsageState();
       const jsonMatch = raw.match(/\{[\s\S]*\}/);
       if (!jsonMatch) throw { type: "general", message: "Could not parse SEO data. Please try again." };
       const seo = JSON.parse(jsonMatch[0]);
-      await saveBook({
+      saveBook({
         seo_title: seo.seo_title,
         seo_description: seo.seo_description,
         seo_keywords: seo.primary_keywords?.join(", "),
@@ -164,12 +175,8 @@ export default function Editor() {
     finally { setGenerating(false); }
   };
 
-  const [customCoverPrompt, setCustomCoverPrompt] = useState("");
-  const [coverPromptMode, setCoverPromptMode] = useState("auto"); // "auto" | "custom"
-  const [generatedCoverPrompt, setGeneratedCoverPrompt] = useState("");
-
   const generateCover = async () => {
-    if (quotaHit) { setErrorType("quota_exceeded"); setError("quota"); return; }
+    if (quotaHit) { setErrorType("quota_exceeded"); setError("Daily Gemini limit reached."); return; }
     setGenerating(true); setError("");
     try {
       let finalPrompt = "";
@@ -179,43 +186,36 @@ export default function Editor() {
         const outline = JSON.parse(book.outline || "{}");
         const aiPrompt = await callGemini(
           'Create a detailed image generation prompt for a book cover.\n' +
-          'Book title: "' + outline.title + '"\n' +
-          'Genre: ' + book.genre + '\n' +
-          'Description: ' + outline.description + '\n\n' +
-          'Requirements:\n' +
-          '- Describe the visual scene, characters, mood, color palette, lighting, and art style in detail\n' +
+          'Book title: "' + outline.title + '"\nGenre: ' + book.genre + '\nDescription: ' + outline.description + '\n\n' +
+          'Requirements:\n- Describe the visual scene, characters, mood, color palette, lighting, and art style in detail\n' +
           '- For romance/love stories: explicitly describe the characters and their interaction\n' +
           '- Be very specific about character appearance, gender, ethnicity, age\n' +
-          '- No text, letters, words, or title in the image\n' +
-          '- Professional book cover quality\n\n' +
+          '- No text, letters, words, or title in the image\n- Professional book cover quality\n\n' +
           'Return ONLY the image prompt, nothing else.'
         );
-        incrementUsage();
+        incrementUsageState();
         finalPrompt = aiPrompt.trim() + ". Professional book cover, high quality digital art, cinematic lighting, no text, no letters, no words in image.";
         setGeneratedCoverPrompt(finalPrompt);
       }
-      // Use multiple image services with fallback
       const seed = Date.now();
       const encodedPrompt = encodeURIComponent(finalPrompt);
       const coverUrl = `https://image.pollinations.ai/prompt/${encodedPrompt}?width=832&height=1216&model=flux&nologo=true&enhance=true&seed=${seed}`;
-      await saveBook({ cover_image_url: coverUrl });
+      saveBook({ cover_image_url: coverUrl });
       setSuccess("Cover generated! 🎨");
       setTimeout(() => setSuccess(""), 3000);
     } catch (e) { handleApiError(e); }
     finally { setGenerating(false); }
   };
 
-  const regenerateCoverWithSeed = async () => {
+  const regenerateCoverWithSeed = () => {
     if (!book.cover_image_url) return;
-    setGenerating(true); setError("");
     try {
       const url = new URL(book.cover_image_url);
       url.searchParams.set("seed", Date.now().toString());
-      await saveBook({ cover_image_url: url.toString() });
-      setSuccess("New variation generated! 🎨");
+      saveBook({ cover_image_url: url.toString() });
+      setSuccess("New variation! 🎨");
       setTimeout(() => setSuccess(""), 3000);
     } catch(e) { handleApiError(e); }
-    finally { setGenerating(false); }
   };
 
   const downloadBook = () => {
@@ -229,19 +229,10 @@ export default function Editor() {
     URL.revokeObjectURL(url);
   };
 
-  const markPublished = async () => {
-    await saveBook({ status: "published" });
-    setSuccess("Marked as published! 🎉");
-    setTimeout(() => setSuccess(""), 4000);
-  };
+  const pct = Math.round((usageCount / DAILY_LIMIT) * 100);
 
-  if (loading) return <div className="min-h-screen bg-slate-900 flex items-center justify-center text-white/50">Loading...</div>;
-  if (!book) return <div className="min-h-screen bg-slate-900 flex items-center justify-center text-white/50">Book not found</div>;
-
-  const outline = (() => { try { return JSON.parse(book.outline || "{}"); } catch { return {}; } })();
-  const generatedCount = (book.chapters || []).filter(c => c.generated).length;
-  const totalChapters = (book.chapters || []).length;
-  const progress = totalChapters > 0 ? Math.round((generatedCount / totalChapters) * 100) : 0;
+  if (loading) return <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900 flex items-center justify-center text-white">Loading...</div>;
+  if (!book) return <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900 flex items-center justify-center text-white">Book not found. <Link to="/" className="underline ml-2">Go home</Link></div>;
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900">
@@ -251,35 +242,31 @@ export default function Editor() {
           <div className="flex items-center gap-4">
             <Link to="/" className="text-white/50 hover:text-white transition-colors text-sm">← Library</Link>
             <div>
-              <h1 className="text-white font-bold">{book.title}</h1>
-              <p className="text-white/40 text-xs">{book.genre} · {book.target_audience}</p>
+              <h1 className="text-white font-bold text-lg leading-tight">{book.title}</h1>
+              <p className="text-white/40 text-xs">{book.genre} • {book.target_audience}</p>
             </div>
           </div>
-          <div className="flex items-center gap-4">
-            {/* Gemini Counter */}
-            <div className="flex items-center gap-2 bg-white/5 border border-white/10 rounded-lg px-3 py-1.5">
-              <span className="text-white/40 text-xs">Gemini</span>
-              <div className="w-20 h-1.5 bg-white/10 rounded-full overflow-hidden">
-                <div className={`h-full rounded-full transition-all ${usage.pct >= 90 ? "bg-red-500" : usage.pct >= 70 ? "bg-amber-500" : "bg-green-500"}`}
-                  style={{ width: `${Math.min(usage.pct, 100)}%` }} />
+          <div className="flex items-center gap-3">
+            {/* Usage counter */}
+            <div className="bg-white/5 border border-white/10 rounded-lg px-3 py-1.5 flex items-center gap-2">
+              <div className={`text-xs font-bold ${pct >= 90 ? "text-red-400" : pct >= 70 ? "text-amber-400" : "text-green-400"}`}>
+                {usageCount}/{DAILY_LIMIT}
               </div>
-              <span className={`text-xs font-mono font-medium ${usage.pct >= 90 ? "text-red-400" : usage.pct >= 70 ? "text-amber-400" : "text-green-400"}`}>
-                {usage.count}/{usage.limit}
-              </span>
-            </div>
-            <div className="text-white/50 text-sm">{book.word_count?.toLocaleString() || 0} words</div>
-            <div className="flex items-center gap-2">
-              <div className="h-2 w-20 bg-white/10 rounded-full overflow-hidden">
-                <div className="h-full bg-gradient-to-r from-purple-500 to-pink-500 transition-all" style={{ width: `${progress}%` }} />
+              <div className="w-12 h-1 bg-white/10 rounded-full overflow-hidden">
+                <div className={`h-full rounded-full ${pct >= 90 ? "bg-red-500" : pct >= 70 ? "bg-amber-500" : "bg-green-500"}`}
+                  style={{ width: `${Math.min(pct, 100)}%` }} />
               </div>
-              <span className="text-white/50 text-xs">{generatedCount}/{totalChapters} ch</span>
             </div>
+            <span className={`text-xs px-2.5 py-1 rounded-full font-medium ${book.status === "published" ? "bg-purple-500/20 text-purple-300" : book.status === "ready" ? "bg-green-500/20 text-green-300" : "bg-blue-500/20 text-blue-300"}`}>
+              {book.status}
+            </span>
           </div>
         </div>
-        <div className="max-w-7xl mx-auto px-6 flex gap-1">
+        {/* Tabs */}
+        <div className="max-w-7xl mx-auto px-6 flex gap-1 pb-0">
           {tabs.map((tab, i) => (
             <button key={i} onClick={() => setActiveTab(i)}
-              className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${activeTab === i ? "border-purple-500 text-white" : "border-transparent text-white/40 hover:text-white/70"}`}>
+              className={`px-4 py-2.5 text-sm font-medium rounded-t-lg transition-all ${activeTab === i ? "bg-white/10 text-white border-b-2 border-purple-500" : "text-white/40 hover:text-white/70"}`}>
               {tab}
             </button>
           ))}
@@ -287,45 +274,60 @@ export default function Editor() {
       </div>
 
       <div className="max-w-7xl mx-auto px-6 py-8">
-        {errorType === "quota_exceeded" && error && <QuotaBanner onDismiss={() => { setError(""); setErrorType("general"); }} />}
-        {error && errorType !== "quota_exceeded" && (
-          <div className="bg-red-500/20 border border-red-500/30 text-red-300 rounded-xl p-4 mb-6 flex justify-between">
-            <span className="text-sm">{error}</span>
-            <button onClick={() => setError("")} className="text-red-300/50 hover:text-red-300 ml-4">✕</button>
+        {/* Quota banner */}
+        {quotaHit && (
+          <div className="bg-amber-500/20 border border-amber-500/40 rounded-xl p-5 mb-6 flex items-start gap-4">
+            <span className="text-3xl">⏳</span>
+            <div>
+              <p className="text-amber-300 font-semibold">Gemini Free Daily Limit Reached</p>
+              <p className="text-amber-200/70 text-sm mt-1">You've used all {DAILY_LIMIT} free requests today. Resets at <strong>midnight Pacific Time</strong>. Your progress is saved!</p>
+            </div>
+            <button onClick={() => { setQuotaHit(false); setError(""); }} className="text-amber-400/50 hover:text-amber-300 ml-auto">✕</button>
           </div>
         )}
-        {success && <div className="bg-green-500/20 border border-green-500/30 text-green-300 rounded-xl p-4 mb-6">✅ {success}</div>}
+
+        {error && !quotaHit && (
+          <div className="bg-red-500/20 border border-red-500/30 text-red-300 rounded-xl p-4 mb-6 text-sm flex justify-between">
+            <span>{error}</span>
+            <button onClick={() => setError("")} className="text-red-400/50 hover:text-red-300 ml-4">✕</button>
+          </div>
+        )}
+        {success && (
+          <div className="bg-green-500/20 border border-green-500/30 text-green-300 rounded-xl p-4 mb-6 text-sm">{success}</div>
+        )}
 
         {/* OUTLINE TAB */}
         {activeTab === 0 && (
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-            <div className="space-y-4">
-              <div className="bg-white/5 border border-white/10 rounded-2xl p-6">
-                <h3 className="text-white font-bold text-lg mb-1">{book.title}</h3>
-                <p className="text-purple-300 mb-4">{book.subtitle}</p>
-                <p className="text-white/60 text-sm leading-relaxed">{book.description}</p>
-              </div>
-              {outline.themes && (
-                <div className="bg-white/5 border border-white/10 rounded-2xl p-6">
-                  <h3 className="text-white/70 text-xs uppercase tracking-wider mb-3">Key Themes</h3>
-                  <ul className="space-y-1">
-                    {outline.themes.map((t, i) => <li key={i} className="text-white/60 text-sm flex gap-2"><span className="text-purple-400">•</span>{t}</li>)}
-                  </ul>
-                </div>
-              )}
-            </div>
-            <div className="bg-white/5 border border-white/10 rounded-2xl p-6">
-              <h3 className="text-white/70 text-xs uppercase tracking-wider mb-4">Chapters ({totalChapters})</h3>
-              <div className="space-y-2 max-h-[500px] overflow-y-auto pr-2">
+          <div className="max-w-3xl mx-auto">
+            <div className="bg-white/5 border border-white/10 rounded-2xl p-8">
+              <h2 className="text-white text-2xl font-bold mb-1">{book.title}</h2>
+              {book.subtitle && <p className="text-purple-300 mb-4">{book.subtitle}</p>}
+              <p className="text-white/60 text-sm leading-relaxed mb-8">{book.description}</p>
+              <h3 className="text-white/70 text-xs uppercase tracking-wider mb-4">Chapters</h3>
+              <div className="space-y-2">
                 {(book.chapters || []).map((ch, i) => (
-                  <div key={i} className={`p-3 rounded-lg border ${ch.generated ? "border-green-500/30 bg-green-500/5" : "border-white/10 bg-white/5"}`}>
-                    <div className="flex items-center justify-between">
-                      <span className="text-white/80 text-sm font-medium">{ch.number}. {ch.title}</span>
-                      {ch.generated ? <span className="text-green-400 text-xs">✓ Done</span> : <span className="text-white/30 text-xs">Pending</span>}
+                  <div key={i} className={`rounded-xl p-4 border flex items-start gap-3 ${ch.generated ? "bg-green-500/10 border-green-500/20" : "bg-white/5 border-white/10"}`}>
+                    <span className={`font-bold text-sm min-w-[28px] ${ch.generated ? "text-green-400" : "text-purple-400"}`}>{ch.generated ? "✓" : ch.number + "."}</span>
+                    <div className="flex-1">
+                      <p className="text-white text-sm font-medium">{ch.title}</p>
+                      <p className="text-white/40 text-xs mt-0.5">{ch.description}</p>
                     </div>
+                    {ch.generated && <span className="text-green-400/60 text-xs">Written</span>}
                   </div>
                 ))}
               </div>
+              {book.chapters?.length > 0 && (
+                <div className="mt-6 p-4 bg-white/5 rounded-xl">
+                  <div className="flex justify-between text-sm text-white/60 mb-1">
+                    <span>Writing progress</span>
+                    <span>{book.chapters.filter(c => c.generated).length}/{book.chapters.length} chapters</span>
+                  </div>
+                  <div className="h-2 bg-white/10 rounded-full overflow-hidden">
+                    <div className="h-full bg-gradient-to-r from-purple-500 to-pink-500 rounded-full transition-all"
+                      style={{ width: `${(book.chapters.filter(c => c.generated).length / book.chapters.length) * 100}%` }} />
+                  </div>
+                </div>
+              )}
             </div>
           </div>
         )}
@@ -334,24 +336,21 @@ export default function Editor() {
         {activeTab === 1 && (
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
             <div className="lg:col-span-1">
-              <div className="bg-white/5 border border-white/10 rounded-2xl p-4 sticky top-32">
+              <div className="bg-white/5 border border-white/10 rounded-2xl p-4 sticky top-24">
                 <div className="flex items-center justify-between mb-4">
-                  <h3 className="text-white font-semibold">Chapters</h3>
-                  {generatedCount < totalChapters && (
-                    <button onClick={generateAllChapters} disabled={generatingChapter !== null || quotaHit}
-                      className="text-xs bg-purple-500/20 text-purple-300 px-3 py-1 rounded-lg hover:bg-purple-500/30 disabled:opacity-50">
-                      Generate All
-                    </button>
-                  )}
+                  <h3 className="text-white font-semibold text-sm">Chapters</h3>
+                  <button onClick={generateAllChapters} disabled={generating || generatingChapter !== null || quotaHit}
+                    className="text-xs bg-purple-500/20 text-purple-300 px-3 py-1.5 rounded-lg hover:bg-purple-500/30 disabled:opacity-40 border border-purple-500/30">
+                    Generate All
+                  </button>
                 </div>
-                <div className="space-y-1.5">
+                <div className="space-y-1">
                   {(book.chapters || []).map((ch, i) => (
                     <button key={i} onClick={() => setSelectedChapter(i)}
-                      className={`w-full text-left px-3 py-2.5 rounded-lg transition-all text-sm flex items-center justify-between ${selectedChapter === i ? "bg-purple-500/20 text-white border border-purple-500/40" : "text-white/60 hover:bg-white/5"}`}>
-                      <span className="truncate">{ch.number}. {ch.title}</span>
-                      {generatingChapter === i
-                        ? <svg className="animate-spin h-3 w-3 text-purple-400 flex-shrink-0" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>
-                        : ch.generated ? <span className="text-green-400 text-xs flex-shrink-0">✓</span> : null}
+                      className={`w-full text-left px-3 py-2.5 rounded-lg text-sm transition-all ${selectedChapter === i ? "bg-purple-500/20 text-white border border-purple-500/30" : "text-white/60 hover:bg-white/5"}`}>
+                      <span className={`font-medium ${ch.generated ? "text-green-400" : ""}`}>
+                        {ch.generated ? "✓ " : ""}{ch.number}. {ch.title}
+                      </span>
                     </button>
                   ))}
                 </div>
@@ -359,27 +358,30 @@ export default function Editor() {
             </div>
             <div className="lg:col-span-2">
               {book.chapters?.[selectedChapter] && (
-                <div className="bg-white/5 border border-white/10 rounded-2xl p-6">
+                <div className="bg-white/5 border border-white/10 rounded-2xl p-8">
                   <div className="flex items-start justify-between mb-6">
                     <div>
                       <h2 className="text-white text-xl font-bold">Chapter {book.chapters[selectedChapter].number}: {book.chapters[selectedChapter].title}</h2>
                       <p className="text-white/40 text-sm mt-1">{book.chapters[selectedChapter].description}</p>
                     </div>
-                    <button onClick={() => generateChapter(selectedChapter)} disabled={generatingChapter !== null || quotaHit}
-                      className="bg-gradient-to-r from-purple-500 to-pink-500 text-white px-4 py-2 rounded-xl text-sm font-semibold hover:opacity-90 disabled:opacity-50 flex items-center gap-2 ml-4 flex-shrink-0">
+                    <button onClick={() => generateChapter(selectedChapter)}
+                      disabled={generatingChapter !== null || quotaHit}
+                      className="bg-gradient-to-r from-purple-500 to-pink-500 text-white px-5 py-2.5 rounded-xl font-medium text-sm hover:opacity-90 disabled:opacity-50 flex items-center gap-2 whitespace-nowrap">
                       {generatingChapter === selectedChapter
                         ? <><svg className="animate-spin h-4 w-4" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>Writing...</>
-                        : book.chapters[selectedChapter].generated ? "♻️ Regenerate" : "✨ Generate"}
+                        : book.chapters[selectedChapter].generated ? "✍️ Rewrite" : "✍️ Write Chapter"}
                     </button>
                   </div>
                   {book.chapters[selectedChapter].content ? (
-                    <div className="bg-white/5 rounded-xl p-6 max-h-[600px] overflow-y-auto">
-                      <pre className="text-white/80 text-sm leading-relaxed whitespace-pre-wrap font-sans">{book.chapters[selectedChapter].content}</pre>
+                    <div className="prose prose-invert prose-sm max-w-none">
+                      <div className="text-white/80 text-sm leading-relaxed whitespace-pre-wrap max-h-[600px] overflow-y-auto pr-2">
+                        {book.chapters[selectedChapter].content}
+                      </div>
                     </div>
                   ) : (
                     <div className="text-center py-16 text-white/30">
                       <div className="text-4xl mb-3">✍️</div>
-                      <p>{quotaHit ? "⏳ Daily quota reached — come back tomorrow!" : "Click \"Generate\" to write this chapter with Gemini AI"}</p>
+                      <p>Click "Write Chapter" to generate this chapter with Gemini AI</p>
                     </div>
                   )}
                 </div>
@@ -392,7 +394,6 @@ export default function Editor() {
         {activeTab === 2 && (
           <div className="max-w-5xl mx-auto">
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-              {/* Left: Preview */}
               <div className="flex flex-col items-center">
                 <h2 className="text-white text-xl font-bold mb-4 self-start">Cover Preview</h2>
                 {book.cover_image_url ? (
@@ -420,11 +421,8 @@ export default function Editor() {
                 )}
               </div>
 
-              {/* Right: Controls */}
               <div className="space-y-5">
                 <h2 className="text-white text-xl font-bold">Cover Settings</h2>
-
-                {/* Mode toggle */}
                 <div className="bg-white/5 border border-white/10 rounded-xl p-1 flex gap-1">
                   <button onClick={() => setCoverPromptMode("auto")}
                     className={`flex-1 py-2 rounded-lg text-sm font-medium transition-all ${coverPromptMode === "auto" ? "bg-purple-500 text-white" : "text-white/50 hover:text-white"}`}>
@@ -456,7 +454,7 @@ export default function Editor() {
                       rows={7}
                       className="w-full bg-white/10 border border-white/20 rounded-xl px-4 py-3 text-white placeholder-white/30 focus:outline-none focus:border-purple-500 resize-none text-sm"
                     />
-                    <p className="text-white/30 text-xs mt-1">Be specific — describe characters, setting, mood, colors, art style. The more detail, the better.</p>
+                    <p className="text-white/30 text-xs mt-1">Be specific — describe characters, setting, mood, colors, art style.</p>
                   </div>
                 )}
 
@@ -473,7 +471,7 @@ export default function Editor() {
                   <p>• Describe character genders, ages, appearance explicitly</p>
                   <p>• Specify art style (photorealistic, painterly, illustrated, etc.)</p>
                   <p>• Include mood, lighting, and color palette</p>
-                  <p>• Use "New Variation" to get different interpretations of the same prompt</p>
+                  <p>• Use "New Variation" to get different interpretations</p>
                 </div>
               </div>
             </div>
@@ -487,97 +485,88 @@ export default function Editor() {
               <div className="flex items-center justify-between mb-6">
                 <div>
                   <h2 className="text-white text-2xl font-bold">SEO Optimization</h2>
-                  <p className="text-white/50 text-sm">Optimized for Amazon KDP & all major platforms</p>
+                  <p className="text-white/50 text-sm mt-1">Amazon KDP & platform metadata</p>
                 </div>
                 <button onClick={generateSEO} disabled={generating || quotaHit}
-                  className="bg-gradient-to-r from-purple-500 to-pink-500 text-white px-5 py-2.5 rounded-xl font-semibold hover:opacity-90 disabled:opacity-50">
-                  {generating ? "Generating..." : "🔍 Generate SEO"}
+                  className="bg-gradient-to-r from-purple-500 to-pink-500 text-white px-6 py-3 rounded-xl font-semibold hover:opacity-90 disabled:opacity-50 flex items-center gap-2">
+                  {generating
+                    ? <><svg className="animate-spin h-4 w-4" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>Generating...</>
+                    : "🔍 Generate SEO"}
                 </button>
               </div>
-              {book.seo_title ? (
-                <div className="space-y-5">
-                  <div><label className="text-white/50 text-xs uppercase tracking-wider block mb-2">SEO Title</label><div className="bg-white/10 rounded-xl p-4 text-white">{book.seo_title}</div></div>
-                  <div><label className="text-white/50 text-xs uppercase tracking-wider block mb-2">Amazon Description</label><div className="bg-white/10 rounded-xl p-4 text-white/80 text-sm leading-relaxed max-h-48 overflow-y-auto whitespace-pre-wrap">{book.seo_description}</div></div>
-                  <div>
-                    <label className="text-white/50 text-xs uppercase tracking-wider block mb-2">Keywords</label>
-                    <div className="flex flex-wrap gap-2">
-                      {book.seo_keywords?.split(",").map((k, i) => <span key={i} className="bg-purple-500/20 text-purple-300 px-3 py-1 rounded-full text-sm border border-purple-500/30">{k.trim()}</span>)}
-                    </div>
+              <div className="space-y-5">
+                {[
+                  { label: "SEO Title", value: book.seo_title, key: "seo_title" },
+                  { label: "SEO Description", value: book.seo_description, key: "seo_description", large: true },
+                  { label: "Keywords", value: book.seo_keywords, key: "seo_keywords" },
+                ].map(field => (
+                  <div key={field.key}>
+                    <label className="text-white/50 text-xs uppercase tracking-wider block mb-2">{field.label}</label>
+                    {field.value ? (
+                      field.large
+                        ? <div className="bg-white/10 rounded-xl p-4 text-white/80 text-sm leading-relaxed">{field.value}</div>
+                        : <div className="bg-white/10 rounded-xl p-4 text-white/80 text-sm">{field.value}</div>
+                    ) : (
+                      <div className="bg-white/5 border border-dashed border-white/10 rounded-xl p-4 text-white/20 text-sm italic">
+                        Generate SEO to fill this field
+                      </div>
+                    )}
                   </div>
-                  {book.notes && (() => { try { const n = JSON.parse(book.notes); return n.back_cover_copy ? <div><label className="text-white/50 text-xs uppercase tracking-wider block mb-2">Back Cover Copy</label><div className="bg-white/10 rounded-xl p-4 text-white/80 text-sm leading-relaxed">{n.back_cover_copy}</div></div> : null; } catch { return null; } })()}
-                </div>
-              ) : (
-                <div className="text-center py-12 text-white/30">
-                  <div className="text-4xl mb-3">🔍</div>
-                  <p>{quotaHit ? "⏳ Daily quota reached — try again tomorrow" : "Click \"Generate SEO\" to create optimized metadata"}</p>
-                </div>
-              )}
+                ))}
+                {book.notes && (() => {
+                  try {
+                    const n = JSON.parse(book.notes);
+                    return n.back_cover_copy ? (
+                      <div>
+                        <label className="text-white/50 text-xs uppercase tracking-wider block mb-2">Back Cover Copy</label>
+                        <div className="bg-white/10 rounded-xl p-4 text-white/80 text-sm leading-relaxed">{n.back_cover_copy}</div>
+                      </div>
+                    ) : null;
+                  } catch { return null; }
+                })()}
+              </div>
             </div>
           </div>
         )}
 
         {/* PUBLISH TAB */}
         {activeTab === 4 && (
-          <div className="max-w-3xl mx-auto">
+          <div className="max-w-3xl mx-auto space-y-6">
             <div className="bg-white/5 border border-white/10 rounded-2xl p-8">
-              <h2 className="text-white text-2xl font-bold mb-2">Publish Your Book</h2>
-              <p className="text-white/50 mb-8">Download and publish on these platforms</p>
-              <div className="bg-white/5 rounded-xl p-5 mb-8">
-                <h3 className="text-white font-semibold mb-4">Publishing Readiness</h3>
-                <div className="space-y-2">
-                  {[
-                    { label: "Book outline created", done: !!book.outline },
-                    { label: `Chapters written (${generatedCount}/${totalChapters})`, done: generatedCount > 0 },
-                    { label: "All chapters complete", done: generatedCount === totalChapters && totalChapters > 0 },
-                    { label: "Cover image generated", done: !!book.cover_image_url },
-                    { label: "SEO metadata ready", done: !!book.seo_title },
-                  ].map((item, i) => (
-                    <div key={i} className="flex items-center gap-3">
-                      <span className={item.done ? "text-green-400" : "text-white/20"}>{item.done ? "✅" : "○"}</span>
-                      <span className={item.done ? "text-white/80" : "text-white/30"}>{item.label}</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-              <div className="mb-8">
-                <h3 className="text-white font-semibold mb-4">📥 Download Your Book</h3>
-                <button onClick={downloadBook} className="w-full border border-purple-500/40 bg-purple-500/10 text-purple-300 py-3 rounded-xl hover:bg-purple-500/20 transition-colors font-medium">
-                  Download as Markdown
-                </button>
-                <p className="text-white/30 text-xs mt-2 text-center">Use <a href="https://calibre-ebook.com" target="_blank" rel="noopener noreferrer" className="underline">Calibre (free)</a> to convert to EPUB/PDF for KDP</p>
-              </div>
-              <h3 className="text-white font-semibold mb-4">🚀 Publishing Platforms</h3>
-              <div className="space-y-3">
+              <h2 className="text-white text-2xl font-bold mb-2">Ready to Publish</h2>
+              <p className="text-white/50 mb-6">Export your book and upload to publishing platforms</p>
+              <div className="space-y-3 mb-8">
                 {[
-                  { name: "Amazon KDP", icon: "📦", desc: "35-70% royalties. Largest marketplace.", url: "https://kdp.amazon.com", badge: "Most Popular", color: "from-orange-500/20 to-orange-600/10 border-orange-500/30" },
-                  { name: "Smashwords", icon: "📚", desc: "Distributes to Apple Books, B&N, Kobo & more.", url: "https://www.smashwords.com", badge: "Multi-platform", color: "from-blue-500/20 to-blue-600/10 border-blue-500/30" },
-                  { name: "Draft2Digital", icon: "✍️", desc: "Free formatting, 40+ retailers.", url: "https://www.draft2digital.com", badge: "Best Tools", color: "from-teal-500/20 to-teal-600/10 border-teal-500/30" },
-                  { name: "Lulu", icon: "🌟", desc: "Print-on-demand + ebook.", url: "https://www.lulu.com", badge: "Print + Digital", color: "from-pink-500/20 to-pink-600/10 border-pink-500/30" },
-                  { name: "PublishDrive", icon: "🚀", desc: "Distribute to 400+ stores.", url: "https://publishdrive.com", badge: "400+ Stores", color: "from-purple-500/20 to-purple-600/10 border-purple-500/30" },
-                ].map(p => (
-                  <a key={p.name} href={p.url} target="_blank" rel="noopener noreferrer"
-                    className={`block bg-gradient-to-r ${p.color} border rounded-xl p-4 hover:opacity-90 transition-opacity`}>
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-3">
-                        <span className="text-2xl">{p.icon}</span>
-                        <div>
-                          <div className="flex items-center gap-2">
-                            <span className="text-white font-semibold">{p.name}</span>
-                            <span className="text-xs bg-white/10 px-2 py-0.5 rounded text-white/60">{p.badge}</span>
-                          </div>
-                          <p className="text-white/50 text-sm">{p.desc}</p>
-                        </div>
-                      </div>
-                      <span className="text-white/40">→</span>
-                    </div>
-                  </a>
+                  { label: "Outline created", done: !!book.outline },
+                  { label: "Chapters written", done: book.chapters?.some(c => c.generated) },
+                  { label: "Cover image generated", done: !!book.cover_image_url },
+                  { label: "SEO metadata ready", done: !!book.seo_title },
+                ].map((item, i) => (
+                  <div key={i} className={`flex items-center gap-3 p-3 rounded-lg ${item.done ? "bg-green-500/10" : "bg-white/5"}`}>
+                    <span className={item.done ? "text-green-400" : "text-white/20"}>{item.done ? "✅" : "⭕"}</span>
+                    <span className={`text-sm ${item.done ? "text-white" : "text-white/40"}`}>{item.label}</span>
+                  </div>
                 ))}
               </div>
-              <div className="mt-6 pt-6 border-t border-white/10">
-                <button onClick={markPublished} className="w-full bg-gradient-to-r from-purple-500 to-pink-500 text-white py-3 rounded-xl font-semibold hover:opacity-90">
-                  🚀 Mark as Published
-                </button>
-              </div>
+              <button onClick={downloadBook}
+                className="w-full bg-gradient-to-r from-purple-500 to-pink-500 text-white py-4 rounded-xl font-semibold text-lg hover:opacity-90 flex items-center justify-center gap-2">
+                📥 Download as Markdown
+              </button>
+              <p className="text-white/30 text-xs text-center mt-3">Upload the .md file to Amazon KDP, Smashwords, or Draft2Digital</p>
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              {[
+                { name: "Amazon KDP", url: "https://kdp.amazon.com", color: "from-orange-500/20 to-orange-600/20", border: "border-orange-500/30", icon: "📦" },
+                { name: "Smashwords", url: "https://www.smashwords.com", color: "from-blue-500/20 to-blue-600/20", border: "border-blue-500/30", icon: "📚" },
+                { name: "Draft2Digital", url: "https://draft2digital.com", color: "from-green-500/20 to-green-600/20", border: "border-green-500/30", icon: "🌐" },
+              ].map(p => (
+                <a key={p.name} href={p.url} target="_blank" rel="noopener noreferrer"
+                  className={`bg-gradient-to-br ${p.color} border ${p.border} rounded-xl p-5 text-center hover:opacity-80 transition-opacity`}>
+                  <div className="text-3xl mb-2">{p.icon}</div>
+                  <p className="text-white font-semibold text-sm">{p.name}</p>
+                  <p className="text-white/40 text-xs mt-1">Open platform →</p>
+                </a>
+              ))}
             </div>
           </div>
         )}
