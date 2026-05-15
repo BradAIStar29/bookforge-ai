@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { Book, GeminiUsage } from "@/api/entities";
 import { Link, useSearchParams } from "react-router-dom";
-import { generateImage } from "@/api/functions";
+
 
 const GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent";
 const DAILY_LIMIT = 1500;
@@ -177,9 +177,10 @@ export default function Editor() {
         "\nDetailed art style, colors, imagery, mood, composition. No text in image. Return only the prompt."
       );
       await incrementUsage();
-      const fullPrompt = `Professional book cover for "${book.title}". ${coverPrompt.trim()}. High quality, commercial publishing standard, eye-catching composition.`;
-      const imgRes = await generateImage({ prompt: fullPrompt });
-      await saveBook({ cover_image_url: imgRes.url });
+      const fullPrompt = `Professional book cover for "${book.title}". ${coverPrompt.trim()}. High quality, commercial publishing standard, eye-catching composition. No text.`;
+      const encodedPrompt = encodeURIComponent(fullPrompt);
+      const coverUrl = `https://image.pollinations.ai/prompt/${encodedPrompt}?width=800&height=1200&nologo=true&seed=${Date.now()}`;
+      await saveBook({ cover_image_url: coverUrl });
       setSuccess("Cover generated! 🎨");
       setTimeout(() => setSuccess(""), 3000);
     } catch (e) { handleApiError(e); }
