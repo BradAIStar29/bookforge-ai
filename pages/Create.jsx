@@ -39,16 +39,16 @@ async function callGemini(prompt) {
   return text;
 }
 
-async function trackUsage() {
+function trackUsage() {
+  // fire-and-forget: never blocks or throws
   const today = new Date().toISOString().split("T")[0];
-  try {
-    const records = await GeminiUsage.filter({ date: today });
+  GeminiUsage.filter({ date: today }).then(records => {
     if (records.length === 0) {
-      await GeminiUsage.create({ date: today, request_count: 1, daily_limit: DAILY_LIMIT });
+      GeminiUsage.create({ date: today, request_count: 1, daily_limit: DAILY_LIMIT }).catch(() => {});
     } else {
-      await GeminiUsage.update(records[0].id, { request_count: (records[0].request_count || 0) + 1 });
+      GeminiUsage.update(records[0].id, { request_count: (records[0].request_count || 0) + 1 }).catch(() => {});
     }
-  } catch {}
+  }).catch(() => {});
 }
 
 export default function Create() {
@@ -70,7 +70,7 @@ export default function Create() {
         "\nGenre: " + form.genre + "\nTarget Audience: " + form.targetAudience +
         '\n\nRespond with ONLY valid JSON (no markdown, no explanation):\n{"title":"","subtitle":"","description":"","chapters":[{"number":1,"title":"","description":""}],"themes":[""],"estimated_word_count":50000}'
       );
-      await trackUsage();
+      trackUsage(); // fire-and-forget
       const jsonMatch = raw.match(/\{[\s\S]*\}/);
       if (!jsonMatch) throw { type: "general", message: "Could not parse outline. Please try again." };
       setOutline(JSON.parse(jsonMatch[0]));

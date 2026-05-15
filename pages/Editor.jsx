@@ -67,33 +67,30 @@ export default function Editor() {
     loadUsage();
   }, [bookId]);
 
-  const loadUsage = async () => {
+  const loadUsage = () => {
     const today = new Date().toISOString().split("T")[0];
-    try {
-      const records = await GeminiUsage.filter({ date: today });
+    GeminiUsage.filter({ date: today }).then(records => {
       const count = records[0]?.request_count || 0;
       const pct = Math.round((count / DAILY_LIMIT) * 100);
       setUsage({ count, limit: DAILY_LIMIT, remaining: DAILY_LIMIT - count, pct });
       if (count >= DAILY_LIMIT) setQuotaHit(true);
-    } catch {}
+    }).catch(() => {});
   };
 
-  const incrementUsage = async () => {
+  const incrementUsage = () => {
     const today = new Date().toISOString().split("T")[0];
-    try {
-      const records = await GeminiUsage.filter({ date: today });
-      let newCount;
+    GeminiUsage.filter({ date: today }).then(records => {
       if (records.length === 0) {
-        await GeminiUsage.create({ date: today, request_count: 1, daily_limit: DAILY_LIMIT });
-        newCount = 1;
+        GeminiUsage.create({ date: today, request_count: 1, daily_limit: DAILY_LIMIT }).catch(() => {});
+        setUsage(u => ({ ...u, count: 1, remaining: DAILY_LIMIT - 1, pct: 0 }));
       } else {
-        newCount = (records[0].request_count || 0) + 1;
-        await GeminiUsage.update(records[0].id, { request_count: newCount });
+        const newCount = (records[0].request_count || 0) + 1;
+        GeminiUsage.update(records[0].id, { request_count: newCount }).catch(() => {});
+        const pct = Math.round((newCount / DAILY_LIMIT) * 100);
+        setUsage({ count: newCount, limit: DAILY_LIMIT, remaining: DAILY_LIMIT - newCount, pct });
+        if (newCount >= DAILY_LIMIT) setQuotaHit(true);
       }
-      const pct = Math.round((newCount / DAILY_LIMIT) * 100);
-      setUsage({ count: newCount, limit: DAILY_LIMIT, remaining: DAILY_LIMIT - newCount, pct });
-      if (newCount >= DAILY_LIMIT) setQuotaHit(true);
-    } catch {}
+    }).catch(() => {});
   };
 
   const saveBook = async (updates) => {
@@ -121,7 +118,7 @@ export default function Editor() {
         "Description: " + ch.description + "\nPrevious chapters: " + prev + "\nAudience: " + book.target_audience +
         "\n\nWrite 2,500-3,500 words with headings/subheadings. High quality and engaging."
       );
-      await incrementUsage();
+      incrementUsage(); // fire-and-forget
       const updatedChapters = [...(book.chapters || [])];
       updatedChapters[idx] = { ...updatedChapters[idx], content, generated: true };
       const wordCount = updatedChapters.reduce((acc, c) => acc + (c.content?.split(/\s+/).length || 0), 0);
@@ -150,7 +147,7 @@ export default function Editor() {
         "\nGenre: " + book.genre + "\nDesc: " + outline.description +
         '\n\nRespond with ONLY valid JSON:\n{"seo_title":"","seo_description":"","primary_keywords":[""],"bisac_categories":[""],"back_cover_copy":"","author_bio_template":""}'
       );
-      await incrementUsage();
+      incrementUsage(); // fire-and-forget
       const jsonMatch = raw.match(/\{[\s\S]*\}/);
       if (!jsonMatch) throw { type: "general", message: "Could not parse SEO data. Please try again." };
       const seo = JSON.parse(jsonMatch[0]);
@@ -176,7 +173,7 @@ export default function Editor() {
         'Book cover image prompt for: "' + outline.title + '"\nGenre: ' + book.genre + "\nDesc: " + outline.description +
         "\nDetailed art style, colors, imagery, mood, composition. No text in image. Return only the prompt."
       );
-      await incrementUsage();
+      incrementUsage(); // fire-and-forget
       const fullPrompt = `Professional book cover for "${book.title}". ${coverPrompt.trim()}. High quality, commercial publishing standard, eye-catching composition. No text.`;
       const encodedPrompt = encodeURIComponent(fullPrompt);
       const coverUrl = `https://image.pollinations.ai/prompt/${encodedPrompt}?width=800&height=1200&nologo=true&seed=${Date.now()}`;
