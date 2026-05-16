@@ -3,13 +3,16 @@
   "slug": "bookgeneratorai",
   "pages": {
     "Home": {
-      "title": "Home"
+      "title": "Library",
+      "icon": "📚"
     },
     "Create": {
-      "title": "Create"
+      "title": "Create Book",
+      "icon": "✨"
     },
     "Editor": {
-      "title": "Editor"
+      "title": "Editor",
+      "icon": "✍️"
     }
   }
 }
