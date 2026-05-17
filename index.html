@@ -1,0 +1,1185 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>BookForge AI</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<style>
+body{margin:0;font-family:system-ui,sans-serif;background:#0f0a1e}
+::-webkit-scrollbar{width:6px}::-webkit-scrollbar-track{background:rgba(255,255,255,.05)}::-webkit-scrollbar-thumb{background:rgba(139,92,246,.4);border-radius:3px}
+.spin{animation:spin 1s linear infinite}@keyframes spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
+.pulse{animation:pulse 2s cubic-bezier(.4,0,.6,1) infinite}@keyframes pulse{0%,100%{opacity:1}50%{opacity:.5}}
+</style>
+</head>
+<body><div id="root"></div>
+<script type="text/babel">
+const {useState,useEffect,useRef,useCallback}=React;
+
+// ── Constants ─────────────────────────────────────────────────────────────────
+const GEMINI_URL="https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent";
+const DAILY_LIMIT=1500;
+const GENRES=["Fiction - Romance","Fiction - Gay Romance","Fiction - LGBT+","Fiction - Thriller","Fiction - Fantasy","Fiction - Sci-Fi","Fiction - Mystery","Fiction - Horror","Self-Help","Business & Finance","Health & Wellness","Personal Development","Biography & Memoir","History","True Crime","Cookbook","Travel","Spirituality","Science","Technology","Parenting","Education"];
+const AUDIENCES=["General Adults","Young Adults (18-25)","LGBT+ Readers","Women","Men","Professionals & Entrepreneurs","Parents","Students","Seniors","Beginners","Advanced Readers"];
+const STATUS_COLORS={idea:"bg-gray-500/20 text-gray-300",outlining:"bg-blue-500/20 text-blue-300",writing:"bg-yellow-500/20 text-yellow-300",ready:"bg-green-500/20 text-green-300",published:"bg-purple-500/20 text-purple-300",series:"bg-cyan-500/20 text-cyan-300"};
+const STATUS_ICONS={idea:"💡",outlining:"📋",writing:"✍️",ready:"✅",published:"🚀",series:"📗"};
+
+// ── Storage ───────────────────────────────────────────────────────────────────
+const ls={get:(k,d)=>{try{const v=localStorage.getItem(k);return v===null?d:JSON.parse(v)}catch{return d}},set:(k,v)=>{try{localStorage.setItem(k,JSON.stringify(v))}catch{}}};
+const getKey=()=>localStorage.getItem("gemini_api_key")||"";
+const setKey=k=>localStorage.setItem("gemini_api_key",k.trim());
+const getBooks=()=>ls.get("bfai_books",[]);
+const setBooks=b=>ls.set("bfai_books",b);
+const getBook=id=>getBooks().find(b=>b.id===id)||null;
+const getSeries=()=>ls.get("bfai_series",[]);
+const setSeries=s=>ls.set("bfai_series",s);
+const getSeriesById=id=>getSeries().find(s=>s.id===id)||null;
+const updateBook=(id,upd)=>{const books=getBooks();const i=books.findIndex(b=>b.id===id);if(i===-1)return null;books[i]={...books[i],...upd};setBooks(books);return books[i];};
+const getUsage=()=>{const today=new Date().toISOString().split("T")[0];const d=ls.get("bfai_usage",{});return d.date===today?(d.count||0):0;};
+const trackUsage=()=>{const today=new Date().toISOString().split("T")[0];const d=ls.get("bfai_usage",{});const c=(d.date===today?d.count:0)+1;ls.set("bfai_usage",{date:today,count:c});return c;};
+
+// ── Gemini ────────────────────────────────────────────────────────────────────
+async function callGemini(prompt){
+  const key=getKey();
+  if(!key)throw{code:"NO_KEY"};
+  const res=await fetch(`${GEMINI_URL}?key=${key}`,{method:"POST",headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({contents:[{parts:[{text:prompt}]}],generationConfig:{temperature:0.85,maxOutputTokens:8192}})});
+  const data=await res.json();
+  if(!res.ok){
+    if(res.status===401||res.status===403)throw{code:"BAD_KEY"};
+    if(res.status===429||data?.error?.status==="RESOURCE_EXHAUSTED")throw{code:"QUOTA"};
+    throw{code:"ERROR",msg:data?.error?.message||`HTTP ${res.status}`};
+  }
+  const text=data?.candidates?.[0]?.content?.parts?.[0]?.text;
+  if(!text){if(data?.candidates?.[0]?.finishReason==="SAFETY")throw{code:"SAFETY"};throw{code:"EMPTY"};}
+  return text;
+}
+const errMsg=e=>{const c=e?.code||"ERROR";if(c==="NO_KEY"||c==="BAD_KEY")return"🔑 API key missing or invalid — check Settings.";if(c==="QUOTA")return"⏳ Daily Gemini limit reached. Resets at midnight Pacific Time. Progress saved!";if(c==="SAFETY")return"Content blocked by safety filter. Try rephrasing.";return e?.msg||"Something went wrong. Please try again.";};
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+function Spin({size="h-5 w-5"}){return<svg className={`spin ${size}`} fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>;}
+
+function ScoreBadge({score}){
+  const color=score>=80?"text-green-400 border-green-500/40 bg-green-500/10":score>=60?"text-amber-400 border-amber-500/40 bg-amber-500/10":"text-red-400 border-red-500/40 bg-red-500/10";
+  return<span className={`text-sm font-bold px-3 py-1 rounded-full border ${color}`}>{score}/100</span>;
+}
+
+// ── Settings Modal ────────────────────────────────────────────────────────────
+function SettingsModal({onClose}){
+  const [draft,setDraft]=useState(getKey());
+  const [saved,setSaved]=useState(false);
+  const save=()=>{if(!draft.trim())return;setKey(draft);setSaved(true);setTimeout(()=>{setSaved(false);onClose();},900);};
+  return(
+    <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+      <div className="bg-slate-800 border border-white/10 rounded-2xl p-8 max-w-md w-full shadow-2xl">
+        <div className="flex items-center justify-between mb-6">
+          <h2 className="text-white text-xl font-bold">⚙️ Settings</h2>
+          <button onClick={onClose} className="text-white/30 hover:text-white text-xl">✕</button>
+        </div>
+        <label className="text-white/60 text-sm font-medium block mb-2">Gemini API Key</label>
+        <p className="text-white/35 text-xs mb-3">Stored only in your browser. Used for all book generation — enter once, works everywhere.</p>
+        <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noopener noreferrer" className="inline-block text-purple-400 text-xs underline mb-4 hover:text-purple-300">Get a free key at Google AI Studio →</a>
+        <input type="password" placeholder="AIza..." value={draft} onChange={e=>setDraft(e.target.value)} onKeyDown={e=>e.key==="Enter"&&save()}
+          className="w-full bg-white/10 border border-white/20 rounded-xl px-4 py-3 text-white placeholder-white/30 focus:outline-none focus:border-purple-500 mb-5 font-mono text-sm"/>
+        <button onClick={save} disabled={!draft.trim()}
+          className={`w-full py-3 rounded-xl font-semibold transition-all ${saved?"bg-green-500 text-white":"bg-gradient-to-r from-purple-500 to-pink-500 text-white hover:opacity-90 disabled:opacity-50"}`}>
+          {saved?"✅ Saved!":"Save API Key"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ── Header ────────────────────────────────────────────────────────────────────
+function Header({onBack,title,subtitle,onSettings,activeTab,setActiveTab}){
+  const [usage,setUsage]=useState(getUsage());
+  useEffect(()=>{const t=setInterval(()=>setUsage(getUsage()),3000);return()=>clearInterval(t);},[]);
+  const pct=Math.min(Math.round((usage/DAILY_LIMIT)*100),100);
+  const key=getKey();
+  return(
+    <div className="border-b border-white/10 bg-black/30 backdrop-blur-sm sticky top-0 z-20">
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 py-3 flex items-center justify-between gap-3">
+        <div className="flex items-center gap-3 min-w-0">
+          {onBack&&<button onClick={onBack} className="text-white/40 hover:text-white text-sm shrink-0 transition-colors">← Back</button>}
+          <div className="w-9 h-9 bg-gradient-to-br from-purple-500 to-pink-500 rounded-xl flex items-center justify-center text-lg shrink-0">📚</div>
+          <div className="min-w-0">
+            <h1 className="text-white font-bold text-base leading-tight truncate">{title||"BookForge AI"}</h1>
+            {subtitle&&<p className="text-white/30 text-xs truncate">{subtitle}</p>}
+          </div>
+        </div>
+        <div className="flex items-center gap-2 shrink-0">
+          <div className="bg-white/5 border border-white/10 rounded-lg px-3 py-1.5 flex items-center gap-2">
+            <span className={`text-xs font-bold ${pct>=90?"text-red-400":pct>=70?"text-amber-400":"text-green-400"}`}>{usage}/{DAILY_LIMIT}</span>
+            <div className="w-10 h-1 bg-white/10 rounded-full overflow-hidden">
+              <div className={`h-full rounded-full transition-all ${pct>=90?"bg-red-500":pct>=70?"bg-amber-500":"bg-green-500"}`} style={{width:`${pct}%`}}/>
+            </div>
+          </div>
+          <button onClick={onSettings} className={`text-xs px-3 py-1.5 rounded-lg border transition-all ${key?"border-white/20 text-white/50 hover:border-white/40":"border-red-500/50 text-red-400 bg-red-500/10 pulse"}`}>
+            {key?"⚙️ Settings":"⚠️ Set API Key"}
+          </button>
+        </div>
+      </div>
+      {/* Main nav tabs */}
+      {setActiveTab&&(
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 flex gap-1">
+          {[["📚 Library","library"],["📗 Series","series"]].map(([label,id])=>(
+            <button key={id} onClick={()=>setActiveTab(id)}
+              className={`px-4 py-2.5 text-sm font-medium whitespace-nowrap rounded-t-lg transition-all ${activeTab===id?"bg-white/10 text-white border-b-2 border-purple-500":"text-white/35 hover:text-white/70"}`}>
+              {label}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// REVIEW AGENT
+// ══════════════════════════════════════════════════════════════════════════════
+async function runReviewAgent(book){
+  const outline=JSON.parse(book.outline||"{}");
+  const raw=await callGemini(
+    `You are a professional book publishing strategist and Amazon KDP expert.\n\n`+
+    `Review this book for market-readiness and discoverability. Be critical and specific.\n\n`+
+    `Book Details:\n`+
+    `Title: ${book.title}\nSubtitle: ${book.subtitle||"(none)"}\nGenre: ${book.genre}\n`+
+    `Target Audience: ${book.target_audience}\nSEO Title: ${book.seo_title||"(not set)"}\n`+
+    `SEO Description: ${book.seo_description||"(not set)"}\nKeywords: ${book.seo_keywords||"(not set)"}\n`+
+    `Description: ${outline.description||book.description}\n\n`+
+    `Evaluate:\n`+
+    `1. Title appeal & marketability (is it compelling, genre-appropriate, searchable?)\n`+
+    `2. Keyword strength (will readers find this book? are keywords competitive?)\n`+
+    `3. SEO description quality (does it hook the reader and include search terms?)\n`+
+    `4. Subtitle effectiveness (does it add context and keywords?)\n`+
+    `5. Overall market differentiation (does this book stand out in its category?)\n\n`+
+    `Respond ONLY with valid JSON:\n`+
+    `{"overall_score":85,"title_score":80,"keyword_score":75,"seo_score":85,"differentiation_score":80,`+
+    `"verdict":"PASS","verdict_reason":"One sentence summary of verdict.",`+
+    `"strengths":["strength 1","strength 2","strength 3"],`+
+    `"issues":["specific issue 1","specific issue 2"],`+
+    `"title_suggestions":["Better Title: Subtitle","Alternative Title 2"],`+
+    `"keyword_suggestions":["keyword 1","keyword 2","keyword 3","keyword 4","keyword 5"],`+
+    `"seo_rewrite":"A rewritten, stronger SEO description.",`+
+    `"subtitle_suggestion":"A stronger subtitle suggestion."}`+
+    `\n\nVerdict must be "PASS" if overall_score>=70, otherwise "FAIL".`
+  );
+  trackUsage();
+  const match=raw.match(/\{[\s\S]*\}/);
+  if(!match)throw{code:"PARSE",msg:"Could not parse review."};
+  return JSON.parse(match[0]);
+}
+
+// ── Review Panel (used inside Editor) ────────────────────────────────────────
+function ReviewPanel({book,onApply,onSettings}){
+  const [review,setReview]=useState(book.review||null);
+  const [loading,setLoading]=useState(false);
+  const [error,setError]=useState("");
+  const [applied,setApplied]=useState({});
+
+  const run=async()=>{
+    if(!getKey()){onSettings();return;}
+    setLoading(true);setError("");
+    try{
+      const r=await runReviewAgent(book);
+      setReview(r);
+      updateBook(book.id,{review:r});
+    }catch(e){setError(errMsg(e));}
+    finally{setLoading(false);}
+  };
+
+  const applyTitle=(t)=>{
+    const parts=t.split(":");
+    const title=parts[0].trim();
+    const subtitle=parts.slice(1).join(":").trim();
+    onApply({title,subtitle:subtitle||book.subtitle});
+    setApplied(a=>({...a,title:true}));
+  };
+  const applyKeywords=(kws)=>{onApply({seo_keywords:kws.join(", ")});setApplied(a=>({...a,kws:true}));};
+  const applySEO=(d)=>{onApply({seo_description:d});setApplied(a=>({...a,seo:true}));};
+  const applySubtitle=(s)=>{onApply({subtitle:s});setApplied(a=>({...a,sub:true}));};
+
+  return(
+    <div className="max-w-3xl mx-auto space-y-5">
+      {/* Header card */}
+      <div className="bg-white/5 border border-white/10 rounded-2xl p-6">
+        <div className="flex items-start justify-between gap-4 mb-4">
+          <div>
+            <h2 className="text-white text-xl font-bold">🤖 AI Review Agent</h2>
+            <p className="text-white/40 text-sm mt-1">Scores your title, keywords & SEO before publishing. Must pass (70+) to unlock downloads.</p>
+          </div>
+          {review&&<ScoreBadge score={review.overall_score}/>}
+        </div>
+        {error&&<div className="bg-red-500/20 border border-red-500/30 text-red-300 rounded-xl p-4 mb-4 text-sm">{error}</div>}
+        <button onClick={run} disabled={loading}
+          className="w-full bg-gradient-to-r from-purple-500 to-pink-500 text-white py-3.5 rounded-xl font-semibold hover:opacity-90 disabled:opacity-50 flex items-center justify-center gap-2">
+          {loading?<><Spin/>Reviewing your book…</>:review?"🔄 Re-run Review":"🤖 Run Review Agent"}
+        </button>
+      </div>
+
+      {review&&(<>
+        {/* Verdict */}
+        <div className={`rounded-2xl p-5 border ${review.verdict==="PASS"?"bg-green-500/10 border-green-500/30":"bg-red-500/10 border-red-500/30"}`}>
+          <div className="flex items-center gap-3 mb-2">
+            <span className="text-2xl">{review.verdict==="PASS"?"✅":"❌"}</span>
+            <div>
+              <p className={`font-bold text-lg ${review.verdict==="PASS"?"text-green-300":"text-red-300"}`}>
+                {review.verdict==="PASS"?"Approved for Publishing":"Not Ready — Action Required"}
+              </p>
+              <p className="text-white/50 text-sm">{review.verdict_reason}</p>
+            </div>
+          </div>
+        </div>
+
+        {/* Score breakdown */}
+        <div className="bg-white/5 border border-white/10 rounded-2xl p-5">
+          <h3 className="text-white font-semibold mb-4">Score Breakdown</h3>
+          <div className="space-y-3">
+            {[["📖 Title","title_score"],["🔑 Keywords","keyword_score"],["🔍 SEO Description","seo_score"],["⭐ Differentiation","differentiation_score"]].map(([label,key])=>(
+              <div key={key}>
+                <div className="flex justify-between text-sm mb-1">
+                  <span className="text-white/60">{label}</span>
+                  <span className={`font-bold ${review[key]>=80?"text-green-400":review[key]>=60?"text-amber-400":"text-red-400"}`}>{review[key]}/100</span>
+                </div>
+                <div className="h-1.5 bg-white/10 rounded-full overflow-hidden">
+                  <div className={`h-full rounded-full ${review[key]>=80?"bg-green-500":review[key]>=60?"bg-amber-500":"bg-red-500"}`} style={{width:`${review[key]}%`}}/>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* Strengths & Issues */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <div className="bg-green-500/10 border border-green-500/20 rounded-2xl p-5">
+            <h3 className="text-green-300 font-semibold mb-3">✅ Strengths</h3>
+            <ul className="space-y-2">
+              {review.strengths?.map((s,i)=><li key={i} className="text-white/70 text-sm flex gap-2"><span className="text-green-400 shrink-0">•</span>{s}</li>)}
+            </ul>
+          </div>
+          <div className="bg-red-500/10 border border-red-500/20 rounded-2xl p-5">
+            <h3 className="text-red-300 font-semibold mb-3">⚠️ Issues</h3>
+            {review.issues?.length>0
+              ?<ul className="space-y-2">{review.issues.map((s,i)=><li key={i} className="text-white/70 text-sm flex gap-2"><span className="text-red-400 shrink-0">•</span>{s}</li>)}</ul>
+              :<p className="text-white/40 text-sm italic">No major issues found.</p>}
+          </div>
+        </div>
+
+        {/* Title suggestions */}
+        {review.title_suggestions?.length>0&&(
+          <div className="bg-white/5 border border-white/10 rounded-2xl p-5">
+            <h3 className="text-white font-semibold mb-3">📖 Stronger Title Suggestions</h3>
+            <div className="space-y-2">
+              {review.title_suggestions.map((t,i)=>(
+                <div key={i} className="flex items-center justify-between gap-3 bg-white/5 rounded-xl px-4 py-3">
+                  <p className="text-white/80 text-sm flex-1">{t}</p>
+                  <button onClick={()=>applyTitle(t)} className={`text-xs px-3 py-1.5 rounded-lg border transition-all shrink-0 ${applied.title?"border-green-500/40 text-green-400 bg-green-500/10":"border-purple-500/40 text-purple-300 hover:bg-purple-500/20"}`}>
+                    {applied.title?"Applied ✓":"Apply"}
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Subtitle */}
+        {review.subtitle_suggestion&&(
+          <div className="bg-white/5 border border-white/10 rounded-2xl p-5">
+            <h3 className="text-white font-semibold mb-2">📝 Subtitle Suggestion</h3>
+            <div className="flex items-center justify-between gap-3 bg-white/5 rounded-xl px-4 py-3">
+              <p className="text-white/80 text-sm flex-1 italic">"{review.subtitle_suggestion}"</p>
+              <button onClick={()=>applySubtitle(review.subtitle_suggestion)} className={`text-xs px-3 py-1.5 rounded-lg border transition-all shrink-0 ${applied.sub?"border-green-500/40 text-green-400 bg-green-500/10":"border-purple-500/40 text-purple-300 hover:bg-purple-500/20"}`}>
+                {applied.sub?"Applied ✓":"Apply"}
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Keyword suggestions */}
+        {review.keyword_suggestions?.length>0&&(
+          <div className="bg-white/5 border border-white/10 rounded-2xl p-5">
+            <h3 className="text-white font-semibold mb-3">🔑 Keyword Suggestions</h3>
+            <div className="flex flex-wrap gap-2 mb-3">
+              {review.keyword_suggestions.map((k,i)=><span key={i} className="bg-purple-500/20 text-purple-300 text-xs px-3 py-1.5 rounded-full border border-purple-500/30">{k}</span>)}
+            </div>
+            <button onClick={()=>applyKeywords(review.keyword_suggestions)} className={`text-sm px-4 py-2 rounded-lg border transition-all ${applied.kws?"border-green-500/40 text-green-400 bg-green-500/10":"border-purple-500/40 text-purple-300 hover:bg-purple-500/20"}`}>
+              {applied.kws?"Keywords Applied ✓":"Apply These Keywords"}
+            </button>
+          </div>
+        )}
+
+        {/* SEO rewrite */}
+        {review.seo_rewrite&&(
+          <div className="bg-white/5 border border-white/10 rounded-2xl p-5">
+            <h3 className="text-white font-semibold mb-2">🔍 Rewritten SEO Description</h3>
+            <p className="text-white/70 text-sm leading-relaxed mb-3 bg-white/5 rounded-xl p-4">{review.seo_rewrite}</p>
+            <button onClick={()=>applySEO(review.seo_rewrite)} className={`text-sm px-4 py-2 rounded-lg border transition-all ${applied.seo?"border-green-500/40 text-green-400 bg-green-500/10":"border-purple-500/40 text-purple-300 hover:bg-purple-500/20"}`}>
+              {applied.seo?"Applied ✓":"Apply This Description"}
+            </button>
+          </div>
+        )}
+      </>)}
+    </div>
+  );
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// SERIES PAGE
+// ══════════════════════════════════════════════════════════════════════════════
+function SeriesPage({navigate,onSettings}){
+  const [seriesList,setSeriesList]=useState(getSeries());
+  const [showCreate,setShowCreate]=useState(false);
+  const [form,setForm]=useState({name:"",concept:"",genre:"",audience:"",book_count:3});
+  const [loading,setLoading]=useState(false);
+  const [error,setError]=useState("");
+
+  const createSeries=async()=>{
+    if(!getKey()){onSettings();return;}
+    if(!form.name||!form.concept||!form.genre||!form.audience){setError("Fill in all fields.");return;}
+    setLoading(true);setError("");
+    try{
+      const raw=await callGemini(
+        `You are a bestselling series author. Create a ${form.book_count}-book series plan.\n`+
+        `Series Name: ${form.name}\nConcept: ${form.concept}\nGenre: ${form.genre}\nAudience: ${form.audience}\n\n`+
+        `Respond ONLY with valid JSON:\n`+
+        `{"series_description":"","world_notes":"","character_notes":"","books":[{"number":1,"title":"","subtitle":"","description":"","hook":"","main_conflict":""}]}`
+      );
+      trackUsage();
+      const match=raw.match(/\{[\s\S]*\}/);
+      if(!match)throw{code:"PARSE",msg:"Couldn't parse series plan."};
+      const plan=JSON.parse(match[0]);
+      const series={
+        id:"series_"+Date.now()+"_"+Math.random().toString(36).slice(2,7),
+        name:form.name,concept:form.concept,genre:form.genre,audience:form.audience,
+        book_count:form.book_count,plan,book_ids:[],
+        created_date:new Date().toISOString()
+      };
+      const all=[series,...getSeries()];
+      setSeries(all);setSeriesList(all);
+      setShowCreate(false);
+      setForm({name:"",concept:"",genre:"",audience:"",book_count:3});
+    }catch(e){setError(errMsg(e));}
+    finally{setLoading(false);}
+  };
+
+  const deleteSeries=(id,e)=>{e.stopPropagation();if(!confirm("Delete this series?"))return;const s=getSeries().filter(x=>x.id!==id);setSeries(s);setSeriesList(s);};
+
+  const buildBook=(series,bookPlan)=>{
+    const books=getBooks();
+    const book={
+      id:"book_"+Date.now()+"_"+Math.random().toString(36).slice(2,7),
+      title:bookPlan.title,subtitle:bookPlan.subtitle||"",
+      genre:series.genre,target_audience:series.audience,
+      description:bookPlan.description,
+      series_id:series.id,series_name:series.name,series_number:bookPlan.number,
+      chapters:[],outline:"",status:"outlining",word_count:0,
+      cover_image_url:"",seo_title:"",seo_description:"",seo_keywords:"",notes:"",
+      needs_outline:true,book_plan:bookPlan,series_plan:series.plan,
+      created_date:new Date().toISOString()
+    };
+    books.unshift(book);setBooks(books);
+    // link book to series
+    const seriesAll=getSeries();const si=seriesAll.findIndex(s=>s.id===series.id);
+    if(si>-1){seriesAll[si].book_ids=[...(seriesAll[si].book_ids||[]),book.id];setSeries(seriesAll);setSeriesList(seriesAll);}
+    navigate("editor",book.id);
+  };
+
+  return(
+    <div className="max-w-7xl mx-auto px-4 sm:px-6 py-8">
+      <div className="flex justify-between items-center mb-6">
+        <h2 className="text-white text-xl font-bold">📗 Series Manager</h2>
+        <button onClick={()=>setShowCreate(!showCreate)} className="bg-gradient-to-r from-cyan-500 to-blue-500 text-white px-5 py-2.5 rounded-xl font-semibold hover:opacity-90">+ New Series</button>
+      </div>
+
+      {/* Create form */}
+      {showCreate&&(
+        <div className="bg-white/5 border border-cyan-500/30 rounded-2xl p-6 mb-8">
+          <h3 className="text-white font-bold text-lg mb-4">Plan Your Series</h3>
+          {error&&<div className="bg-red-500/20 border border-red-500/30 text-red-300 rounded-xl p-4 mb-4 text-sm">{error}</div>}
+          <div className="space-y-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div>
+                <label className="text-white/60 text-sm font-medium block mb-2">Series Name *</label>
+                <input value={form.name} onChange={e=>setForm({...form,name:e.target.value})} placeholder='E.g. "The Rival Hearts Series"'
+                  className="w-full bg-white/10 border border-white/20 rounded-xl px-4 py-3 text-white placeholder-white/25 focus:outline-none focus:border-cyan-500 text-sm"/>
+              </div>
+              <div>
+                <label className="text-white/60 text-sm font-medium block mb-2">Number of Books *</label>
+                <select value={form.book_count} onChange={e=>setForm({...form,book_count:Number(e.target.value)})}
+                  className="w-full bg-white/10 border border-white/20 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-cyan-500 text-sm">
+                  {[2,3,4,5,6,7,8,9,10].map(n=><option key={n} value={n}>{n} Books</option>)}
+                </select>
+              </div>
+            </div>
+            <div>
+              <label className="text-white/60 text-sm font-medium block mb-2">Series Concept *</label>
+              <textarea rows={3} value={form.concept} onChange={e=>setForm({...form,concept:e.target.value})}
+                placeholder='E.g. "A series of standalone gay romance novels set in a competitive sports world, each book following a different couple"'
+                className="w-full bg-white/10 border border-white/20 rounded-xl px-4 py-3 text-white placeholder-white/25 focus:outline-none focus:border-cyan-500 resize-none text-sm"/>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div>
+                <label className="text-white/60 text-sm font-medium block mb-2">Genre *</label>
+                <select value={form.genre} onChange={e=>setForm({...form,genre:e.target.value})}
+                  className="w-full bg-white/10 border border-white/20 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-cyan-500 text-sm">
+                  <option value="">Select genre…</option>
+                  {GENRES.map(g=><option key={g} value={g}>{g}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="text-white/60 text-sm font-medium block mb-2">Target Audience *</label>
+                <select value={form.audience} onChange={e=>setForm({...form,audience:e.target.value})}
+                  className="w-full bg-white/10 border border-white/20 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-cyan-500 text-sm">
+                  <option value="">Select audience…</option>
+                  {AUDIENCES.map(a=><option key={a} value={a}>{a}</option>)}
+                </select>
+              </div>
+            </div>
+            <div className="flex gap-3">
+              <button onClick={()=>setShowCreate(false)} className="flex-1 border border-white/20 text-white/50 py-3 rounded-xl hover:bg-white/5 text-sm">Cancel</button>
+              <button onClick={createSeries} disabled={loading||!form.name||!form.concept||!form.genre||!form.audience}
+                className="flex-[2] bg-gradient-to-r from-cyan-500 to-blue-500 text-white py-3 rounded-xl font-semibold hover:opacity-90 disabled:opacity-40 flex items-center justify-center gap-2">
+                {loading?<><Spin/>Generating series plan…</>:"✨ Generate Series Plan"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Series list */}
+      {seriesList.length===0&&!showCreate?(
+        <div className="text-center py-20">
+          <div className="text-7xl mb-4">📗</div>
+          <h2 className="text-white text-xl font-bold mb-2">No series yet</h2>
+          <p className="text-white/40 mb-6">Plan a multi-book series with shared world and characters</p>
+          <button onClick={()=>setShowCreate(true)} className="bg-gradient-to-r from-cyan-500 to-blue-500 text-white px-8 py-3.5 rounded-xl font-semibold text-lg hover:opacity-90">+ Create Your First Series</button>
+        </div>
+      ):(
+        <div className="space-y-6">
+          {seriesList.map(series=>(
+            <div key={series.id} className="bg-white/5 border border-white/10 rounded-2xl overflow-hidden">
+              <div className="p-6 border-b border-white/10">
+                <div className="flex items-start justify-between gap-4">
+                  <div>
+                    <div className="flex items-center gap-2 mb-1">
+                      <span className="bg-cyan-500/20 text-cyan-300 text-xs px-2.5 py-1 rounded-full border border-cyan-500/30">{series.book_count} Books</span>
+                      <span className="bg-white/10 text-white/40 text-xs px-2.5 py-1 rounded-full">{series.genre}</span>
+                    </div>
+                    <h3 className="text-white text-xl font-bold">{series.name}</h3>
+                    <p className="text-white/50 text-sm mt-1">{series.plan?.series_description}</p>
+                  </div>
+                  <button onClick={e=>deleteSeries(series.id,e)} className="text-white/20 hover:text-red-400 transition-colors text-sm shrink-0">🗑</button>
+                </div>
+                {series.plan?.world_notes&&(
+                  <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div className="bg-white/5 rounded-xl p-3"><p className="text-white/30 text-xs uppercase tracking-wider mb-1">World</p><p className="text-white/60 text-xs leading-relaxed">{series.plan.world_notes}</p></div>
+                    <div className="bg-white/5 rounded-xl p-3"><p className="text-white/30 text-xs uppercase tracking-wider mb-1">Characters</p><p className="text-white/60 text-xs leading-relaxed">{series.plan.character_notes}</p></div>
+                  </div>
+                )}
+              </div>
+              {/* Books in series */}
+              <div className="p-4">
+                <p className="text-white/30 text-xs uppercase tracking-wider mb-3 px-2">Books in This Series</p>
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                  {series.plan?.books?.map((bp,i)=>{
+                    const existingBook=series.book_ids?.map(id=>getBook(id)).find(b=>b&&b.series_number===bp.number);
+                    return(
+                      <div key={i} className="bg-white/5 border border-white/10 rounded-xl p-4">
+                        <div className="flex items-center gap-2 mb-2">
+                          <span className="w-6 h-6 bg-purple-500/30 text-purple-300 rounded-full flex items-center justify-center text-xs font-bold">{bp.number}</span>
+                          {existingBook&&<span className={`text-xs px-2 py-0.5 rounded-full ${STATUS_COLORS[existingBook.status]||""}`}>{STATUS_ICONS[existingBook.status]} {existingBook.status}</span>}
+                        </div>
+                        <h4 className="text-white font-semibold text-sm leading-tight mb-1">{bp.title}</h4>
+                        {bp.subtitle&&<p className="text-purple-300/70 text-xs mb-2">{bp.subtitle}</p>}
+                        <p className="text-white/40 text-xs leading-relaxed mb-3 line-clamp-2">{bp.description}</p>
+                        {existingBook
+                          ?<button onClick={()=>navigate("editor",existingBook.id)} className="w-full text-xs border border-white/20 text-white/50 py-2 rounded-lg hover:bg-white/5">Open Editor →</button>
+                          :<button onClick={()=>buildBook(series,bp)} className="w-full text-xs bg-gradient-to-r from-purple-500 to-pink-500 text-white py-2 rounded-lg hover:opacity-90">✨ Build This Book</button>}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// HOME PAGE
+// ══════════════════════════════════════════════════════════════════════════════
+function HomePage({navigate,onSettings}){
+  const [books,setBooksList]=useState([]);
+  useEffect(()=>setBooksList(getBooks()),[]);
+  const del=(id,e)=>{e.stopPropagation();if(!confirm("Delete this book?"))return;const b=getBooks().filter(x=>x.id!==id);setBooks(b);setBooksList(b);};
+  const pct=b=>b.chapters?.length>0?(b.chapters.filter(c=>c.generated).length/b.chapters.length)*100:0;
+  return(
+    <div className="max-w-7xl mx-auto px-4 sm:px-6 py-8">
+      {!getKey()&&(
+        <div className="bg-amber-500/15 border border-amber-500/40 rounded-xl p-4 mb-6 flex items-center gap-3">
+          <span className="text-2xl">🔑</span>
+          <div className="flex-1"><p className="text-amber-300 font-semibold text-sm">Gemini API key not set</p><p className="text-amber-200/50 text-xs">Required to generate books. Free from Google AI Studio.</p></div>
+          <button onClick={onSettings} className="bg-amber-500 text-black text-xs font-bold px-4 py-2 rounded-lg hover:bg-amber-400">Set Key</button>
+        </div>
+      )}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-8">
+        {[{label:"Total",value:books.length,icon:"📚"},{label:"In Progress",value:books.filter(b=>["outlining","writing"].includes(b.status)).length,icon:"✍️"},{label:"Ready",value:books.filter(b=>b.status==="ready").length,icon:"✅"},{label:"Published",value:books.filter(b=>b.status==="published").length,icon:"🚀"}].map(s=>(
+          <div key={s.label} className="bg-white/5 border border-white/10 rounded-2xl p-4">
+            <div className="text-2xl mb-1">{s.icon}</div>
+            <div className="text-white text-2xl font-bold">{s.value}</div>
+            <div className="text-white/40 text-sm">{s.label}</div>
+          </div>
+        ))}
+      </div>
+      <div className="flex justify-between items-center mb-5">
+        <h2 className="text-white text-xl font-bold">Your Library</h2>
+        <button onClick={()=>navigate("create")} className="bg-gradient-to-r from-purple-500 to-pink-500 text-white px-5 py-2.5 rounded-xl font-semibold hover:opacity-90">+ New Book</button>
+      </div>
+      {books.length===0?(
+        <div className="text-center py-24">
+          <div className="text-7xl mb-4">📖</div>
+          <h2 className="text-white text-2xl font-bold mb-2">No books yet</h2>
+          <p className="text-white/40 mb-8">Generate your first AI-powered book in minutes</p>
+          <button onClick={()=>navigate("create")} className="bg-gradient-to-r from-purple-500 to-pink-500 text-white px-10 py-4 rounded-xl font-semibold text-lg hover:opacity-90">✨ Create Your First Book</button>
+        </div>
+      ):(
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
+          {books.map(book=>(
+            <div key={book.id} onClick={()=>navigate("editor",book.id)} className="group relative cursor-pointer">
+              <div className="bg-white/5 border border-white/10 rounded-2xl overflow-hidden hover:border-purple-500/50 transition-all hover:shadow-lg hover:shadow-purple-900/20">
+                <div className="aspect-[3/2] bg-gradient-to-br from-purple-800/50 to-pink-800/50 relative overflow-hidden">
+                  {book.cover_image_url?<img src={book.cover_image_url} alt={book.title} className="w-full h-full object-cover"/>:<div className="w-full h-full flex items-center justify-center text-5xl opacity-20">📚</div>}
+                  <div className="absolute top-3 right-3 flex flex-col items-end gap-1">
+                    <span className={`text-xs px-2.5 py-1 rounded-full font-medium ${STATUS_COLORS[book.status]||"bg-gray-500/20 text-gray-300"}`}>{STATUS_ICONS[book.status]} {book.status}</span>
+                    {book.series_name&&<span className="text-xs px-2 py-0.5 rounded-full bg-cyan-500/20 text-cyan-300 border border-cyan-500/30">📗 {book.series_name}</span>}
+                  </div>
+                  {book.review&&<div className={`absolute top-3 left-3 text-xs px-2 py-1 rounded-full font-bold border ${book.review.verdict==="PASS"?"bg-green-500/20 text-green-300 border-green-500/30":"bg-red-500/20 text-red-300 border-red-500/30"}`}>{book.review.verdict==="PASS"?"✅ "+book.review.overall_score:"❌ "+book.review.overall_score}</div>}
+                </div>
+                <div className="p-5">
+                  <h3 className="text-white font-bold text-base leading-tight mb-1 line-clamp-2">{book.title||"Untitled"}</h3>
+                  {book.subtitle&&<p className="text-white/40 text-sm mb-2 line-clamp-1">{book.subtitle}</p>}
+                  <div className="flex items-center justify-between mt-2">
+                    <span className="text-white/25 text-xs">{book.genre}</span>
+                    <span className="text-white/25 text-xs">{book.word_count?`${Number(book.word_count).toLocaleString()} words`:"0 words"}</span>
+                  </div>
+                  {book.chapters?.length>0&&(
+                    <div className="mt-3">
+                      <div className="h-1 bg-white/10 rounded-full overflow-hidden">
+                        <div className="h-full bg-gradient-to-r from-purple-500 to-pink-500 rounded-full" style={{width:`${pct(book)}%`}}/>
+                      </div>
+                      <p className="text-white/20 text-xs mt-1">{book.chapters.filter(c=>c.generated).length}/{book.chapters.length} chapters</p>
+                    </div>
+                  )}
+                </div>
+              </div>
+              <button onClick={e=>del(book.id,e)} className="absolute top-2 left-2 w-7 h-7 bg-red-500/80 hover:bg-red-600 rounded-full text-white text-xs opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center shadow">✕</button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// CREATE PAGE
+// ══════════════════════════════════════════════════════════════════════════════
+function CreatePage({navigate,onSettings}){
+  const [step,setStep]=useState(1);
+  const [loading,setLoading]=useState(false);
+  const [error,setError]=useState("");
+  const [outline,setOutline]=useState(null);
+  const [form,setForm]=useState({topic:"",genre:"",audience:""});
+
+  const generate=async()=>{
+    if(!getKey()){onSettings();return;}
+    if(!form.topic||!form.genre||!form.audience){setError("Please fill in all three fields.");return;}
+    setLoading(true);setError("");
+    try{
+      const raw=await callGemini(
+        "You are a bestselling author. Create a detailed book outline.\n"+
+        "Topic/Idea: "+form.topic+"\nGenre: "+form.genre+"\nTarget Audience: "+form.audience+"\n\n"+
+        'Respond ONLY with valid JSON (no markdown fences):\n'+
+        '{"title":"","subtitle":"","description":"","themes":[""],"estimated_word_count":50000,"chapters":[{"number":1,"title":"","description":""}]}'
+      );
+      trackUsage();
+      const match=raw.match(/\{[\s\S]*\}/);
+      if(!match)throw{code:"PARSE",msg:"Couldn't parse outline."};
+      setOutline(JSON.parse(match[0]));setStep(2);
+    }catch(e){setError(errMsg(e));}
+    finally{setLoading(false);}
+  };
+
+  const approve=()=>{
+    const books=getBooks();
+    const book={
+      id:"book_"+Date.now()+"_"+Math.random().toString(36).slice(2,7),
+      title:outline.title,subtitle:outline.subtitle||"",
+      genre:form.genre,target_audience:form.audience,
+      description:outline.description,themes:outline.themes||[],
+      estimated_word_count:outline.estimated_word_count||50000,
+      chapters:(outline.chapters||[]).map(c=>({...c,content:"",generated:false})),
+      outline:JSON.stringify(outline),status:"writing",
+      word_count:0,cover_image_url:"",
+      seo_title:"",seo_description:"",seo_keywords:"",notes:"",review:null,
+      auto_build:true,build_step:"Starting…",
+      created_date:new Date().toISOString()
+    };
+    books.unshift(book);setBooks(books);
+    navigate("editor",book.id);
+  };
+
+  return(
+    <div className="max-w-3xl mx-auto px-4 sm:px-6 py-8">
+      <div className="flex items-center gap-3 mb-8">
+        {["Book Concept","Review & Approve"].map((label,i)=>(
+          <div key={i} className="flex items-center gap-2">
+            <div className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold ${step>i+1?"bg-green-500 text-white":step===i+1?"bg-purple-500 text-white":"bg-white/10 text-white/30"}`}>{step>i+1?"✓":i+1}</div>
+            <span className={`text-sm ${step===i+1?"text-white":"text-white/30"}`}>{label}</span>
+            {i<1&&<div className="w-10 h-px bg-white/20 mx-1"/>}
+          </div>
+        ))}
+      </div>
+      {error&&<div className="bg-red-500/20 border border-red-500/30 text-red-300 rounded-xl p-4 mb-5 text-sm">{error}</div>}
+      {step===1&&(
+        <div className="bg-white/5 border border-white/10 rounded-2xl p-6 sm:p-8">
+          <h2 className="text-white text-xl font-bold mb-1">Your Book Idea</h2>
+          <p className="text-white/40 mb-6 text-sm">Approve the outline and BookForge auto-writes every chapter, generates SEO, creates the cover, then runs the Review Agent before publishing.</p>
+          <div className="space-y-6">
+            <div>
+              <label className="text-white/70 text-sm font-medium block mb-2">Topic / Story Idea *</label>
+              <textarea rows={4} placeholder='E.g. "Two gay college athletes fall in love across rival teams during championship season"'
+                value={form.topic} onChange={e=>setForm({...form,topic:e.target.value})}
+                className="w-full bg-white/10 border border-white/20 rounded-xl px-4 py-3 text-white placeholder-white/25 focus:outline-none focus:border-purple-500 resize-none text-sm"/>
+            </div>
+            <div>
+              <label className="text-white/70 text-sm font-medium block mb-3">Genre *</label>
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                {GENRES.map(g=><button key={g} onClick={()=>setForm({...form,genre:g})}
+                  className={`text-xs px-3 py-2 rounded-lg border text-left transition-all ${form.genre===g?"border-purple-500 bg-purple-500/25 text-white":"border-white/15 text-white/40 hover:border-white/30 hover:text-white/70"}`}>{g}</button>)}
+              </div>
+            </div>
+            <div>
+              <label className="text-white/70 text-sm font-medium block mb-3">Target Audience *</label>
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                {AUDIENCES.map(a=><button key={a} onClick={()=>setForm({...form,audience:a})}
+                  className={`text-xs px-3 py-2 rounded-lg border text-left transition-all ${form.audience===a?"border-purple-500 bg-purple-500/25 text-white":"border-white/15 text-white/40 hover:border-white/30 hover:text-white/70"}`}>{a}</button>)}
+              </div>
+            </div>
+            <button onClick={generate} disabled={loading||!form.topic.trim()||!form.genre||!form.audience}
+              className="w-full bg-gradient-to-r from-purple-500 to-pink-500 text-white py-4 rounded-xl font-semibold text-lg hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-2">
+              {loading?<><Spin/>Generating outline…</>:"✨ Generate Book Outline"}
+            </button>
+          </div>
+        </div>
+      )}
+      {step===2&&outline&&(
+        <div className="space-y-5">
+          <div className="bg-white/5 border border-white/10 rounded-2xl p-6 sm:p-8">
+            <div className="flex items-start justify-between mb-5 gap-4">
+              <div><h2 className="text-white text-xl font-bold">{outline.title}</h2>{outline.subtitle&&<p className="text-purple-300 mt-1 text-sm">{outline.subtitle}</p>}</div>
+              <span className="bg-green-500/20 text-green-400 text-xs px-3 py-1 rounded-full border border-green-500/30 whitespace-nowrap">AI Generated</span>
+            </div>
+            <div className="bg-white/5 rounded-xl p-4 mb-5">
+              <p className="text-white/40 text-xs uppercase tracking-wider mb-2">Description</p>
+              <p className="text-white/80 text-sm leading-relaxed">{outline.description}</p>
+            </div>
+            <p className="text-white/40 text-xs uppercase tracking-wider mb-3">Chapters ({outline.chapters?.length})</p>
+            <div className="space-y-2 max-h-72 overflow-y-auto pr-1">
+              {outline.chapters?.map((ch,i)=>(
+                <div key={i} className="bg-white/5 rounded-lg px-4 py-3 flex gap-3">
+                  <span className="text-purple-400 font-bold text-sm min-w-[24px]">{ch.number}.</span>
+                  <div><p className="text-white text-sm font-medium">{ch.title}</p>{ch.description&&<p className="text-white/35 text-xs mt-0.5">{ch.description}</p>}</div>
+                </div>
+              ))}
+            </div>
+            {outline.estimated_word_count&&<p className="text-white/30 text-sm mt-4">📊 ~{outline.estimated_word_count.toLocaleString()} words estimated</p>}
+          </div>
+          <div className="bg-gradient-to-br from-purple-900/60 to-pink-900/40 border border-purple-500/30 rounded-2xl p-6">
+            <h3 className="text-white font-bold text-lg mb-1">🚀 Approve & Auto-Build</h3>
+            <p className="text-white/50 text-sm mb-5">Approving writes all chapters → generates SEO → creates cover → runs the Review Agent automatically.</p>
+            <div className="flex gap-3">
+              <button onClick={()=>{setStep(1);setOutline(null);setError("");}} className="flex-1 border border-white/20 text-white/50 py-3 rounded-xl hover:bg-white/5 text-sm">← Regenerate</button>
+              <button onClick={approve} className="flex-[2] bg-gradient-to-r from-purple-500 to-pink-500 text-white py-3 px-6 rounded-xl font-bold text-lg hover:opacity-90 flex items-center justify-center gap-2">✅ Approve & Build Book</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// EDITOR PAGE
+// ══════════════════════════════════════════════════════════════════════════════
+function EditorPage({bookId,navigate,onSettings}){
+  const [book,setBook]=useState(null);
+  const [tab,setTab]=useState(0);
+  const [busy,setBusy]=useState(false);
+  const [busyCh,setBusyCh]=useState(null);
+  const [error,setError]=useState("");
+  const [success,setSuccess]=useState("");
+  const [selCh,setSelCh]=useState(0);
+  const [quotaHit,setQuotaHit]=useState(false);
+  const [buildLog,setBuildLog]=useState([]);
+  const [isBuilding,setIsBuilding]=useState(false);
+  const [coverMode,setCoverMode]=useState("auto");
+  const [customPrompt,setCustomPrompt]=useState("");
+  const [lastAiPrompt,setLastAiPrompt]=useState("");
+  const buildRef=useRef(false);
+  const TABS=["📋 Outline","✍️ Chapters","🎨 Cover","🔍 SEO","🤖 Review","📤 Publish"];
+
+  useEffect(()=>{
+    const b=getBook(bookId);
+    if(!b){navigate("home");return;}
+    setBook(b);
+    if(getUsage()>=DAILY_LIMIT)setQuotaHit(true);
+    if(b.auto_build&&!buildRef.current){buildRef.current=true;runAutoBuild(b);}
+  },[bookId]);
+
+  const reload=()=>{const b=getBook(bookId);if(b)setBook(b);return b;};
+  const upd=(updates)=>{const b=updateBook(bookId,updates);if(b)setBook(b);return b;};
+  const bump=()=>{const c=trackUsage();if(c>=DAILY_LIMIT)setQuotaHit(true);return c;};
+  const flash=msg=>{setSuccess(msg);setTimeout(()=>setSuccess(""),4000);};
+  const handleErr=e=>{setError(errMsg(e));if(e?.code==="QUOTA")setQuotaHit(true);};
+  const log=msg=>{setBuildLog(prev=>[...prev,msg]);updateBook(bookId,{build_step:msg});};
+
+  // ── Series book outline generation ────────────────────────────────────────
+  const generateSeriesOutline=async(b)=>{
+    if(!b.book_plan)return null;
+    const bp=b.book_plan;const sp=b.series_plan;
+    log(`📋 Generating outline for Book ${bp.number}: "${bp.title}"…`);
+    const raw=await callGemini(
+      `You are a bestselling series author. Generate a detailed chapter outline for Book ${bp.number} of the "${b.series_name}" series.\n\n`+
+      `Book: "${bp.title}" — ${bp.subtitle||""}\nDescription: ${bp.description}\nMain Conflict: ${bp.main_conflict||""}\nHook: ${bp.hook||""}\n`+
+      `Genre: ${b.genre}\nAudience: ${b.target_audience}\n`+
+      `Series World Notes: ${sp?.world_notes||""}\nSeries Character Notes: ${sp?.character_notes||""}\n\n`+
+      `Respond ONLY with valid JSON:\n`+
+      `{"title":"${bp.title}","subtitle":"${bp.subtitle||""}","description":"${bp.description}","themes":[""],"estimated_word_count":50000,`+
+      `"chapters":[{"number":1,"title":"","description":""}]}`
+    );
+    bump();
+    const match=raw.match(/\{[\s\S]*\}/);
+    if(!match)throw{code:"PARSE",msg:"Couldn't parse series outline."};
+    const outline=JSON.parse(match[0]);
+    const chapters=(outline.chapters||[]).map(c=>({...c,content:"",generated:false}));
+    updateBook(bookId,{outline:JSON.stringify(outline),chapters,needs_outline:false,status:"writing"});
+    return{outline,chapters};
+  };
+
+  // ── Auto-build pipeline ───────────────────────────────────────────────────
+  const runAutoBuild=async(b)=>{
+    if(getUsage()>=DAILY_LIMIT){setQuotaHit(true);upd({auto_build:false});return;}
+    setIsBuilding(true);setTab(0);
+    try{
+      let chapters=b.chapters||[];
+      let outline=b.outline?JSON.parse(b.outline):{};
+
+      // If series book needing outline, generate it first
+      if(b.needs_outline&&b.book_plan){
+        const result=await generateSeriesOutline(b);
+        if(result){outline=result.outline;chapters=result.chapters;}
+        else{upd({auto_build:false,build_step:""});setIsBuilding(false);return;}
+      }
+
+      const total=chapters.length;
+      // Write all chapters
+      for(let i=0;i<total;i++){
+        if(!buildRef.current)break;
+        if(getUsage()>=DAILY_LIMIT){setQuotaHit(true);break;}
+        log(`✍️ Writing chapter ${i+1} of ${total}: "${chapters[i].title}"…`);
+        setTab(1);setSelCh(i);
+        try{
+          const prev=chapters.slice(0,i).filter(c=>c.generated).map(c=>c.title).join(", ")||"None yet";
+          const seriesCtx=b.series_name?`\nThis is Book ${b.series_number} of the "${b.series_name}" series. Maintain series continuity.`:"";
+          const content=await callGemini(
+            `Write Chapter ${chapters[i].number}: "${chapters[i].title}" for a ${b.genre} book titled "${outline.title}".${seriesCtx}\n`+
+            `Chapter description: ${chapters[i].description}\nPreviously written: ${prev}\nAudience: ${b.target_audience}\n\n`+
+            `Write 2,500–3,500 words. Use headings where appropriate. Match genre tone precisely.\n`+
+            `For romance/LGBT+ genres: write with authenticity, emotion, and genuine representation. Publication-ready quality.`
+          );
+          bump();
+          chapters[i]={...chapters[i],content,generated:true};
+          const wc=chapters.reduce((a,c)=>a+(c.content?c.content.split(/\s+/).length:0),0);
+          updateBook(bookId,{chapters:[...chapters],word_count:wc});
+          setBook(getBook(bookId));
+        }catch(e){if(e?.code==="QUOTA"){setQuotaHit(true);break;}log(`⚠️ Chapter ${i+1} skipped: ${e?.msg||"error"}`);}
+      }
+
+      if(getUsage()>=DAILY_LIMIT){upd({auto_build:false,build_step:""});setIsBuilding(false);return;}
+
+      // SEO
+      log("🔍 Generating SEO metadata…");setTab(3);
+      try{
+        const raw=await callGemini(
+          `Amazon KDP SEO expert. Optimized metadata for:\nTitle: ${outline.title}\nGenre: ${b.genre}\nDesc: ${outline.description}\n\n`+
+          `Respond ONLY with valid JSON:\n{"seo_title":"","seo_description":"","primary_keywords":[""],"bisac_categories":[""],"back_cover_copy":"","author_bio_template":""}`
+        );
+        bump();
+        const match=raw.match(/\{[\s\S]*\}/);
+        if(match){const seo=JSON.parse(match[0]);updateBook(bookId,{seo_title:seo.seo_title||"",seo_description:seo.seo_description||"",seo_keywords:(seo.primary_keywords||[]).join(", "),notes:JSON.stringify(seo)});setBook(getBook(bookId));}
+      }catch(e){if(e?.code==="QUOTA"){setQuotaHit(true);upd({auto_build:false,build_step:""});setIsBuilding(false);return;}}
+
+      if(getUsage()>=DAILY_LIMIT){upd({auto_build:false,build_step:""});setIsBuilding(false);return;}
+
+      // Cover
+      log("🎨 Generating cover image…");setTab(2);
+      try{
+        const aiPrompt=await callGemini(
+          `Detailed image generation prompt for a professional book cover.\nBook: "${outline.title}"\nGenre: ${b.genre}\nDesc: ${outline.description}\n\n`+
+          `- Describe specific characters (gender, age, appearance, ethnicity)\n- For gay/LGBT+ romance: two male characters, emotional interaction\n`+
+          `- Setting, mood, lighting, palette, art style\n- NO text or words in image\n- Commercial book cover quality\nReturn ONLY the prompt.`
+        );
+        bump();
+        const finalPrompt=aiPrompt.trim()+". No text, no words, no letters.";
+        setLastAiPrompt(finalPrompt);
+        const url=`https://image.pollinations.ai/prompt/${encodeURIComponent(finalPrompt)}?width=832&height=1216&model=flux&nologo=true&enhance=true&seed=${Date.now()}`;
+        updateBook(bookId,{cover_image_url:url});setBook(getBook(bookId));
+      }catch(e){if(e?.code==="QUOTA"){setQuotaHit(true);upd({auto_build:false,build_step:""});setIsBuilding(false);return;}}
+
+      if(getUsage()>=DAILY_LIMIT){upd({auto_build:false,build_step:""});setIsBuilding(false);return;}
+
+      // Review Agent
+      log("🤖 Running Review Agent…");setTab(4);
+      try{
+        const freshBook=getBook(bookId);
+        const review=await runReviewAgent(freshBook);
+        updateBook(bookId,{review,status:review.verdict==="PASS"?"ready":"writing",auto_build:false,build_step:""});
+        setBook(getBook(bookId));
+        log(review.verdict==="PASS"?`✅ Review passed! Score: ${review.overall_score}/100`:`⚠️ Review scored ${review.overall_score}/100 — check Review tab for improvements.`);
+        flash(review.verdict==="PASS"?"🎉 Book complete and approved! Ready to publish.":"📋 Build complete. Review tab has suggestions to improve your score.");
+      }catch(e){upd({auto_build:false,build_step:""});}
+
+    }catch(e){handleErr(e);upd({auto_build:false,build_step:""});}
+    finally{setIsBuilding(false);buildRef.current=false;}
+  };
+
+  // ── Manual ops ────────────────────────────────────────────────────────────
+  const genChapter=async(idx)=>{
+    if(quotaHit||isBuilding)return;setBusyCh(idx);setError("");
+    try{
+      const outline=JSON.parse(book.outline||"{}");
+      const ch=outline.chapters[idx];
+      const prev=(book.chapters||[]).slice(0,idx).filter(c=>c.generated).map(c=>c.title).join(", ")||"None yet";
+      const content=await callGemini(
+        `Write Chapter ${ch.number}: "${ch.title}" for a ${book.genre} book titled "${outline.title}".\n`+
+        `Desc: ${ch.description}\nPrevious: ${prev}\nAudience: ${book.target_audience}\n\n`+
+        `2,500–3,500 words. Match genre tone. For romance/LGBT+: authentic emotion and representation.`
+      );
+      bump();
+      const chapters=[...(book.chapters||[])];chapters[idx]={...chapters[idx],content,generated:true};
+      const wc=chapters.reduce((a,c)=>a+(c.content?c.content.split(/\s+/).length:0),0);
+      upd({chapters,word_count:wc,status:"writing"});flash(`Chapter ${idx+1} written! ✍️`);
+    }catch(e){handleErr(e);}finally{setBusyCh(null);}
+  };
+
+  const genSEO=async()=>{
+    if(quotaHit||isBuilding)return;setBusy(true);setError("");
+    try{
+      const outline=JSON.parse(book.outline||"{}");
+      const raw=await callGemini(`Amazon KDP SEO expert.\nTitle: ${outline.title}\nGenre: ${book.genre}\nDesc: ${outline.description}\n\nRespond ONLY with valid JSON:\n{"seo_title":"","seo_description":"","primary_keywords":[""],"bisac_categories":[""],"back_cover_copy":"","author_bio_template":""}`);
+      bump();const match=raw.match(/\{[\s\S]*\}/);if(!match)throw{code:"PARSE",msg:"Couldn't parse SEO."};
+      const seo=JSON.parse(match[0]);
+      upd({seo_title:seo.seo_title||"",seo_description:seo.seo_description||"",seo_keywords:(seo.primary_keywords||[]).join(", "),notes:JSON.stringify(seo)});
+      flash("SEO generated! 🔍");
+    }catch(e){handleErr(e);}finally{setBusy(false);}
+  };
+
+  const genCover=async()=>{
+    if(quotaHit||isBuilding)return;setBusy(true);setError("");
+    try{
+      let finalPrompt="";
+      if(coverMode==="custom"&&customPrompt.trim()){finalPrompt=customPrompt.trim()+". Professional book cover, no text, no letters.";}
+      else{
+        const outline=JSON.parse(book.outline||"{}");
+        const aiPrompt=await callGemini(`Detailed image generation prompt for a professional book cover.\nBook: "${outline.title}"\nGenre: ${book.genre}\nDesc: ${outline.description}\n\n- Describe specific characters (gender, age, look)\n- For gay/LGBT+ romance: two male characters, emotional interaction\n- Setting, mood, lighting, palette, art style\n- NO text or words\n- Commercial quality\nReturn ONLY the prompt.`);
+        bump();finalPrompt=aiPrompt.trim()+". No text, no words, no letters.";setLastAiPrompt(finalPrompt);
+      }
+      const url=`https://image.pollinations.ai/prompt/${encodeURIComponent(finalPrompt)}?width=832&height=1216&model=flux&nologo=true&enhance=true&seed=${Date.now()}`;
+      upd({cover_image_url:url});flash("Cover generated! 🎨");
+    }catch(e){handleErr(e);}finally{setBusy(false);}
+  };
+
+  const newVariation=()=>{if(!book?.cover_image_url)return;try{const u=new URL(book.cover_image_url);u.searchParams.set("seed",Date.now().toString());upd({cover_image_url:u.toString()});flash("New variation! 🎨");}catch{}};
+
+  const download=()=>{
+    // Gate: must have a passing review
+    if(!book.review){setError("Run the Review Agent first (Review tab) before downloading.");setTab(4);return;}
+    if(book.review.verdict!=="PASS"){setError(`Review score is ${book.review.overall_score}/100 — needs 70+ to pass. Check the Review tab for improvements.`);setTab(4);return;}
+    if(!book.chapters?.some(c=>c.content)){setError("Write at least one chapter first.");return;}
+    const md=`# ${book.title}\n${book.subtitle?`## ${book.subtitle}\n`:""}\n${book.description||""}\n\n---\n\n`+
+      (book.chapters||[]).map(c=>`# Chapter ${c.number}: ${c.title}\n\n${c.content||"(Not yet generated)"}`).join("\n\n---\n\n");
+    const a=Object.assign(document.createElement("a"),{href:URL.createObjectURL(new Blob([md],{type:"text/markdown"})),download:`${(book.title||"book").replace(/[^a-z0-9]/gi,"_")}.md`});
+    a.click();
+  };
+
+  if(!book)return<div className="text-white/40 text-center py-20">Loading…</div>;
+  const reviewPassed=book.review?.verdict==="PASS";
+  const reviewScore=book.review?.overall_score;
+
+  return(
+    <div>
+      <div className="border-b border-white/10 bg-black/10">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 flex gap-1 overflow-x-auto">
+          {TABS.map((t,i)=>(
+            <button key={i} onClick={()=>setTab(i)}
+              className={`px-4 py-2.5 text-sm font-medium whitespace-nowrap rounded-t-lg transition-all relative ${tab===i?"bg-white/10 text-white border-b-2 border-purple-500":"text-white/35 hover:text-white/70"}`}>
+              {t}
+              {i===4&&book.review&&<span className={`ml-1.5 text-xs font-bold ${reviewPassed?"text-green-400":"text-red-400"}`}>{reviewScore}</span>}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 py-6">
+        {isBuilding&&(
+          <div className="bg-purple-500/15 border border-purple-500/40 rounded-xl p-5 mb-5">
+            <div className="flex items-center gap-3 mb-3"><Spin/><p className="text-purple-300 font-semibold">Auto-building your book…</p></div>
+            <div className="h-1.5 bg-white/10 rounded-full overflow-hidden mb-3">
+              <div className="h-full bg-gradient-to-r from-purple-500 to-pink-500 rounded-full pulse" style={{width:`${Math.min(((book.chapters||[]).filter(c=>c.generated).length/Math.max((book.chapters||[{a:1}]).length,1))*80+5,95)}%`}}/>
+            </div>
+            <div className="space-y-1 max-h-24 overflow-y-auto">{buildLog.slice(-5).map((l,i)=><p key={i} className="text-purple-200/50 text-xs">{l}</p>)}</div>
+          </div>
+        )}
+        {quotaHit&&(
+          <div className="bg-amber-500/20 border border-amber-500/40 rounded-xl p-4 mb-5 flex gap-3 items-start">
+            <span className="text-2xl">⏳</span>
+            <div className="flex-1"><p className="text-amber-300 font-semibold">Daily Gemini Limit Reached</p><p className="text-amber-200/60 text-sm mt-0.5">Resets at midnight Pacific Time. All progress saved!</p></div>
+            <button onClick={()=>{setQuotaHit(false);setError("");}} className="text-amber-400/40 hover:text-amber-300">✕</button>
+          </div>
+        )}
+        {error&&!quotaHit&&(
+          <div className="bg-red-500/20 border border-red-500/30 text-red-300 rounded-xl p-4 mb-5 text-sm flex justify-between">
+            <span>{error}</span><button onClick={()=>setError("")} className="ml-4 shrink-0">✕</button>
+          </div>
+        )}
+        {success&&<div className="bg-green-500/20 border border-green-500/30 text-green-300 rounded-xl p-4 mb-5 text-sm">{success}</div>}
+
+        {/* OUTLINE */}
+        {tab===0&&(
+          <div className="max-w-3xl mx-auto">
+            <div className="bg-white/5 border border-white/10 rounded-2xl p-6 sm:p-8">
+              {book.series_name&&<div className="flex items-center gap-2 mb-3"><span className="bg-cyan-500/20 text-cyan-300 text-xs px-3 py-1 rounded-full border border-cyan-500/30">📗 {book.series_name} — Book {book.series_number}</span></div>}
+              <h2 className="text-white text-xl font-bold">{book.title}</h2>
+              {book.subtitle&&<p className="text-purple-300 mt-1 mb-4 text-sm">{book.subtitle}</p>}
+              <p className="text-white/60 text-sm leading-relaxed mb-6">{book.description}</p>
+              {book.chapters?.length>0&&<>
+                <p className="text-white/40 text-xs uppercase tracking-wider mb-3">Chapters ({book.chapters.length})</p>
+                <div className="space-y-2">
+                  {book.chapters.map((ch,i)=>(
+                    <div key={i} className={`rounded-xl p-3 border flex gap-3 items-start ${ch.generated?"bg-green-500/10 border-green-500/20":"bg-white/5 border-white/10"}`}>
+                      <span className={`font-bold text-sm min-w-[24px] ${ch.generated?"text-green-400":"text-purple-400"}`}>{ch.generated?"✓":ch.number+"."}</span>
+                      <div className="flex-1"><p className="text-white text-sm font-medium">{ch.title}</p><p className="text-white/35 text-xs mt-0.5">{ch.description}</p></div>
+                      {ch.generated&&<span className="text-green-400/50 text-xs shrink-0">Written</span>}
+                    </div>
+                  ))}
+                </div>
+                <div className="mt-5 bg-white/5 rounded-xl p-4">
+                  <div className="flex justify-between text-xs text-white/40 mb-2"><span>Progress</span><span>{book.chapters.filter(c=>c.generated).length}/{book.chapters.length} chapters</span></div>
+                  <div className="h-2 bg-white/10 rounded-full overflow-hidden"><div className="h-full bg-gradient-to-r from-purple-500 to-pink-500 rounded-full transition-all" style={{width:`${(book.chapters.filter(c=>c.generated).length/book.chapters.length)*100}%`}}/></div>
+                </div>
+              </>}
+              {(!book.chapters||book.chapters.length===0)&&isBuilding&&<div className="text-center py-8 text-white/30"><Spin/><p className="mt-3 text-sm">Generating outline…</p></div>}
+            </div>
+          </div>
+        )}
+
+        {/* CHAPTERS */}
+        {tab===1&&(
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
+            <div className="lg:col-span-1">
+              <div className="bg-white/5 border border-white/10 rounded-2xl p-4 sticky top-24">
+                <div className="flex items-center justify-between mb-3">
+                  <h3 className="text-white font-semibold text-sm">Chapters</h3>
+                  {!isBuilding&&<button onClick={async()=>{const pending=(book.chapters||[]).map((c,i)=>i).filter(i=>!book.chapters[i].generated);for(const i of pending){if(quotaHit)break;await genChapter(i);}}} disabled={busy||busyCh!==null||quotaHit||isBuilding} className="text-xs bg-purple-500/20 text-purple-300 border border-purple-500/30 px-3 py-1.5 rounded-lg hover:bg-purple-500/30 disabled:opacity-40">Write All</button>}
+                </div>
+                <div className="space-y-1">
+                  {(book.chapters||[]).map((ch,i)=>(
+                    <button key={i} onClick={()=>setSelCh(i)} className={`w-full text-left px-3 py-2 rounded-lg text-sm transition-all ${selCh===i?"bg-purple-500/20 text-white border border-purple-500/30":"text-white/50 hover:bg-white/5"}`}>
+                      <span className={ch.generated?"text-green-400":""}>{ch.generated?"✓ ":""}</span>{ch.number}. {ch.title}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+            <div className="lg:col-span-2">
+              {book.chapters?.[selCh]&&(
+                <div className="bg-white/5 border border-white/10 rounded-2xl p-6 sm:p-8">
+                  <div className="flex items-start justify-between mb-5 gap-4">
+                    <div><h2 className="text-white text-lg font-bold">Ch. {book.chapters[selCh].number}: {book.chapters[selCh].title}</h2><p className="text-white/35 text-sm mt-1">{book.chapters[selCh].description}</p></div>
+                    {!isBuilding&&<button onClick={()=>genChapter(selCh)} disabled={busyCh!==null||quotaHit||isBuilding} className="bg-gradient-to-r from-purple-500 to-pink-500 text-white px-4 py-2 rounded-xl font-medium text-sm hover:opacity-90 disabled:opacity-50 flex items-center gap-2 shrink-0">
+                      {busyCh===selCh?<><Spin size="h-4 w-4"/>Writing…</>:book.chapters[selCh].generated?"✍️ Rewrite":"✍️ Write"}
+                    </button>}
+                  </div>
+                  {book.chapters[selCh].content?<div className="text-white/75 text-sm leading-relaxed whitespace-pre-wrap max-h-[600px] overflow-y-auto pr-2">{book.chapters[selCh].content}</div>
+                    :<div className="text-center py-16 text-white/25"><div className="text-4xl mb-3">✍️</div><p>{isBuilding?"Generating…":"Click Write to generate this chapter"}</p></div>}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* COVER */}
+        {tab===2&&(
+          <div className="max-w-5xl mx-auto">
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+              <div>
+                <h2 className="text-white text-xl font-bold mb-4">Cover Preview</h2>
+                {book.cover_image_url?<><img src={book.cover_image_url} alt="Cover" className="w-full max-w-xs rounded-2xl shadow-2xl shadow-purple-900/60 mx-auto block"/>
+                  <div className="flex gap-2 mt-4 justify-center">
+                    <button onClick={newVariation} disabled={busy||isBuilding} className="text-sm border border-white/20 text-white/50 px-4 py-2 rounded-lg hover:bg-white/5 disabled:opacity-40">🎲 Variation</button>
+                    <a href={book.cover_image_url} target="_blank" rel="noopener noreferrer" className="text-sm border border-white/20 text-white/50 px-4 py-2 rounded-lg hover:bg-white/5">⬇️ Download Image</a>
+                  </div></>
+                :<div className="w-full max-w-xs aspect-[2/3] bg-white/5 border-2 border-dashed border-white/15 rounded-2xl flex items-center justify-center mx-auto">
+                  <div className="text-center text-white/20">{isBuilding?<><Spin/><p className="text-sm mt-2">Generating…</p></>:<><div className="text-5xl mb-2">🎨</div><p className="text-sm">Cover appears here</p></>}</div>
+                </div>}
+              </div>
+              <div className="space-y-5">
+                <h2 className="text-white text-xl font-bold">Cover Settings</h2>
+                <div className="bg-white/5 border border-white/10 rounded-xl p-1 flex gap-1">
+                  {[["auto","✨ AI Auto"],["custom","✏️ Custom"]].map(([m,label])=>(
+                    <button key={m} onClick={()=>setCoverMode(m)} className={`flex-1 py-2 rounded-lg text-sm font-medium transition-all ${coverMode===m?"bg-purple-500 text-white":"text-white/40 hover:text-white"}`}>{label}</button>
+                  ))}
+                </div>
+                {coverMode==="auto"?<div className="bg-white/5 border border-white/10 rounded-xl p-4 text-sm text-white/50">Gemini analyzes your book and writes a detailed, character-specific prompt automatically.{lastAiPrompt&&<p className="text-white/25 text-xs mt-3 italic leading-relaxed">{lastAiPrompt}</p>}</div>
+                :<div><label className="text-white/60 text-sm font-medium block mb-2">Describe your cover</label>
+                  <textarea rows={7} value={customPrompt} onChange={e=>setCustomPrompt(e.target.value)}
+                    placeholder="E.g. Two men in their 20s, one with dark curly hair and one with red hair, standing close on a rainy rooftop at dusk, golden light, painterly cinematic style, jewel-tone colors, no text..."
+                    className="w-full bg-white/10 border border-white/20 rounded-xl px-4 py-3 text-white placeholder-white/20 focus:outline-none focus:border-purple-500 resize-none text-sm"/></div>}
+                <button onClick={genCover} disabled={busy||quotaHit||isBuilding||(coverMode==="custom"&&!customPrompt.trim())}
+                  className="w-full bg-gradient-to-r from-purple-500 to-pink-500 text-white py-4 rounded-xl font-semibold text-lg hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-2">
+                  {busy?<><Spin/>Generating…</>:book.cover_image_url?"🔄 Regenerate":"🎨 Generate Cover"}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* SEO */}
+        {tab===3&&(
+          <div className="max-w-3xl mx-auto">
+            <div className="bg-white/5 border border-white/10 rounded-2xl p-6 sm:p-8">
+              <div className="flex items-center justify-between mb-6">
+                <div><h2 className="text-white text-xl font-bold">SEO Optimization</h2><p className="text-white/40 text-sm mt-1">Amazon KDP & publishing metadata</p></div>
+                {!isBuilding&&<button onClick={genSEO} disabled={busy||quotaHit||isBuilding} className="bg-gradient-to-r from-purple-500 to-pink-500 text-white px-5 py-2.5 rounded-xl font-semibold hover:opacity-90 disabled:opacity-50 flex items-center gap-2">
+                  {busy?<><Spin size="h-4 w-4"/>Generating…</>:"🔍 Generate SEO"}
+                </button>}
+              </div>
+              <div className="space-y-5">
+                {[{label:"SEO Title",val:book.seo_title},{label:"SEO Description",val:book.seo_description,large:true},{label:"Keywords",val:book.seo_keywords}].map(f=>(
+                  <div key={f.label}><p className="text-white/40 text-xs uppercase tracking-wider mb-2">{f.label}</p>
+                    {f.val?<div className={`bg-white/10 rounded-xl p-4 text-white/80 text-sm ${f.large?"leading-relaxed":""}`}>{f.val}</div>
+                      :<div className="bg-white/5 border border-dashed border-white/10 rounded-xl p-4 text-white/20 text-sm italic">{isBuilding?"Generating…":"Will be populated automatically"}</div>}
+                  </div>
+                ))}
+                {book.notes&&(()=>{try{const n=JSON.parse(book.notes);return n.back_cover_copy?(<div><p className="text-white/40 text-xs uppercase tracking-wider mb-2">Back Cover Copy</p><div className="bg-white/10 rounded-xl p-4 text-white/80 text-sm leading-relaxed">{n.back_cover_copy}</div></div>):null;}catch{return null;}})()}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* REVIEW */}
+        {tab===4&&(
+          <ReviewPanel book={book} onSettings={onSettings}
+            onApply={(updates)=>{upd(updates);flash("Applied! Re-run the review to update your score.");}}/>
+        )}
+
+        {/* PUBLISH */}
+        {tab===5&&(
+          <div className="max-w-3xl mx-auto space-y-5">
+            {/* Review gate */}
+            {!book.review?(
+              <div className="bg-amber-500/15 border border-amber-500/40 rounded-2xl p-6 text-center">
+                <div className="text-4xl mb-3">🤖</div>
+                <h3 className="text-amber-300 font-bold text-lg mb-2">Review Required Before Publishing</h3>
+                <p className="text-amber-200/60 text-sm mb-5">The Review Agent must approve your book (score 70+) before you can download or publish.</p>
+                <button onClick={()=>setTab(4)} className="bg-gradient-to-r from-amber-500 to-orange-500 text-black font-bold px-8 py-3 rounded-xl hover:opacity-90">Go to Review Agent →</button>
+              </div>
+            ):!reviewPassed?(
+              <div className="bg-red-500/15 border border-red-500/40 rounded-2xl p-6 text-center">
+                <div className="text-4xl mb-3">❌</div>
+                <h3 className="text-red-300 font-bold text-lg mb-2">Review Score Too Low ({reviewScore}/100)</h3>
+                <p className="text-red-200/60 text-sm mb-5">Your book needs a score of 70+ to unlock publishing. Apply the suggested improvements in the Review tab.</p>
+                <button onClick={()=>setTab(4)} className="bg-gradient-to-r from-red-500 to-pink-500 text-white font-bold px-8 py-3 rounded-xl hover:opacity-90">View Review Suggestions →</button>
+              </div>
+            ):(
+              <div className="bg-green-500/10 border border-green-500/30 rounded-2xl p-5 flex items-center gap-4">
+                <span className="text-3xl">✅</span>
+                <div><p className="text-green-300 font-bold">Review Passed — Score: {reviewScore}/100</p><p className="text-green-200/50 text-sm">Your book is approved for publishing.</p></div>
+              </div>
+            )}
+
+            {reviewPassed&&(
+              <div className="bg-white/5 border border-white/10 rounded-2xl p-6 sm:p-8">
+                <h2 className="text-white text-xl font-bold mb-2">Publish Your Book</h2>
+                <p className="text-white/40 mb-6 text-sm">Export and upload to your publishing platform</p>
+                <div className="space-y-3 mb-8">
+                  {[{label:"Outline created",done:!!book.outline},{label:"Chapters written",done:book.chapters?.some(c=>c.generated)},{label:"Cover generated",done:!!book.cover_image_url},{label:"SEO metadata ready",done:!!book.seo_title},{label:"Review Agent passed",done:reviewPassed}].map((item,i)=>(
+                    <div key={i} className={`flex items-center gap-3 px-4 py-3 rounded-lg ${item.done?"bg-green-500/10":"bg-white/5"}`}>
+                      <span>{item.done?"✅":"⭕"}</span>
+                      <span className={`text-sm ${item.done?"text-white":"text-white/35"}`}>{item.label}</span>
+                    </div>
+                  ))}
+                </div>
+                <button onClick={download} className="w-full bg-gradient-to-r from-purple-500 to-pink-500 text-white py-4 rounded-xl font-semibold text-lg hover:opacity-90 flex items-center justify-center gap-2">
+                  📥 Download as Markdown (.md)
+                </button>
+                <p className="text-white/25 text-xs text-center mt-3">Upload the .md file to Amazon KDP, Smashwords, or Draft2Digital</p>
+              </div>
+            )}
+
+            <div className="grid grid-cols-3 gap-4">
+              {[{name:"Amazon KDP",url:"https://kdp.amazon.com",icon:"📦",color:"border-orange-500/30 bg-orange-500/10"},{name:"Smashwords",url:"https://www.smashwords.com",icon:"📚",color:"border-blue-500/30 bg-blue-500/10"},{name:"Draft2Digital",url:"https://draft2digital.com",icon:"🌐",color:"border-green-500/30 bg-green-500/10"}].map(p=>(
+                <a key={p.name} href={p.url} target="_blank" rel="noopener noreferrer" className={`border ${p.color} rounded-xl p-4 text-center hover:opacity-80 transition-opacity`}>
+                  <div className="text-2xl mb-2">{p.icon}</div><p className="text-white font-semibold text-sm">{p.name}</p><p className="text-white/30 text-xs mt-1">Open →</p>
+                </a>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── App Shell ─────────────────────────────────────────────────────────────────
+function App(){
+  const [page,setPage]=useState("home");
+  const [bookId,setBookId]=useState(null);
+  const [showSettings,setShowSettings]=useState(false);
+  const [homeTab,setHomeTab]=useState("library");
+
+  const navigate=(p,id=null)=>{setPage(p);if(id)setBookId(id);window.scrollTo(0,0);};
+  const currentBook=bookId?getBook(bookId):null;
+  const isHome=page==="home";
+  const isEditor=page==="editor";
+  const isCreate=page==="create";
+
+  return(
+    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900">
+      {showSettings&&<SettingsModal onClose={()=>setShowSettings(false)}/>}
+      <Header
+        onBack={!isHome?()=>navigate("home"):null}
+        title={isEditor&&currentBook?currentBook.title:"BookForge AI"}
+        subtitle={isEditor&&currentBook?`${currentBook.genre} · ${currentBook.target_audience}`:"AI-Powered Book Generator"}
+        onSettings={()=>setShowSettings(true)}
+        activeTab={isHome?homeTab:null}
+        setActiveTab={isHome?(t)=>setHomeTab(t):null}
+      />
+      {isHome&&homeTab==="library"&&<HomePage navigate={navigate} onSettings={()=>setShowSettings(true)}/>}
+      {isHome&&homeTab==="series"&&<SeriesPage navigate={navigate} onSettings={()=>setShowSettings(true)}/>}
+      {isCreate&&<CreatePage navigate={navigate} onSettings={()=>setShowSettings(true)}/>}
+      {isEditor&&<EditorPage bookId={bookId} navigate={navigate} onSettings={()=>setShowSettings(true)}/>}
+    </div>
+  );
+}
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+</body>
+</html>
