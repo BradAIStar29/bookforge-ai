@@ -327,14 +327,71 @@ function ReviewPanel({book,onApply,onSettings}){
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// SERIES PAGE
 // ══════════════════════════════════════════════════════════════════════════════
+// SERIES PAGE — with full World Bible & Character Roster
+// ══════════════════════════════════════════════════════════════════════════════
+
+// Update the series bible after a book is written (called from EditorPage)
+function updateSeriesBible(seriesId, bookNumber, bookTitle, newCharacters, newLocations, plotEvents){
+  const all=getSeries();
+  const si=all.findIndex(s=>s.id===seriesId);
+  if(si===-1)return;
+  const s=all[si];
+  // Merge characters
+  const roster=s.character_roster||[];
+  (newCharacters||[]).forEach(nc=>{
+    const existing=roster.findIndex(c=>c.name.toLowerCase()===nc.name.toLowerCase());
+    if(existing===-1){roster.push({...nc,first_appears:`Book ${bookNumber}: ${bookTitle}`});}
+    else{roster[existing]={...roster[existing],...nc};}
+  });
+  // Merge locations
+  const locations=s.world_locations||[];
+  (newLocations||[]).forEach(nl=>{
+    if(!locations.find(l=>l.name.toLowerCase()===nl.name.toLowerCase()))locations.push({...nl,first_appears:`Book ${bookNumber}: ${bookTitle}`});
+  });
+  // Plot events log
+  const events=s.plot_events||[];
+  (plotEvents||[]).forEach(e=>events.push({book:`Book ${bookNumber}: ${bookTitle}`,event:e}));
+  all[si]={...s,character_roster:roster,world_locations:locations,plot_events:events};
+  setSeries(all);
+}
+
+function buildSeriesContext(series){
+  if(!series)return"";
+  const p=series.plan||{};
+  let ctx=`SERIES BIBLE — "${series.name}"\n`;
+  ctx+=`Genre: ${series.genre} | Audience: ${series.audience}\n`;
+  ctx+=`Concept: ${series.concept}\n\n`;
+  if(p.world_setting)ctx+=`WORLD/SETTING:\n${p.world_setting}\n\n`;
+  if(p.world_rules?.length)ctx+=`WORLD RULES/LORE:\n${p.world_rules.map(r=>`• ${r}`).join("\n")}\n\n`;
+  if(p.tone_style)ctx+=`SERIES TONE & STYLE: ${p.tone_style}\n\n`;
+  if(series.character_roster?.length){
+    ctx+=`ESTABLISHED CHARACTERS (must remain consistent):\n`;
+    series.character_roster.forEach(c=>{ctx+=`• ${c.name} (${c.role||""}): ${c.description||""} — First appears: ${c.first_appears||""}\n`;});
+    ctx+="\n";
+  }
+  if(series.world_locations?.length){
+    ctx+=`ESTABLISHED LOCATIONS:\n`;
+    series.world_locations.forEach(l=>{ctx+=`• ${l.name}: ${l.description||""}\n`;});
+    ctx+="\n";
+  }
+  if(series.plot_events?.length){
+    ctx+=`KEY SERIES EVENTS SO FAR:\n`;
+    series.plot_events.forEach(e=>{ctx+=`• [${e.book}] ${e.event}\n`;});
+    ctx+="\n";
+  }
+  return ctx;
+}
+
 function SeriesPage({navigate,onSettings}){
   const [seriesList,setSeriesList]=useState(getSeries());
   const [showCreate,setShowCreate]=useState(false);
-  const [form,setForm]=useState({name:"",concept:"",genre:"",audience:"",book_count:3});
+  const [viewBible,setViewBible]=useState(null); // series id for bible view
+  const [form,setForm]=useState({name:"",concept:"",genre:"",audience:"",book_count:3,tone:""});
   const [loading,setLoading]=useState(false);
   const [error,setError]=useState("");
+
+  const reload=()=>{const s=getSeries();setSeriesList(s);return s;};
 
   const createSeries=async()=>{
     if(!getKey()){onSettings();return;}
@@ -342,30 +399,45 @@ function SeriesPage({navigate,onSettings}){
     setLoading(true);setError("");
     try{
       const raw=await callGemini(
-        `You are a bestselling series author. Create a ${form.book_count}-book series plan.\n`+
-        `Series Name: ${form.name}\nConcept: ${form.concept}\nGenre: ${form.genre}\nAudience: ${form.audience}\n\n`+
-        `Respond ONLY with valid JSON:\n`+
-        `{"series_description":"","world_notes":"","character_notes":"","books":[{"number":1,"title":"","subtitle":"","description":"","hook":"","main_conflict":""}]}`
+        `You are a master series author and world-builder. Create a comprehensive ${form.book_count}-book series plan.\n`+
+        `Series Name: "${form.name}"\nConcept: ${form.concept}\nGenre: ${form.genre}\nAudience: ${form.audience}\n`+
+        (form.tone?`Tone/Style: ${form.tone}\n`:"")+
+        `\nCreate a rich, cohesive series with a detailed world bible that will keep readers engaged across all ${form.book_count} books.\n\n`+
+        `Respond ONLY with valid JSON (no markdown fences):\n`+
+        `{"series_description":"A compelling 2-3 sentence series overview",`+
+        `"world_setting":"Rich description of the world, time period, and environment",`+
+        `"world_rules":["Rule or lore element 1","Rule or lore element 2","Rule or lore element 3"],`+
+        `"tone_style":"Description of the series tone, writing style, heat level if romance",`+
+        `"series_themes":["theme1","theme2"],`+
+        `"recurring_characters":[{"name":"","role":"protagonist/antagonist/supporting","description":"physical appearance, personality, background","arc":"their journey across the series"}],`+
+        `"recurring_locations":[{"name":"","description":"vivid description of this location and its significance"}],`+
+        `"series_arc":"The overarching conflict or journey that spans all books",`+
+        `"books":[{"number":1,"title":"","subtitle":"","description":"200-word compelling description","hook":"The opening hook that grabs readers","main_conflict":"The central conflict of this specific book","character_focus":"Which characters are the main couple/focus","how_it_connects":"How this book connects to the wider series arc","ends_with":"How this book resolves and what it sets up"}]}`
       );
       trackUsage();
       const match=raw.match(/\{[\s\S]*\}/);
       if(!match)throw{code:"PARSE",msg:"Couldn't parse series plan."};
       const plan=JSON.parse(match[0]);
+      // Seed character roster from recurring_characters
+      const character_roster=(plan.recurring_characters||[]).map(c=>({...c,first_appears:"Series Bible"}));
+      const world_locations=(plan.recurring_locations||[]).map(l=>({...l,first_appears:"Series Bible"}));
       const series={
         id:"series_"+Date.now()+"_"+Math.random().toString(36).slice(2,7),
         name:form.name,concept:form.concept,genre:form.genre,audience:form.audience,
-        book_count:form.book_count,plan,book_ids:[],
+        book_count:form.book_count,plan,
+        character_roster,world_locations,plot_events:[],
+        book_ids:[],
         created_date:new Date().toISOString()
       };
       const all=[series,...getSeries()];
       setSeries(all);setSeriesList(all);
       setShowCreate(false);
-      setForm({name:"",concept:"",genre:"",audience:"",book_count:3});
+      setForm({name:"",concept:"",genre:"",audience:"",book_count:3,tone:""});
     }catch(e){setError(errMsg(e));}
     finally{setLoading(false);}
   };
 
-  const deleteSeries=(id,e)=>{e.stopPropagation();if(!confirm("Delete this series?"))return;const s=getSeries().filter(x=>x.id!==id);setSeries(s);setSeriesList(s);};
+  const deleteSeries=(id,e)=>{e.stopPropagation();if(!confirm("Delete this series and all its data?"))return;const s=getSeries().filter(x=>x.id!==id);setSeries(s);setSeriesList(s);};
 
   const buildBook=(series,bookPlan)=>{
     const books=getBooks();
@@ -376,19 +448,114 @@ function SeriesPage({navigate,onSettings}){
       description:bookPlan.description,
       series_id:series.id,series_name:series.name,series_number:bookPlan.number,
       chapters:[],outline:"",status:"outlining",word_count:0,
-      cover_image_url:"",seo_title:"",seo_description:"",seo_keywords:"",notes:"",
-      needs_outline:true,book_plan:bookPlan,series_plan:series.plan,
+      cover_image_url:"",seo_title:"",seo_description:"",seo_keywords:"",notes:"",review:null,
+      needs_outline:true,book_plan:bookPlan,
+      auto_build:true,build_step:"Starting…",
       created_date:new Date().toISOString()
     };
     books.unshift(book);setBooks(books);
-    // link book to series
-    const seriesAll=getSeries();const si=seriesAll.findIndex(s=>s.id===series.id);
+    const seriesAll=getSeries();
+    const si=seriesAll.findIndex(s=>s.id===series.id);
     if(si>-1){seriesAll[si].book_ids=[...(seriesAll[si].book_ids||[]),book.id];setSeries(seriesAll);setSeriesList(seriesAll);}
     navigate("editor",book.id);
   };
 
+  const bibleSeries=viewBible?seriesList.find(s=>s.id===viewBible):null;
+
   return(
     <div className="max-w-7xl mx-auto px-4 sm:px-6 py-8">
+
+      {/* World Bible Modal */}
+      {bibleSeries&&(
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-slate-800 border border-cyan-500/30 rounded-2xl max-w-3xl w-full max-h-[85vh] overflow-y-auto shadow-2xl">
+            <div className="sticky top-0 bg-slate-800 border-b border-white/10 px-6 py-4 flex items-center justify-between">
+              <div><h2 className="text-white font-bold text-lg">📖 Series Bible</h2><p className="text-cyan-300 text-sm">{bibleSeries.name}</p></div>
+              <button onClick={()=>setViewBible(null)} className="text-white/30 hover:text-white text-2xl">✕</button>
+            </div>
+            <div className="p-6 space-y-6">
+              {/* Overview */}
+              <div>
+                <h3 className="text-cyan-300 text-xs uppercase tracking-wider font-semibold mb-2">Series Overview</h3>
+                <p className="text-white/70 text-sm leading-relaxed">{bibleSeries.plan?.series_description}</p>
+              </div>
+              {bibleSeries.plan?.series_arc&&(
+                <div>
+                  <h3 className="text-cyan-300 text-xs uppercase tracking-wider font-semibold mb-2">Series Arc</h3>
+                  <p className="text-white/70 text-sm leading-relaxed">{bibleSeries.plan.series_arc}</p>
+                </div>
+              )}
+              {/* World */}
+              {bibleSeries.plan?.world_setting&&(
+                <div>
+                  <h3 className="text-cyan-300 text-xs uppercase tracking-wider font-semibold mb-2">World & Setting</h3>
+                  <p className="text-white/70 text-sm leading-relaxed">{bibleSeries.plan.world_setting}</p>
+                </div>
+              )}
+              {bibleSeries.plan?.world_rules?.length>0&&(
+                <div>
+                  <h3 className="text-cyan-300 text-xs uppercase tracking-wider font-semibold mb-2">World Rules & Lore</h3>
+                  <ul className="space-y-1">{bibleSeries.plan.world_rules.map((r,i)=><li key={i} className="text-white/60 text-sm flex gap-2"><span className="text-cyan-400 shrink-0">•</span>{r}</li>)}</ul>
+                </div>
+              )}
+              {bibleSeries.plan?.tone_style&&(
+                <div>
+                  <h3 className="text-cyan-300 text-xs uppercase tracking-wider font-semibold mb-2">Tone & Style</h3>
+                  <p className="text-white/70 text-sm">{bibleSeries.plan.tone_style}</p>
+                </div>
+              )}
+              {/* Characters */}
+              {bibleSeries.character_roster?.length>0&&(
+                <div>
+                  <h3 className="text-cyan-300 text-xs uppercase tracking-wider font-semibold mb-3">Character Roster ({bibleSeries.character_roster.length})</h3>
+                  <div className="space-y-3">
+                    {bibleSeries.character_roster.map((c,i)=>(
+                      <div key={i} className="bg-white/5 border border-white/10 rounded-xl p-4">
+                        <div className="flex items-center gap-2 mb-1">
+                          <span className="text-white font-semibold text-sm">{c.name}</span>
+                          {c.role&&<span className="text-xs bg-purple-500/20 text-purple-300 px-2 py-0.5 rounded-full border border-purple-500/30">{c.role}</span>}
+                          {c.first_appears&&<span className="text-xs text-white/25">· {c.first_appears}</span>}
+                        </div>
+                        {c.description&&<p className="text-white/55 text-xs leading-relaxed mb-1">{c.description}</p>}
+                        {c.arc&&<p className="text-cyan-300/50 text-xs italic">{c.arc}</p>}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {/* Locations */}
+              {bibleSeries.world_locations?.length>0&&(
+                <div>
+                  <h3 className="text-cyan-300 text-xs uppercase tracking-wider font-semibold mb-3">Locations ({bibleSeries.world_locations.length})</h3>
+                  <div className="space-y-2">
+                    {bibleSeries.world_locations.map((l,i)=>(
+                      <div key={i} className="bg-white/5 border border-white/10 rounded-xl p-4">
+                        <p className="text-white font-semibold text-sm mb-1">{l.name}<span className="text-white/25 text-xs font-normal ml-2">· {l.first_appears}</span></p>
+                        {l.description&&<p className="text-white/55 text-xs leading-relaxed">{l.description}</p>}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {/* Plot events */}
+              {bibleSeries.plot_events?.length>0&&(
+                <div>
+                  <h3 className="text-cyan-300 text-xs uppercase tracking-wider font-semibold mb-3">Series Timeline</h3>
+                  <div className="space-y-2">
+                    {bibleSeries.plot_events.map((e,i)=>(
+                      <div key={i} className="flex gap-3">
+                        <span className="text-cyan-400/50 text-xs shrink-0 pt-0.5">[{e.book}]</span>
+                        <p className="text-white/55 text-xs">{e.event}</p>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
       <div className="flex justify-between items-center mb-6">
         <h2 className="text-white text-xl font-bold">📗 Series Manager</h2>
         <button onClick={()=>setShowCreate(!showCreate)} className="bg-gradient-to-r from-cyan-500 to-blue-500 text-white px-5 py-2.5 rounded-xl font-semibold hover:opacity-90">+ New Series</button>
@@ -397,7 +564,8 @@ function SeriesPage({navigate,onSettings}){
       {/* Create form */}
       {showCreate&&(
         <div className="bg-white/5 border border-cyan-500/30 rounded-2xl p-6 mb-8">
-          <h3 className="text-white font-bold text-lg mb-4">Plan Your Series</h3>
+          <h3 className="text-white font-bold text-lg mb-1">Plan Your Series</h3>
+          <p className="text-white/40 text-sm mb-5">Gemini will generate a full series bible — world rules, character roster, locations, and individual book plans.</p>
           {error&&<div className="bg-red-500/20 border border-red-500/30 text-red-300 rounded-xl p-4 mb-4 text-sm">{error}</div>}
           <div className="space-y-4">
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -417,8 +585,13 @@ function SeriesPage({navigate,onSettings}){
             <div>
               <label className="text-white/60 text-sm font-medium block mb-2">Series Concept *</label>
               <textarea rows={3} value={form.concept} onChange={e=>setForm({...form,concept:e.target.value})}
-                placeholder='E.g. "A series of standalone gay romance novels set in a competitive sports world, each book following a different couple"'
+                placeholder='E.g. "Standalone gay romance novels set in a competitive sports world, each book a different couple, all interconnected through the same team and city"'
                 className="w-full bg-white/10 border border-white/20 rounded-xl px-4 py-3 text-white placeholder-white/25 focus:outline-none focus:border-cyan-500 resize-none text-sm"/>
+            </div>
+            <div>
+              <label className="text-white/60 text-sm font-medium block mb-2">Tone & Style <span className="text-white/25">(optional)</span></label>
+              <input value={form.tone} onChange={e=>setForm({...form,tone:e.target.value})} placeholder='E.g. "Steamy, emotionally intense, HEA guaranteed, slow burn"'
+                className="w-full bg-white/10 border border-white/20 rounded-xl px-4 py-3 text-white placeholder-white/25 focus:outline-none focus:border-cyan-500 text-sm"/>
             </div>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div>
@@ -439,10 +612,10 @@ function SeriesPage({navigate,onSettings}){
               </div>
             </div>
             <div className="flex gap-3">
-              <button onClick={()=>setShowCreate(false)} className="flex-1 border border-white/20 text-white/50 py-3 rounded-xl hover:bg-white/5 text-sm">Cancel</button>
+              <button onClick={()=>{setShowCreate(false);setError("");}} className="flex-1 border border-white/20 text-white/50 py-3 rounded-xl hover:bg-white/5 text-sm">Cancel</button>
               <button onClick={createSeries} disabled={loading||!form.name||!form.concept||!form.genre||!form.audience}
                 className="flex-[2] bg-gradient-to-r from-cyan-500 to-blue-500 text-white py-3 rounded-xl font-semibold hover:opacity-90 disabled:opacity-40 flex items-center justify-center gap-2">
-                {loading?<><Spin/>Generating series plan…</>:"✨ Generate Series Plan"}
+                {loading?<><Spin/>Generating series bible…</>:"✨ Generate Series Plan"}
               </button>
             </div>
           </div>
@@ -454,7 +627,7 @@ function SeriesPage({navigate,onSettings}){
         <div className="text-center py-20">
           <div className="text-7xl mb-4">📗</div>
           <h2 className="text-white text-xl font-bold mb-2">No series yet</h2>
-          <p className="text-white/40 mb-6">Plan a multi-book series with shared world and characters</p>
+          <p className="text-white/40 mb-6">Build a multi-book world with shared characters, locations, and lore</p>
           <button onClick={()=>setShowCreate(true)} className="bg-gradient-to-r from-cyan-500 to-blue-500 text-white px-8 py-3.5 rounded-xl font-semibold text-lg hover:opacity-90">+ Create Your First Series</button>
         </div>
       ):(
@@ -462,41 +635,52 @@ function SeriesPage({navigate,onSettings}){
           {seriesList.map(series=>(
             <div key={series.id} className="bg-white/5 border border-white/10 rounded-2xl overflow-hidden">
               <div className="p-6 border-b border-white/10">
-                <div className="flex items-start justify-between gap-4">
-                  <div>
-                    <div className="flex items-center gap-2 mb-1">
+                <div className="flex items-start justify-between gap-4 flex-wrap">
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2 mb-2 flex-wrap">
                       <span className="bg-cyan-500/20 text-cyan-300 text-xs px-2.5 py-1 rounded-full border border-cyan-500/30">{series.book_count} Books</span>
                       <span className="bg-white/10 text-white/40 text-xs px-2.5 py-1 rounded-full">{series.genre}</span>
+                      <span className="bg-white/10 text-white/40 text-xs px-2.5 py-1 rounded-full">{series.audience}</span>
+                      {series.character_roster?.length>0&&<span className="bg-purple-500/20 text-purple-300 text-xs px-2.5 py-1 rounded-full border border-purple-500/20">👥 {series.character_roster.length} chars</span>}
+                      {series.world_locations?.length>0&&<span className="bg-blue-500/20 text-blue-300 text-xs px-2.5 py-1 rounded-full border border-blue-500/20">📍 {series.world_locations.length} locations</span>}
                     </div>
                     <h3 className="text-white text-xl font-bold">{series.name}</h3>
-                    <p className="text-white/50 text-sm mt-1">{series.plan?.series_description}</p>
+                    <p className="text-white/50 text-sm mt-1 line-clamp-2">{series.plan?.series_description}</p>
+                    {series.plan?.tone_style&&<p className="text-cyan-300/50 text-xs mt-1 italic">{series.plan.tone_style}</p>}
                   </div>
-                  <button onClick={e=>deleteSeries(series.id,e)} className="text-white/20 hover:text-red-400 transition-colors text-sm shrink-0">🗑</button>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <button onClick={()=>setViewBible(series.id)} className="text-xs border border-cyan-500/40 text-cyan-300 px-3 py-2 rounded-lg hover:bg-cyan-500/10">📖 View Bible</button>
+                    <button onClick={e=>deleteSeries(series.id,e)} className="text-white/20 hover:text-red-400 transition-colors text-sm px-2">🗑</button>
+                  </div>
                 </div>
-                {series.plan?.world_notes&&(
-                  <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-3">
-                    <div className="bg-white/5 rounded-xl p-3"><p className="text-white/30 text-xs uppercase tracking-wider mb-1">World</p><p className="text-white/60 text-xs leading-relaxed">{series.plan.world_notes}</p></div>
-                    <div className="bg-white/5 rounded-xl p-3"><p className="text-white/30 text-xs uppercase tracking-wider mb-1">Characters</p><p className="text-white/60 text-xs leading-relaxed">{series.plan.character_notes}</p></div>
+                {/* Series arc */}
+                {series.plan?.series_arc&&(
+                  <div className="mt-4 bg-white/5 rounded-xl p-3">
+                    <p className="text-white/25 text-xs uppercase tracking-wider mb-1">Series Arc</p>
+                    <p className="text-white/55 text-xs leading-relaxed">{series.plan.series_arc}</p>
                   </div>
                 )}
               </div>
-              {/* Books in series */}
+
+              {/* Books grid */}
               <div className="p-4">
                 <p className="text-white/30 text-xs uppercase tracking-wider mb-3 px-2">Books in This Series</p>
                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
                   {series.plan?.books?.map((bp,i)=>{
                     const existingBook=series.book_ids?.map(id=>getBook(id)).find(b=>b&&b.series_number===bp.number);
                     return(
-                      <div key={i} className="bg-white/5 border border-white/10 rounded-xl p-4">
+                      <div key={i} className="bg-white/5 border border-white/10 rounded-xl p-4 hover:border-white/20 transition-all">
                         <div className="flex items-center gap-2 mb-2">
-                          <span className="w-6 h-6 bg-purple-500/30 text-purple-300 rounded-full flex items-center justify-center text-xs font-bold">{bp.number}</span>
+                          <span className="w-6 h-6 bg-gradient-to-br from-purple-500 to-pink-500 rounded-full flex items-center justify-center text-xs font-bold text-white">{bp.number}</span>
                           {existingBook&&<span className={`text-xs px-2 py-0.5 rounded-full ${STATUS_COLORS[existingBook.status]||""}`}>{STATUS_ICONS[existingBook.status]} {existingBook.status}</span>}
                         </div>
-                        <h4 className="text-white font-semibold text-sm leading-tight mb-1">{bp.title}</h4>
+                        <h4 className="text-white font-semibold text-sm leading-tight mb-0.5">{bp.title}</h4>
                         {bp.subtitle&&<p className="text-purple-300/70 text-xs mb-2">{bp.subtitle}</p>}
-                        <p className="text-white/40 text-xs leading-relaxed mb-3 line-clamp-2">{bp.description}</p>
+                        {bp.character_focus&&<p className="text-cyan-300/50 text-xs mb-1">👥 {bp.character_focus}</p>}
+                        <p className="text-white/35 text-xs leading-relaxed mb-3 line-clamp-3">{bp.description}</p>
+                        {bp.how_it_connects&&<p className="text-white/20 text-xs italic mb-3 line-clamp-2">🔗 {bp.how_it_connects}</p>}
                         {existingBook
-                          ?<button onClick={()=>navigate("editor",existingBook.id)} className="w-full text-xs border border-white/20 text-white/50 py-2 rounded-lg hover:bg-white/5">Open Editor →</button>
+                          ?<button onClick={()=>navigate("editor",existingBook.id)} className="w-full text-xs border border-white/20 text-white/50 py-2 rounded-lg hover:bg-white/5 transition-colors">Open Editor →</button>
                           :<button onClick={()=>buildBook(series,bp)} className="w-full text-xs bg-gradient-to-r from-purple-500 to-pink-500 text-white py-2 rounded-lg hover:opacity-90">✨ Build This Book</button>}
                       </div>
                     );
@@ -511,7 +695,6 @@ function SeriesPage({navigate,onSettings}){
   );
 }
 
-// ══════════════════════════════════════════════════════════════════════════════
 // HOME PAGE
 // ══════════════════════════════════════════════════════════════════════════════
 function HomePage({navigate,onSettings}){
@@ -753,16 +936,25 @@ function EditorPage({bookId,navigate,onSettings}){
   // ── Series book outline generation ────────────────────────────────────────
   const generateSeriesOutline=async(b)=>{
     if(!b.book_plan)return null;
-    const bp=b.book_plan;const sp=b.series_plan;
+    const bp=b.book_plan;
+    const series=getSeriesById(b.series_id);
+    const seriesBibleCtx=series?buildSeriesContext(series):"";
     log(`📋 Generating outline for Book ${bp.number}: "${bp.title}"…`);
     const raw=await callGemini(
-      `You are a bestselling series author. Generate a detailed chapter outline for Book ${bp.number} of the "${b.series_name}" series.\n\n`+
-      `Book: "${bp.title}" — ${bp.subtitle||""}\nDescription: ${bp.description}\nMain Conflict: ${bp.main_conflict||""}\nHook: ${bp.hook||""}\n`+
-      `Genre: ${b.genre}\nAudience: ${b.target_audience}\n`+
-      `Series World Notes: ${sp?.world_notes||""}\nSeries Character Notes: ${sp?.character_notes||""}\n\n`+
-      `Respond ONLY with valid JSON:\n`+
-      `{"title":"${bp.title}","subtitle":"${bp.subtitle||""}","description":"${bp.description}","themes":[""],"estimated_word_count":50000,`+
-      `"chapters":[{"number":1,"title":"","description":""}]}`
+      `You are a master series author. Generate a detailed chapter outline for Book ${bp.number} of the "${b.series_name}" series.\n\n`+
+      `BOOK DETAILS:\n`+
+      `Title: "${bp.title}"${bp.subtitle?" — "+bp.subtitle:""}\n`+
+      `Description: ${bp.description}\nMain Conflict: ${bp.main_conflict||""}\nHook: ${bp.hook||""}\n`+
+      `Character Focus: ${bp.character_focus||""}\nHow it connects: ${bp.how_it_connects||""}\n`+
+      `Genre: ${b.genre}\nAudience: ${b.target_audience}\n\n`+
+      (seriesBibleCtx?`${seriesBibleCtx}\n`:"")+ 
+      `Generate 10-15 chapters. Each chapter must advance the main romance/plot AND weave in series-world details consistently.\n\n`+
+      `Respond ONLY with valid JSON (no markdown):\n`+
+      `{"title":"${bp.title}","subtitle":"${bp.subtitle||""}","description":"","themes":[""],"estimated_word_count":55000,`+
+      `"key_characters":["character names featured in this book"],`+
+      `"key_locations":["location names featured in this book"],`+
+      `"key_plot_events":["major event 1 (for series bible)","major event 2"],`+
+      `"chapters":[{"number":1,"title":"","description":"detailed 2-3 sentence description including which characters appear and what happens"}]}`
     );
     bump();
     const match=raw.match(/\{[\s\S]*\}/);
@@ -797,12 +989,17 @@ function EditorPage({bookId,navigate,onSettings}){
         setTab(1);setSelCh(i);
         try{
           const prev=chapters.slice(0,i).filter(c=>c.generated).map(c=>c.title).join(", ")||"None yet";
-          const seriesCtx=b.series_name?`\nThis is Book ${b.series_number} of the "${b.series_name}" series. Maintain series continuity.`:"";
+          const series=b.series_id?getSeriesById(b.series_id):null;
+          const seriesBibleCtx=series?buildSeriesContext(series):"";
+          const seriesCtx=b.series_name
+            ?`\n\nSERIES CONTEXT — This is Book ${b.series_number} of the "${b.series_name}" series.\n${seriesBibleCtx}\nIMPORTANT: All character descriptions, locations, and established facts from the series bible above MUST remain consistent. Do not contradict anything established in previous books.`
+            :"";
           const content=await callGemini(
-            `Write Chapter ${chapters[i].number}: "${chapters[i].title}" for a ${b.genre} book titled "${outline.title}".${seriesCtx}\n`+
-            `Chapter description: ${chapters[i].description}\nPreviously written: ${prev}\nAudience: ${b.target_audience}\n\n`+
+            `Write Chapter ${chapters[i].number}: "${chapters[i].title}" for a ${b.genre} book titled "${outline.title}".${seriesCtx}\n\n`+
+            `Chapter description: ${chapters[i].description}\nPrevious chapters written: ${prev}\nAudience: ${b.target_audience}\n\n`+
             `Write 2,500–3,500 words. Use headings where appropriate. Match genre tone precisely.\n`+
-            `For romance/LGBT+ genres: write with authenticity, emotion, and genuine representation. Publication-ready quality.`
+            `For romance/LGBT+ genres: write with authenticity, emotion, and genuine representation. Publication-ready quality.\n`+
+            `Weave in world-building details naturally — reference established locations, character traits, and lore without info-dumping.`
           );
           bump();
           chapters[i]={...chapters[i],content,generated:true};
@@ -867,10 +1064,16 @@ function EditorPage({bookId,navigate,onSettings}){
       const outline=JSON.parse(book.outline||"{}");
       const ch=outline.chapters[idx];
       const prev=(book.chapters||[]).slice(0,idx).filter(c=>c.generated).map(c=>c.title).join(", ")||"None yet";
+      const series=book.series_id?getSeriesById(book.series_id):null;
+      const seriesBibleCtx=series?buildSeriesContext(series):"";
+      const seriesCtx=book.series_name
+        ?`\n\nSERIES CONTEXT — Book ${book.series_number} of "${book.series_name}".\n${seriesBibleCtx}\nMaintain full consistency with all established facts.`
+        :"";
       const content=await callGemini(
-        `Write Chapter ${ch.number}: "${ch.title}" for a ${book.genre} book titled "${outline.title}".\n`+
-        `Desc: ${ch.description}\nPrevious: ${prev}\nAudience: ${book.target_audience}\n\n`+
-        `2,500–3,500 words. Match genre tone. For romance/LGBT+: authentic emotion and representation.`
+        `Write Chapter ${ch.number}: "${ch.title}" for a ${book.genre} book titled "${outline.title}".${seriesCtx}\n\n`+
+        `Chapter description: ${ch.description}\nPrevious chapters: ${prev}\nAudience: ${book.target_audience}\n\n`+
+        `2,500–3,500 words. Match genre tone precisely. For romance/LGBT+: authentic emotion and representation.\n`+
+        `Weave in world-building and series continuity naturally.`
       );
       bump();
       const chapters=[...(book.chapters||[])];chapters[idx]={...chapters[idx],content,generated:true};
