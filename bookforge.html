@@ -348,6 +348,271 @@ function HookPanel({book,onSettings}){
   );
 }
 
+
+// ══════════════════════════════════════════════════════════════════════════════
+// WRITING QUALITY AGENT — AI-Detection & Human-Level Polish
+// ══════════════════════════════════════════════════════════════════════════════
+const AI_TELLS=[
+  "It was a moment","He couldn't help but feel","She found herself","He realized that",
+  "In that moment","Warmth spread","A wave of","His heart raced","She felt a pang",
+  "He let out a breath","It was clear that","There was something about",
+  "A mixture of","As if on cue","He swallowed hard","She bit her lip",
+  "A beat of silence","He opened his mouth","She searched his face",
+  "Something shifted","It hit him like","The weight of","He wasn't sure why",
+  "A small smile","Despite himself","His chest tightened","She exhaled slowly"
+];
+
+async function analyzeChapterHumanness(chapterText, bookTitle, genre, chapterTitle){
+  // Sample 4000 chars from different parts for better coverage
+  const sample = chapterText.length > 4000
+    ? chapterText.slice(0,1400) + "\n...\n" + chapterText.slice(Math.floor(chapterText.length/2)-700, Math.floor(chapterText.length/2)+700) + "\n...\n" + chapterText.slice(-900)
+    : chapterText;
+
+  // Local AI-tell scan
+  const localTells = AI_TELLS.filter(t => chapterText.toLowerCase().includes(t.toLowerCase()));
+
+  const raw = await callGemini(
+    `You are a literary editor who specializes in detecting AI-generated writing. Your job is to make this chapter indistinguishable from a human bestselling author.\n\n` +
+    `Book: "${bookTitle}" (${genre})\nChapter: "${chapterTitle}"\n\n` +
+    `CHAPTER SAMPLE:\n${sample}\n\n` +
+    `Analyze ruthlessly for AI writing patterns. Common AI tells:\n` +
+    `- Filler openers: "It was a moment that...", "He couldn't help but feel...", "She found herself..."\n` +
+    `- Hollow emotion: stating feelings instead of showing them through action/dialogue\n` +
+    `- Em-dash overuse, overly balanced sentence pairs ("He was X, but he was also Y")\n` +
+    `- Unnatural internal monologue dumps (paragraphs of character just thinking)\n` +
+    `- Repetitive sentence rhythm (every sentence same length)\n` +
+    `- Generic sensory details that could apply to any scene\n` +
+    `- Passive constructions pros avoid\n` +
+    `- Purple prose / over-description\n` +
+    `- Dialogue tags beyond said/asked used repeatedly\n` +
+    `- Resolution that feels too neat, conflict that evaporates too quickly\n\n` +
+    `Respond ONLY with valid JSON:\n` +
+    `{"human_score":72,"verdict":"NEEDS_WORK","verdict_label":"Reads 70% human",` +
+    `"ai_tells_found":["exact quote or pattern from the text that feels AI-written"],` +
+    `"structural_issues":["issue 1 — be specific to this chapter"],` +
+    `"voice_issues":["voice problem — be specific"],` +
+    `"rewrite_examples":[{"original":"exact short quote from chapter","rewrite":"your human rewrite of just that line","why":"brief reason"}],` +
+    `"overall_advice":"2-3 sentences of what this author needs to do to make this chapter feel fully human.",` +
+    `"strengths":["what this chapter does well that feels authentically human"]}` +
+    `\nVerdict must be: "PASS" if human_score>=75, "NEEDS_WORK" if 50-74, "AI_HEAVY" if below 50.` +
+    `\nverdict_label should be a plain English label like "Reads 85% human" or "Heavy AI patterns".`, 0.2
+  );
+  trackUsage();
+  const match = raw.match(/\{[\s\S]*\}/);
+  if(!match) throw{code:"PARSE"};
+  const result = JSON.parse(match[0]);
+  // Merge local scan tells
+  if(localTells.length > 0){
+    result.ai_tells_found = [...new Set([...(result.ai_tells_found||[]), ...localTells.map(t=>`Pattern detected: "${t}...")])];
+  }
+  return result;
+}
+
+async function runManuscriptHumanCheck(book){
+  // Sample up to 5 chapters evenly spread
+  const written = (book.chapters||[]).filter(c=>c.content);
+  if(written.length === 0) throw{code:"ERROR",msg:"No written chapters to analyze."};
+  const sample = written.length <= 3 ? written : [written[0], written[Math.floor(written.length/2)], written[written.length-1]];
+  const samples = sample.map(c=>c.content.slice(0,800)).join("\n\n---CHAPTER BREAK---\n\n");
+
+  const raw = await callGemini(
+    `You are a senior literary editor assessing whether this manuscript reads like a human author.\n\n` +
+    `Book: "${book.title}" (${book.genre})\n\n` +
+    `MANUSCRIPT SAMPLES (${sample.length} chapters):\n${samples}\n\n` +
+    `Give an overall manuscript-level assessment of human-quality writing.\n\n` +
+    `Respond ONLY with valid JSON:\n` +
+    `{"overall_human_score":75,"manuscript_verdict":"PASS","verdict_summary":"One sentence overall assessment.",` +
+    `"top_ai_patterns":["most common AI pattern across the manuscript"],` +
+    `"voice_consistency":"Assessment of whether the author voice is consistent and human",` +
+    `"dialogue_quality":"Assessment of dialogue naturalness",` +
+    `"prose_variety":"Assessment of sentence variety and rhythm",` +
+    `"emotional_authenticity":"Assessment of whether emotions feel real vs stated",` +
+    `"priority_fixes":["most important fix #1","fix #2","fix #3"]}` +
+    `\nManuscript verdict: "PASS" if overall_human_score>=72, otherwise "FAIL".`, 0.2
+  );
+  trackUsage();
+  const match = raw.match(/\{[\s\S]*\}/);
+  if(!match) throw{code:"PARSE"};
+  return JSON.parse(match[0]);
+}
+
+function WritingQualityPanel({book,onSettings}){
+  const [chScores, setChScores] = useState(book.writing_quality||{});
+  const [manuscript, setManuscript] = useState(book.manuscript_quality||null);
+  const [loadingCh, setLoadingCh] = useState(null);
+  const [loadingMs, setLoadingMs] = useState(false);
+  const [error, setError] = useState("");
+  const [activeTab, setActiveTab] = useState("manuscript");
+
+  const scoreChapter = async(idx) => {
+    if(!getKey()){onSettings();return;}
+    const ch = book.chapters?.[idx];
+    if(!ch?.content){setError("Write this chapter first.");return;}
+    setLoadingCh(idx);setError("");
+    try{
+      const result = await analyzeChapterHumanness(ch.content, book.title, book.genre, ch.title);
+      const updated = {...chScores,[idx]:result};
+      setChScores(updated);
+      updateBook(book.id,{writing_quality:updated});
+    }catch(e){setError(errMsg(e));}
+    finally{setLoadingCh(null);}
+  };
+
+  const scoreAll = async() => {
+    if(!getKey()){onSettings();return;}
+    setError("");
+    for(const [idx,ch] of (book.chapters||[]).entries()){
+      if(!ch.content) continue;
+      if(getUsage()>=DAILY_LIMIT) break;
+      setLoadingCh(idx);
+      try{
+        const result = await analyzeChapterHumanness(ch.content, book.title, book.genre, ch.title);
+        const updated = {...chScores,[idx]:result};
+        setChScores(updated);
+        updateBook(book.id,{writing_quality:updated});
+      }catch(e){if(e?.code==="QUOTA")break;}
+    }
+    setLoadingCh(null);
+  };
+
+  const runMsCheck = async() => {
+    if(!getKey()){onSettings();return;}
+    setLoadingMs(true);setError("");
+    try{
+      const result = await runManuscriptHumanCheck(book);
+      setManuscript(result);
+      updateBook(book.id,{manuscript_quality:result});
+    }catch(e){setError(errMsg(e));}
+    finally{setLoadingMs(false);}
+  };
+
+  const hc = s => s>=80?"text-green-400":s>=65?"text-amber-400":"text-red-400";
+  const hcBg = s => s>=80?"bg-green-500/10 border-green-500/20":s>=65?"bg-amber-500/10 border-amber-500/20":"bg-red-500/10 border-red-500/20";
+  const writtenCount = (book.chapters||[]).filter(c=>c.content).length;
+  const scoredCount = Object.keys(chScores).length;
+  const avgHuman = scoredCount > 0 ? Math.round(Object.values(chScores).reduce((a,s)=>a+(s.human_score||0),0)/scoredCount) : null;
+  const msPassed = manuscript?.manuscript_verdict === "PASS";
+
+  return(
+    <div className="max-w-3xl mx-auto space-y-5">
+      {/* Header */}
+      <Card>
+        <div className="flex items-start justify-between gap-4 mb-2">
+          <div>
+            <h2 className="text-white text-xl font-bold">✍️ Writing Quality Agent</h2>
+            <p className="text-white/40 text-sm mt-1">Detects AI writing patterns and flags anything that doesn't read like a real human author. Must pass before publishing.</p>
+          </div>
+          {avgHuman!==null&&<div className="text-center shrink-0"><div className={`text-3xl font-bold ${hc(avgHuman)}`}>{avgHuman}</div><div className="text-white/30 text-xs">avg human score</div></div>}
+        </div>
+        {manuscript&&(
+          <div className={`rounded-xl border p-4 mt-3 ${msPassed?"bg-green-500/10 border-green-500/30":"bg-red-500/10 border-red-500/30"}`}>
+            <div className="flex items-center gap-3">
+              <span className="text-2xl">{msPassed?"✅":"❌"}</span>
+              <div><p className={`font-bold ${msPassed?"text-green-300":"text-red-300"}`}>{msPassed?"Manuscript Approved — Reads Human":"Manuscript Needs Work"}</p><p className="text-white/50 text-sm">{manuscript.verdict_summary}</p></div>
+              <span className={`ml-auto text-2xl font-bold shrink-0 ${hc(manuscript.overall_human_score)}`}>{manuscript.overall_human_score}/100</span>
+            </div>
+          </div>
+        )}
+        {error&&<div className="bg-red-500/20 border border-red-500/30 text-red-300 rounded-xl p-3 mt-3 text-sm">{error}</div>}
+      </Card>
+
+      {/* Sub-tabs */}
+      <div className="bg-white/5 border border-white/10 rounded-xl p-1 flex gap-1">
+        {[["manuscript","📄 Manuscript Check"],["chapters","📑 Chapter-by-Chapter"]].map(([id,label])=>(
+          <button key={id} onClick={()=>setActiveTab(id)} className={`flex-1 py-2.5 rounded-lg text-sm font-medium transition-all ${activeTab===id?"bg-purple-500 text-white":"text-white/40 hover:text-white"}`}>{label}</button>
+        ))}
+      </div>
+
+      {/* MANUSCRIPT TAB */}
+      {activeTab==="manuscript"&&(
+        <div className="space-y-5">
+          <button onClick={runMsCheck} disabled={loadingMs||writtenCount===0} className="w-full bg-gradient-to-r from-purple-500 to-pink-500 text-white py-3.5 rounded-xl font-semibold hover:opacity-90 disabled:opacity-50 flex items-center justify-center gap-2">
+            {loadingMs?<><Spin/>Analyzing manuscript…</>:manuscript?"🔄 Re-analyze Manuscript":"🔍 Analyze Full Manuscript"}
+          </button>
+          {writtenCount===0&&<p className="text-white/25 text-sm text-center">Write at least one chapter first.</p>}
+          {manuscript&&(<>
+            {/* Dimension breakdown */}
+            <Card>
+              <h3 className="text-white font-semibold mb-4">Manuscript Assessment</h3>
+              <div className="space-y-4">
+                {[
+                  {label:"Voice Consistency",val:manuscript.voice_consistency},
+                  {label:"Dialogue Quality",val:manuscript.dialogue_quality},
+                  {label:"Prose Variety & Rhythm",val:manuscript.prose_variety},
+                  {label:"Emotional Authenticity",val:manuscript.emotional_authenticity}
+                ].map((d,i)=><div key={i}><p className="text-white/50 text-xs uppercase tracking-wider mb-1">{d.label}</p><p className="text-white/75 text-sm leading-relaxed">{d.val}</p></div>)}
+              </div>
+            </Card>
+            {manuscript.top_ai_patterns?.length>0&&(
+              <Card>
+                <h3 className="text-white font-semibold mb-3">🤖 Top AI Patterns Found</h3>
+                <ul className="space-y-2">{manuscript.top_ai_patterns.map((p,i)=><li key={i} className="text-red-300/80 text-sm flex gap-2"><span className="text-red-400 shrink-0">⚠</span>{p}</li>)}</ul>
+              </Card>
+            )}
+            {manuscript.priority_fixes?.length>0&&(
+              <Card>
+                <h3 className="text-white font-semibold mb-3">🔧 Priority Fixes</h3>
+                <div className="space-y-2">{manuscript.priority_fixes.map((f,i)=><div key={i} className="flex gap-3 items-start"><span className="w-6 h-6 bg-purple-500/30 text-purple-300 rounded-full flex items-center justify-center text-xs font-bold shrink-0 mt-0.5">{i+1}</span><p className="text-white/70 text-sm">{f}</p></div>)}</div>
+              </Card>
+            )}
+          </>)}
+        </div>
+      )}
+
+      {/* CHAPTER-BY-CHAPTER TAB */}
+      {activeTab==="chapters"&&(
+        <div className="space-y-4">
+          <div className="flex items-center justify-between">
+            <p className="text-white/40 text-sm">{scoredCount}/{writtenCount} chapters analyzed</p>
+            <button onClick={scoreAll} disabled={loadingCh!==null||writtenCount===0} className="text-xs bg-purple-500/20 text-purple-300 border border-purple-500/30 px-4 py-2 rounded-lg hover:bg-purple-500/30 disabled:opacity-40 flex items-center gap-1.5">{loadingCh!==null?<><Spin size="h-3 w-3"/>Analyzing…</>:"Analyze All Chapters"}</button>
+          </div>
+          {(book.chapters||[]).map((ch,idx)=>{
+            const s = chScores[idx];
+            const isLoading = loadingCh===idx;
+            return(
+              <div key={idx} className={`bg-white/5 border rounded-2xl p-5 ${s?hcBg(s.human_score):"border-white/10"}`}>
+                <div className="flex items-start justify-between gap-4 mb-3">
+                  <div>
+                    <p className="text-white font-semibold text-sm">Ch. {ch.number}: {ch.title}</p>
+                    {s&&<p className={`text-xs font-medium mt-0.5 ${hc(s.human_score)}`}>{s.verdict_label||s.verdict} · {s.human_score}/100</p>}
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0">
+                    {s&&<span className={`text-xl font-bold ${hc(s.human_score)}`}>{s.human_score}</span>}
+                    <button onClick={()=>scoreChapter(idx)} disabled={isLoading||!ch.content} className="text-xs bg-purple-500/20 text-purple-300 border border-purple-500/30 px-3 py-1.5 rounded-lg hover:bg-purple-500/30 disabled:opacity-40 flex items-center gap-1.5">{isLoading?<><Spin size="h-3 w-3"/>…</>:s?"Re-check":"Check"}</button>
+                  </div>
+                </div>
+                {s&&(<>
+                  {s.ai_tells_found?.length>0&&(
+                    <div className="mb-3">
+                      <p className="text-red-300/60 text-xs uppercase tracking-wider mb-2">AI Tells Detected</p>
+                      <div className="space-y-1">{s.ai_tells_found.slice(0,4).map((t,i)=><p key={i} className="text-red-300/70 text-xs flex gap-2"><span>⚠</span><span className="italic">"{t}"</span></p>)}</div>
+                    </div>
+                  )}
+                  {s.rewrite_examples?.length>0&&(
+                    <div className="mb-3 space-y-3">
+                      <p className="text-white/40 text-xs uppercase tracking-wider">Rewrite Examples</p>
+                      {s.rewrite_examples.slice(0,2).map((ex,i)=>(
+                        <div key={i} className="bg-black/30 rounded-xl p-3">
+                          <div className="flex gap-2 mb-2"><span className="text-red-400 text-xs shrink-0 mt-0.5">AI:</span><p className="text-red-300/70 text-xs italic">"{ex.original}"</p></div>
+                          <div className="flex gap-2 mb-1"><span className="text-green-400 text-xs shrink-0 mt-0.5">Human:</span><p className="text-green-300/80 text-xs italic">"{ex.rewrite}"</p></div>
+                          {ex.why&&<p className="text-white/25 text-xs ml-12">{ex.why}</p>}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {s.overall_advice&&<p className="text-white/40 text-xs italic bg-white/5 rounded-lg p-3">💡 {s.overall_advice}</p>}
+                  {s.strengths?.length>0&&<div className="mt-2 space-y-1">{s.strengths.map((st,i)=><p key={i} className="text-green-400/60 text-xs flex gap-1"><span>✓</span>{st}</p>)}</div>}
+                </>)}
+                {!ch.content&&<p className="text-white/20 text-xs">Write this chapter first</p>}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Chapter Quality Scorer ────────────────────────────────────────────────────
 function ChapterQualityPanel({book,onSettings}){
   const [scores,setScores]=useState(book.chapter_scores||{});
@@ -894,7 +1159,7 @@ function EditorPage({bookId,navigate,onSettings}){
   const [customPrompt,setCustomPrompt]=useState("");
   const [lastAiPrompt,setLastAiPrompt]=useState("");
   const buildRef=useRef(false);
-  const TABS=["📋 Outline","✍️ Chapters","🎨 Cover","🔍 SEO","🤖 Review","🔎 Market","🪝 Hooks","📊 Quality","📤 Publish"];
+  const TABS=["📋 Outline","✍️ Chapters","🎨 Cover","🔍 SEO","🤖 Review","🔎 Market","🪝 Hooks","📊 Quality","✍️ Writing","📤 Publish"];
 
   useEffect(()=>{
     const b=getBook(bookId);if(!b){navigate("home");return;}
@@ -979,11 +1244,22 @@ function EditorPage({bookId,navigate,onSettings}){
         bump();const match=raw.match(/\{[\s\S]*\}/);if(match){updateBook(bookId,{hooks:JSON.parse(match[0]),auto_build:false,build_step:""});setBook(getBook(bookId));}
       }catch(e){if(e?.code==="QUOTA"){setQuotaHit(true);}}
 
+      if(getUsage()<DAILY_LIMIT){
+        // Writing Quality manuscript check
+        log("✍️ Running Writing Quality check…");setTab(8);
+        try{
+          const freshBook=getBook(bookId);
+          const wq=await runManuscriptHumanCheck(freshBook);
+          updateBook(bookId,{manuscript_quality:wq});setBook(getBook(bookId));
+          log(wq.manuscript_verdict==="PASS"?`✅ Writing quality: ${wq.overall_human_score}/100 — reads human!`:`⚠️ Writing quality: ${wq.overall_human_score}/100 — AI patterns detected`);
+        }catch(e){if(e?.code==="QUOTA"){setQuotaHit(true);}}
+      }
       const finalBook=getBook(bookId);
       const passed=finalBook?.review?.verdict==="PASS";
-      flash(passed?"🎉 Book complete! Review passed — ready to publish.":"📋 Build complete! Check Review tab to improve your score.");
-      upd({auto_build:false,build_step:"",status:passed?"ready":"writing"});
-      setTab(passed?8:4);
+      const wPassed=finalBook?.manuscript_quality?.manuscript_verdict==="PASS";
+      flash(passed&&wPassed?"🎉 Both quality checks passed — ready to publish!":!passed?"📋 Review tab has improvements needed.":"✍️ Writing Quality tab has suggestions to humanize your manuscript.");
+      upd({auto_build:false,build_step:"",status:passed&&wPassed?"ready":"writing"});
+      setTab(passed&&wPassed?9:!passed?4:8);
     }catch(e){handleErr(e);upd({auto_build:false,build_step:""});}
     finally{setIsBuilding(false);buildRef.current=false;}
   };
@@ -1020,6 +1296,8 @@ function EditorPage({bookId,navigate,onSettings}){
   if(!book)return<div className="text-white/40 text-center py-20">Loading…</div>;
   const reviewPassed=book.review?.verdict==="PASS";
   const reviewScore=book.review?.overall_score;
+  const writingPassed=book.manuscript_quality?.manuscript_verdict==="PASS";
+  const writingScore=book.manuscript_quality?.overall_human_score;
 
   return(
     <div>
@@ -1027,7 +1305,9 @@ function EditorPage({bookId,navigate,onSettings}){
         <div className="max-w-7xl mx-auto px-4 sm:px-6 flex gap-1 overflow-x-auto">
           {TABS.map((t,i)=>(
             <button key={i} onClick={()=>setTab(i)} className={`px-3 py-2.5 text-xs sm:text-sm font-medium whitespace-nowrap rounded-t-lg transition-all relative ${tab===i?"bg-white/10 text-white border-b-2 border-purple-500":"text-white/35 hover:text-white/70"}`}>
-              {t}{i===4&&book.review&&<span className={`ml-1 text-xs font-bold ${reviewPassed?"text-green-400":"text-red-400"}`}>{reviewScore}</span>}
+              {t}
+              {i===4&&book.review&&<span className={`ml-1 text-xs font-bold ${reviewPassed?"text-green-400":"text-red-400"}`}>{reviewScore}</span>}
+              {i===8&&book.manuscript_quality&&<span className={`ml-1 text-xs font-bold ${writingPassed?"text-green-400":"text-red-400"}`}>{writingScore}</span>}
             </button>
           ))}
         </div>
@@ -1062,14 +1342,22 @@ function EditorPage({bookId,navigate,onSettings}){
         {/* QUALITY */}
         {tab===7&&<div className="max-w-3xl mx-auto"><ChapterQualityPanel book={book} onSettings={onSettings}/></div>}
 
+        {/* WRITING QUALITY */}
+        {tab===8&&<WritingQualityPanel book={book} onSettings={onSettings}/>}
+
         {/* PUBLISH */}
-        {tab===8&&<div className="max-w-3xl mx-auto space-y-5">
-          {!book.review?<div className="bg-amber-500/15 border border-amber-500/40 rounded-2xl p-6 text-center"><div className="text-4xl mb-3">🤖</div><h3 className="text-amber-300 font-bold text-lg mb-2">Review Required Before Publishing</h3><p className="text-amber-200/60 text-sm mb-5">The Review Agent must score 70+ before you can download.</p><button onClick={()=>setTab(4)} className="bg-gradient-to-r from-amber-500 to-orange-500 text-black font-bold px-8 py-3 rounded-xl hover:opacity-90">Go to Review Agent →</button></div>
-          :!reviewPassed?<div className="bg-red-500/15 border border-red-500/40 rounded-2xl p-6 text-center"><div className="text-4xl mb-3">❌</div><h3 className="text-red-300 font-bold text-lg mb-2">Score Too Low ({reviewScore}/100)</h3><p className="text-red-200/60 text-sm mb-5">Needs 70+ to unlock publishing. Apply improvements in the Review tab.</p><button onClick={()=>setTab(4)} className="bg-gradient-to-r from-red-500 to-pink-500 text-white font-bold px-8 py-3 rounded-xl hover:opacity-90">View Suggestions →</button></div>
-          :<div className="bg-green-500/10 border border-green-500/30 rounded-2xl p-5 flex items-center gap-4"><span className="text-3xl">✅</span><div><p className="text-green-300 font-bold">Review Passed — {reviewScore}/100</p><p className="text-green-200/50 text-sm">Approved for publishing.</p></div></div>}
-          {reviewPassed&&<Card><h2 className="text-white text-xl font-bold mb-2">Publish Your Book</h2><p className="text-white/40 mb-6 text-sm">Your book includes the series read-order page (if hooks were generated).</p>
+        {tab===9&&<div className="max-w-3xl mx-auto space-y-5">
+          {/* Gate 1: Review Agent */}
+          {!book.review?<div className="bg-amber-500/15 border border-amber-500/40 rounded-2xl p-6 text-center"><div className="text-4xl mb-3">🤖</div><h3 className="text-amber-300 font-bold text-lg mb-2">Review Agent Required</h3><p className="text-amber-200/60 text-sm mb-5">The Review Agent must score 70+ before you can publish.</p><button onClick={()=>setTab(4)} className="bg-gradient-to-r from-amber-500 to-orange-500 text-black font-bold px-8 py-3 rounded-xl hover:opacity-90">Run Review Agent →</button></div>
+          :!reviewPassed?<div className="bg-red-500/15 border border-red-500/40 rounded-2xl p-6 text-center"><div className="text-4xl mb-3">❌</div><h3 className="text-red-300 font-bold text-lg mb-2">Review Score Too Low ({reviewScore}/100)</h3><p className="text-red-200/60 text-sm mb-5">Needs 70+. Apply improvements in the Review tab then re-run.</p><button onClick={()=>setTab(4)} className="bg-gradient-to-r from-red-500 to-pink-500 text-white font-bold px-8 py-3 rounded-xl hover:opacity-90">View Review Suggestions →</button></div>
+          :<div className="bg-green-500/10 border border-green-500/30 rounded-2xl p-4 flex items-center gap-3"><span className="text-2xl">✅</span><div><p className="text-green-300 font-bold text-sm">Review Passed — {reviewScore}/100</p></div></div>}
+          {/* Gate 2: Writing Quality */}
+          {reviewPassed&&(!book.manuscript_quality?<div className="bg-amber-500/15 border border-amber-500/40 rounded-2xl p-6 text-center"><div className="text-4xl mb-3">✍️</div><h3 className="text-amber-300 font-bold text-lg mb-2">Writing Quality Check Required</h3><p className="text-amber-200/60 text-sm mb-5">Run the Writing Quality Agent to verify your manuscript reads like a human author, not AI. Required before publishing.</p><button onClick={()=>setTab(8)} className="bg-gradient-to-r from-purple-500 to-pink-500 text-white font-bold px-8 py-3 rounded-xl hover:opacity-90">Run Writing Quality Check →</button></div>
+          :!writingPassed?<div className="bg-red-500/15 border border-red-500/40 rounded-2xl p-6 text-center"><div className="text-4xl mb-3">🤖</div><h3 className="text-red-300 font-bold text-lg mb-2">AI Writing Patterns Detected ({writingScore}/100)</h3><p className="text-red-200/60 text-sm mb-5">Your manuscript has AI tells that need to be addressed. Apply the chapter rewrites suggested in the Writing Quality tab, then re-run chapters and re-analyze.</p><button onClick={()=>setTab(8)} className="bg-gradient-to-r from-red-500 to-pink-500 text-white font-bold px-8 py-3 rounded-xl hover:opacity-90">View Writing Issues →</button></div>
+          :<div className="bg-green-500/10 border border-green-500/30 rounded-2xl p-4 flex items-center gap-3"><span className="text-2xl">✅</span><div><p className="text-green-300 font-bold text-sm">Writing Quality Passed — {writingScore}/100 human</p></div></div>)}
+          {reviewPassed&&writingPassed&&<Card><h2 className="text-white text-xl font-bold mb-2">Publish Your Book</h2><p className="text-white/40 mb-6 text-sm">Your book includes the series read-order page (if hooks were generated).</p>
             <div className="space-y-3 mb-8">
-              {[{label:"Chapters written",done:book.chapters?.some(c=>c.content)},{label:"Cover generated",done:!!book.cover_image_url},{label:"SEO ready",done:!!book.seo_title},{label:"Review passed",done:reviewPassed},{label:"Market analysis done",done:!!book.competitor_analysis},{label:"Hooks generated",done:!!book.hooks}].map((item,i)=><div key={i} className={`flex items-center gap-3 px-4 py-3 rounded-lg ${item.done?"bg-green-500/10":"bg-white/5"}`}><span>{item.done?"✅":"⭕"}</span><span className={`text-sm ${item.done?"text-white":"text-white/35"}`}>{item.label}</span></div>)}
+              {[{label:"Chapters written",done:book.chapters?.some(c=>c.content)},{label:"Cover generated",done:!!book.cover_image_url},{label:"SEO ready",done:!!book.seo_title},{label:"Review Agent passed",done:reviewPassed},{label:"Writing Quality passed",done:writingPassed},{label:"Market analysis done",done:!!book.competitor_analysis},{label:"Hooks generated",done:!!book.hooks}].map((item,i)=><div key={i} className={`flex items-center gap-3 px-4 py-3 rounded-lg ${item.done?"bg-green-500/10":"bg-white/5"}`}><span>{item.done?"✅":"⭕"}</span><span className={`text-sm ${item.done?"text-white":"text-white/35"}`}>{item.label}</span></div>)}
             </div>
             <button onClick={download} className="w-full bg-gradient-to-r from-purple-500 to-pink-500 text-white py-4 rounded-xl font-semibold text-lg hover:opacity-90 flex items-center justify-center gap-2">📥 Download as Markdown (.md)</button>
             <p className="text-white/25 text-xs text-center mt-3">Includes series read-order page automatically if hooks were generated</p>
