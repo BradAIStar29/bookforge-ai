@@ -67,18 +67,18 @@ function buildSeriesContext(series){
   let ctx=`=== SERIES BIBLE: "${series.name}" ===\n`;
   ctx+=`Genre: ${series.genre} | Audience: ${series.audience}\nConcept: ${series.concept}\n\n`;
   if(p.world_setting)ctx+=`WORLD/SETTING:\n${p.world_setting}\n\n`;
-  if(p.world_rules?.length)ctx+=`WORLD RULES & LORE:\n${p.world_rules.map(r=>`• ${r}`).join("\n")}\n\n`;
+  if(p.world_rules?.length)ctx+=`WORLD RULES:\n${p.world_rules.map(r=>`• ${r}`).join("\n")}\n\n`;
   if(p.tone_style)ctx+=`TONE & STYLE: ${p.tone_style}\n\n`;
   if(series.character_roster?.length){
-    ctx+=`ESTABLISHED CHARACTERS:\n`;
+    ctx+=`CHARACTERS:\n`;
     series.character_roster.forEach(c=>{ctx+=`• ${c.name} [${c.role||""}]: ${c.description||""}\n`;});ctx+="\n";
   }
   if(series.world_locations?.length){
-    ctx+=`ESTABLISHED LOCATIONS:\n`;
+    ctx+=`LOCATIONS:\n`;
     series.world_locations.forEach(l=>{ctx+=`• ${l.name}: ${l.description||""}\n`;});ctx+="\n";
   }
   if(series.plot_events?.length){
-    ctx+=`KEY SERIES EVENTS:\n`;
+    ctx+=`KEY EVENTS:\n`;
     series.plot_events.forEach(e=>{ctx+=`• [${e.book}] ${e.event}\n`;});ctx+="\n";
   }
   ctx+=`=== END SERIES BIBLE ===\n`;
@@ -143,11 +143,155 @@ function Header({onBack,title,subtitle,onSettings,activeTab,setActiveTab}){
   );
 }
 
+// ── Review Agent ────────────────────────────────────────────────────────
+async function runReviewAgent(book){
+  const outline=JSON.parse(book.outline||"{}");
+  const raw=await callGemini(
+    `You are a professional book publishing strategist and Amazon KDP expert.\n\n`+
+    `Book: ${book.title}\nGenre: ${book.genre}\nAudience: ${book.target_audience}\nDescription: ${book.description}\n\n`+
+    `Review for market-readiness. Respond ONLY JSON:\n`+
+    `{"overall_score":85,"title_score":80,"keyword_score":75,"seo_score":85,"differentiation_score":80,`+
+    `"verdict":"PASS","verdict_reason":"Summary",`+
+    `"strengths":["s1","s2"],"issues":["i1","i2"],`+
+    `"title_suggestions":["T1","T2"],"keyword_suggestions":["k1","k2","k3","k4","k5"],`+
+    `"seo_rewrite":"Better SEO","subtitle_suggestion":"Better subtitle"}`,0.5
+  );
+  trackUsage();
+  const match=raw.match(/\{[\s\S]*\}/);
+  if(!match)throw{code:"PARSE"};
+  return JSON.parse(match[0]);
+}
+
+function ReviewPanel({book,onSettings}){
+  const [review,setReview]=useState(book.review||null);
+  const [loading,setLoading]=useState(false);
+  const [error,setError]=useState("");
+  const run=async()=>{if(!getKey()){onSettings();return;}setLoading(true);setError("");try{const r=await runReviewAgent(book);setReview(r);updateBook(book.id,{review:r});}catch(e){setError(errMsg(e));}finally{setLoading(false);}};
+  return(
+    <div className="max-w-3xl mx-auto space-y-5">
+      <Card><div className="flex items-start justify-between gap-4 mb-4"><div><h2 className="text-white text-xl font-bold">🤖 AI Review Agent</h2><p className="text-white/40 text-sm mt-1">Scores title, keywords & SEO.</p></div>{review&&<ScoreBadge score={review.overall_score}/>}</div>{error&&<div className="bg-red-500/20 border border-red-500/30 text-red-300 rounded-xl p-4 mb-4 text-sm">{error}</div>}<button onClick={run} disabled={loading} className="w-full bg-gradient-to-r from-purple-500 to-pink-500 text-white py-3.5 rounded-xl font-semibold hover:opacity-90 disabled:opacity-50 flex items-center justify-center gap-2">{loading?<><Spin/>Reviewing…</>:review?"🔄 Re-run Review":"🤖 Run Review Agent"}</button></Card>{review&&(<><div className={`rounded-2xl p-5 border ${review.verdict==="PASS"?"bg-green-500/10 border-green-500/30":"bg-red-500/10 border-red-500/30"}`}><div className="flex items-center gap-3"><span className="text-2xl">{review.verdict==="PASS"?"✅":"❌"}</span><div><p className={`font-bold text-lg ${review.verdict==="PASS"?"text-green-300":"text-red-300"}`}>{review.verdict==="PASS"?"Approved for Publishing":"Action Required"}</p><p className="text-white/50 text-sm">{review.verdict_reason}</p></div></div></div><Card><h3 className="text-white font-semibold mb-4">Score Breakdown</h3>{[["📖 Title","title_score"],["🔑 Keywords","keyword_score"],["🔍 SEO","seo_score"],["⭐ Differentiation","differentiation_score"]].map(([label,key])=>(<div key={key} className="mb-3"><div className="flex justify-between text-sm mb-1"><span className="text-white/60">{label}</span><span className={`font-bold ${review[key]>=80?"text-green-400":review[key]>=60?"text-amber-400":"text-red-400"}`}>{review[key]}</span></div><div className="h-1.5 bg-white/10 rounded-full overflow-hidden"><div className={`h-full rounded-full ${review[key]>=80?"bg-green-500":review[key]>=60?"bg-amber-500":"bg-red-500"}`} style={{width:`${Math.min(review[key],100)}%`}}></div></div></div>))}</Card><div className="grid grid-cols-1 sm:grid-cols-2 gap-4"><div className="bg-green-500/10 border border-green-500/20 rounded-2xl p-5"><h3 className="text-green-300 font-semibold mb-3">✅ Strengths</h3><ul className="space-y-2">{review.strengths?.map((s,i)=><li key={i} className="text-green-300/80 text-sm flex gap-2"><span>✓</span>{s}</li>)}</ul></div><div className="bg-red-500/10 border border-red-500/20 rounded-2xl p-5"><h3 className="text-red-300 font-semibold mb-3">⚠️ Issues</h3>{review.issues?.length>0?<ul className="space-y-2">{review.issues.map((i,idx)=><li key={idx} className="text-red-300/80 text-sm flex gap-2"><span>✗</span>{i}</li>)}</ul>:<p className="text-white/40 text-sm">No issues found</p>}</div></div>{review.title_suggestions?.length>0&&<Card><h3 className="text-white font-semibold mb-3">📖 Stronger Titles</h3><div className="space-y-2">{review.title_suggestions.map((t,i)=><div key={i} className="bg-white/5 rounded-lg px-4 py-2 text-white/80 text-sm">{t}</div>)}</div></Card>}{review.keyword_suggestions?.length>0&&<Card><h3 className="text-white font-semibold mb-3">🔑 Keywords</h3><div className="flex flex-wrap gap-2">{review.keyword_suggestions.map((k,i)=><span key={i} className="bg-purple-500/20 text-purple-300 px-3 py-1 rounded-full text-xs">{k}</span>)}</div></Card>}{review.seo_rewrite&&<Card><h3 className="text-white font-semibold mb-2">🔍 Rewritten SEO</h3><p className="text-white/70 text-sm leading-relaxed bg-white/5 rounded-xl p-4">{review.seo_rewrite}</p></Card>}</>)}
+    </div>
+  );
+}
+
+// ── Competitor Analysis ────────────────────────────────────────────────────
+function CompetitorPanel({book,onSettings}){
+  const [data,setData]=useState(book.competitor_analysis||null);
+  const [loading,setLoading]=useState(false);
+  const [error,setError]=useState("");
+  const run=async()=>{if(!getKey()){onSettings();return;}setLoading(true);setError("");try{const raw=await callGemini(`You are an Amazon KDP market expert. Analyze competitive landscape for:\nTitle: ${book.title}\nGenre: ${book.genre}\nAudience: ${book.target_audience}\n\nRespond ONLY JSON:\n{"market_summary":"overview","top_competitors":[{"title":"","what_works":"","weakness":""}],"market_gaps":["gap1"],"positioning_statement":"unique position","competitive_advantages":["adv1"],"pricing_recommendation":{"launch_price":"$9.99","rationale":""},"ku_recommendation":{"enroll_in_ku":true,"rationale":""},"launch_strategy":["step1","step2"],"categories":{"primary":"path","secondary":"path","why":""}}`,0.4);trackUsage();const match=raw.match(/\{[\s\S]*\}/);if(!match)throw{code:"PARSE"};const result=JSON.parse(match[0]);setData(result);updateBook(book.id,{competitor_analysis:result});}catch(e){setError(errMsg(e));}finally{setLoading(false);}};
+  return(
+    <div className="space-y-5">
+      <Card><div className="flex items-start justify-between gap-4 mb-4"><div><h2 className="text-white text-xl font-bold">🔎 Competitor Analysis</h2><p className="text-white/40 text-sm mt-1">Market research & positioning strategy.</p></div></div>{error&&<div className="bg-red-500/20 border border-red-500/30 text-red-300 rounded-xl p-4 mb-4 text-sm">{error}</div>}<button onClick={run} disabled={loading} className="w-full bg-gradient-to-r from-purple-500 to-pink-500 text-white py-3.5 rounded-xl font-semibold hover:opacity-90 disabled:opacity-50 flex items-center justify-center gap-2">{loading?<><Spin/>Analyzing…</>:data?"🔄 Re-analyze":"🔎 Analyze Market"}</button></Card>{data&&(<><Card><h3 className="text-white font-semibold mb-2">📊 Market Overview</h3><p className="text-white/70 text-sm leading-relaxed">{data.market_summary}</p></Card>{data.positioning_statement&&<div className="bg-gradient-to-r from-purple-900/60 to-pink-900/40 border border-purple-500/30 rounded-2xl p-5"><p className="text-white/40 text-xs uppercase tracking-wider font-semibold mb-2">Your Position</p><p className="text-purple-200 font-semibold">{data.positioning_statement}</p></div>}{data.top_competitors?.length>0&&<Card><h3 className="text-white font-semibold mb-3">📚 Top Competitors</h3><div className="space-y-3">{data.top_competitors.map((c,i)=><div key={i} className="bg-white/5 rounded-lg p-3"><p className="text-white font-semibold text-sm">{c.title}</p><p className="text-white/50 text-xs mt-1">✓ {c.what_works}</p><p className="text-red-300/70 text-xs">✗ {c.weakness}</p></div>)}</div></Card>}<div className="grid grid-cols-1 sm:grid-cols-2 gap-4">{data.market_gaps?.length>0&&<Card><h3 className="text-white font-semibold mb-3">💡 Market Gaps</h3><ul className="space-y-2">{data.market_gaps.map((g,i)=><li key={i} className="text-white/70 text-sm flex gap-2"><span>→</span>{g}</li>)}</ul></Card>}{data.pricing_recommendation&&<Card><h3 className="text-white font-semibold mb-2">💰 Launch Price</h3><p className="text-3xl font-bold text-green-400 mb-1">{data.pricing_recommendation.launch_price}</p><p className="text-white/40 text-xs">{data.pricing_recommendation.rationale}</p></Card>}</div>{data.launch_strategy?.length>0&&<Card><h3 className="text-white font-semibold mb-3">🚀 Launch Strategy</h3><div className="space-y-2">{data.launch_strategy.map((s,i)=><div key={i} className="flex gap-3 items-start"><span className="bg-purple-500/30 text-purple-300 rounded-full w-6 h-6 flex items-center justify-center text-xs">{i+1}</span><p className="text-white/70 text-sm mt-0.5">{s}</p></div>)}</div></Card>}</>)}
+    </div>
+  );
+}
+
+// ── Hook Generator ────────────────────────────────────────────────────────
+function HookPanel({book,onSettings}){
+  const [data,setData]=useState(book.hooks||null);
+  const [loading,setLoading]=useState(false);
+  const [error,setError]=useState("");
+  const run=async()=>{if(!getKey()){onSettings();return;}setLoading(true);setError("");try{const outline=JSON.parse(book.outline||"{}");const raw=await callGemini(`Master of book marketing. Generate hooks for:\nTitle: ${book.title}\nGenre: ${book.genre}\nAudience: ${book.target_audience}\nDesc: ${outline.description||book.description}\n\nRespond ONLY JSON:\n{"opening_lines":["hook1","hook2","hook3"],"back_cover_blurbs":["blurb1","blurb2"],"tagline":"punchy tagline","social_media_hooks":["hook1","hook2","hook3"],"email_subject_lines":["subject1","subject2"],"amazon_a_plus_headline":"headline"}`,0.9);trackUsage();const match=raw.match(/\{[\s\S]*\}/);if(!match)throw{code:"PARSE"};const result=JSON.parse(match[0]);setData(result);updateBook(book.id,{hooks:result});}catch(e){setError(errMsg(e));}finally{setLoading(false);}};
+  return(
+    <div className="space-y-5">
+      <Card><div className="flex items-start justify-between gap-4 mb-4"><div><h2 className="text-white text-xl font-bold">🪝 Hook Generator</h2><p className="text-white/40 text-sm mt-1">Opening lines, blurbs, taglines & social hooks.</p></div></div>{error&&<div className="bg-red-500/20 border border-red-500/30 text-red-300 rounded-xl p-4 mb-4 text-sm">{error}</div>}<button onClick={run} disabled={loading} className="w-full bg-gradient-to-r from-purple-500 to-pink-500 text-white py-3.5 rounded-xl font-semibold hover:opacity-90 disabled:opacity-50 flex items-center justify-center gap-2">{loading?<><Spin/>Generating…</>:data?"🔄 Regenerate":"🪝 Generate Hooks"}</button></Card>{data&&(<><div className="bg-gradient-to-r from-purple-900/60 to-pink-900/40 border border-purple-500/30 rounded-2xl p-5 text-center">{data.tagline&&<><p className="text-white/40 text-xs uppercase tracking-wider font-semibold mb-2">Tagline</p><p className="text-purple-200 text-lg font-bold">{data.tagline}</p></>}</div>{data.opening_lines?.length>0&&<Card><h3 className="text-white font-semibold mb-3">✍️ Opening Lines</h3><div className="space-y-2">{data.opening_lines.map((l,i)=><p key={i} className="text-white/70 text-sm italic">"{l}"</p>)}</div></Card>}{data.back_cover_blurbs?.length>0&&<Card><h3 className="text-white font-semibold mb-3">📖 Back Cover Blurbs</h3><div className="space-y-3">{data.back_cover_blurbs.map((b,i)=><p key={i} className="text-white/70 text-sm leading-relaxed bg-white/5 rounded-lg p-3">{b}</p>)}</div></Card>}{data.social_media_hooks?.length>0&&<Card><h3 className="text-white font-semibold mb-3">📱 Social Media</h3><div className="space-y-2">{data.social_media_hooks.map((h,i)=><p key={i} className="text-white/70 text-sm italic">"{h}"</p>)}</div></Card>}{data.email_subject_lines?.length>0&&<Card><h3 className="text-white font-semibold mb-3">📧 Email Subjects</h3><div className="space-y-1">{data.email_subject_lines.map((s,i)=><p key={i} className="text-white/70 text-sm">📨 {s}</p>)}</div></Card>}</>)}
+    </div>
+  );
+}
+
+// ── Writing Quality Agent ────────────────────────────────────────────────────
+const AI_TELLS=["It was a moment","He couldn't help but feel","She found herself","In that moment","Warmth spread","A wave of","His heart raced","He let out a breath","It was clear that","A beat of silence","Something shifted","The weight of"];
+
+async function analyzeChapterHumanness(chapterText,bookTitle,genre,chapterTitle){
+  const sample=chapterText.length>4000?chapterText.slice(0,1400)+"\n...\n"+chapterText.slice(Math.floor(chapterText.length/2)-700,Math.floor(chapterText.length/2)+700)+"\n...\n"+chapterText.slice(-900):chapterText;
+  const localTells=AI_TELLS.filter(t=>chapterText.toLowerCase().includes(t.toLowerCase()));
+  const raw=await callGemini(`Literary editor specializing in AI detection.\nBook: "${bookTitle}" (${genre})\nChapter: "${chapterTitle}"\n\nSAMPLE:\n${sample}\n\nDetect AI patterns, score humanness. Respond ONLY JSON:\n{"human_score":72,"verdict":"NEEDS_WORK","verdict_label":"Reads 70% human","ai_tells_found":["pattern1","pattern2"],"rewrite_examples":[{"original":"quote","rewrite":"human version","why":"reason"}],"overall_advice":"specific fixes","strengths":["authentic element"]}`,0.2);
+  trackUsage();
+  const match=raw.match(/\{[\s\S]*\}/);
+  if(!match)throw{code:"PARSE"};
+  const result=JSON.parse(match[0]);
+  if(localTells.length>0){result.ai_tells_found=[...new Set([...(result.ai_tells_found||[]),...localTells.map(t=>`Pattern: "${t}..."`)]);};
+  return result;
+}
+
+function WritingQualityPanel({book,onSettings}){
+  const [chScores,setChScores]=useState(book.writing_quality||{});
+  const [loadingCh,setLoadingCh]=useState(null);
+  const [error,setError]=useState("");
+  const scoreChapter=async(idx)=>{if(!getKey()){onSettings();return;}const ch=book.chapters?.[idx];if(!ch?.content){setError("Write this chapter first.");return;}setLoadingCh(idx);setError("");try{const result=await analyzeChapterHumanness(ch.content,book.title,book.genre,ch.title);const updated={...chScores,[idx]:result};setChScores(updated);updateBook(book.id,{writing_quality:updated});}catch(e){setError(errMsg(e));}finally{setLoadingCh(null);}};
+  const hc=s=>s>=80?"text-green-400":s>=65?"text-amber-400":"text-red-400";
+  const writtenCount=(book.chapters||[]).filter(c=>c.content).length;
+  const scoredCount=Object.keys(chScores).length;
+  const avgHuman=scoredCount>0?Math.round(Object.values(chScores).reduce((a,s)=>a+(s.human_score||0),0)/scoredCount):null;
+  return(
+    <div className="max-w-3xl mx-auto space-y-5">
+      <Card>
+        <div className="flex items-start justify-between gap-4 mb-2">
+          <div><h2 className="text-white text-xl font-bold">✍️ Writing Quality</h2><p className="text-white/40 text-sm mt-1">AI detection & humanness scoring.</p></div>
+          {avgHuman!==null&&<div className="text-center shrink-0"><div className={`text-3xl font-bold ${hc(avgHuman)}`}>{avgHuman}</div><div className="text-white/30 text-xs">avg human</div></div>}
+        </div>
+        {error&&<div className="bg-red-500/20 border border-red-500/30 text-red-300 rounded-xl p-3 mt-3 text-sm">{error}</div>}
+      </Card>
+      <div className="space-y-3">
+        {(book.chapters||[]).map((ch,idx)=>{
+          const s=chScores[idx];
+          const isLoading=loadingCh===idx;
+          return(
+            <div key={idx} className={`bg-white/5 border rounded-2xl p-5 ${s?s.human_score>=80?"border-green-500/20":"border-white/10":"border-white/10"}`}>
+              <div className="flex items-start justify-between gap-4 mb-3">
+                <div><p className="text-white font-semibold text-sm">Ch. {ch.number}: {ch.title}</p>{s&&<p className={`text-xs font-medium mt-0.5 ${hc(s.human_score)}`}>{s.verdict_label||s.verdict}</p>}</div>
+                <div className="flex items-center gap-2 shrink-0">
+                  {s&&<span className={`text-xl font-bold ${hc(s.human_score)}`}>{s.human_score}</span>}
+                  <button onClick={()=>scoreChapter(idx)} disabled={isLoading||!ch.content} className="text-xs bg-purple-500/20 text-purple-300 border border-purple-500/30 px-3 py-1.5 rounded-lg hover:bg-purple-500/30 disabled:opacity-40">{isLoading?<><Spin size="h-3 w-3"/>…</>:s?"Re-score":"Score"}</button>
+                </div>
+              </div>
+              {s&&(<><{s.ai_tells_found?.length>0&&<div className="mb-3"><p className="text-red-300/60 text-xs uppercase mb-2">AI Tells</p><div className="space-y-1">{s.ai_tells_found.slice(0,3).map((t,i)=><p key={i} className="text-red-300/70 text-xs">⚠ {t}</p>)}</div></div>}{s.rewrite_examples?.length>0&&<div className="mb-3 space-y-2">{s.rewrite_examples.slice(0,1).map((ex,i)=><div key={i} className="bg-black/30 rounded-lg p-2"><p className="text-red-300/70 text-xs italic">❌ "{ex.original}"</p><p className="text-green-300/80 text-xs italic">✓ "{ex.rewrite}"</p></div>)}</div>}{s.overall_advice&&<p className="text-white/40 text-xs italic bg-white/5 rounded-lg p-2">💡 {s.overall_advice}</p>}>}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// ── Chapter Quality Scorer ────────────────────────────────────────────────────
+function ChapterQualityPanel({book,onSettings}){
+  const [scores,setScores]=useState(book.chapter_scores||{});
+  const [loading,setLoading]=useState(null);
+  const [error,setError]=useState("");
+  const scoreChapter=async(idx)=>{if(!getKey()){onSettings();return;}const ch=book.chapters?.[idx];if(!ch?.content){setError("Write chapter first.");return;}setLoading(idx);setError("");try{const raw=await callGemini(`Professional editor. Score chapter ruthlessly.\nBook: "${book.title}" (${book.genre})\nChapter: "${ch.title}"\nTEXT: ${ch.content.slice(0,3000)}\n\nRespond ONLY JSON:\n{"pacing_score":80,"tension_score":75,"character_voice_score":85,"prose_quality_score":80,"hook_score":70,"overall_score":78,"verdict":"STRONG","one_line_verdict":"Assessment","strengths":["s1"],"weaknesses":["w1"],"rewrite_suggestion":"Fix"}`,0.3);trackUsage();const match=raw.match(/\{[\s\S]*\}/);if(!match)throw{code:"PARSE"};const result=JSON.parse(match[0]);const newScores={...scores,[idx]:result};setScores(newScores);updateBook(book.id,{chapter_scores:newScores});}catch(e){setError(errMsg(e));}finally{setLoading(null);}};
+  const scoreColor=s=>s>=80?"text-green-400":s>=65?"text-amber-400":"text-red-400";
+  const weakChapters=(book.chapters||[]).filter((_,i)=>scores[i]&&scores[i].overall_score<70);
+  return(
+    <div className="space-y-5">
+      <Card><h2 className="text-white text-xl font-bold mb-1">📊 Chapter Quality</h2><p className="text-white/40 text-sm mb-4">Pacing, tension, prose & hook strength.</p>{weakChapters.length>0&&<div className="bg-amber-500/15 border border-amber-500/30 rounded-xl p-3 mb-4"><p className="text-amber-300 text-sm font-semibold">⚠️ {weakChapters.length} weak chapter{weakChapters.length!==1?"s":""}</p></div>}{error&&<div className="bg-red-500/20 border border-red-500/30 text-red-300 rounded-xl p-3 text-sm">{error}</div>}</Card>
+      <div className="space-y-3">
+        {(book.chapters||[]).map((ch,idx)=>{
+          const s=scores[idx];
+          return(
+            <div key={idx} className={`bg-white/5 border rounded-2xl p-5 ${s&&s.overall_score<70?"border-amber-500/30":s?"border-green-500/20":"border-white/10"}`}>
+              <div className="flex items-start justify-between gap-4 mb-3">
+                <div><p className="text-white font-semibold text-sm">Ch. {ch.number}: {ch.title}</p>{s&&<p className="text-white/40 text-xs mt-0.5 italic">{s.one_line_verdict}</p>}</div>
+                <div className="flex items-center gap-2 shrink-0">
+                  {s&&<span className={`text-lg font-bold ${scoreColor(s.overall_score)}`}>{s.overall_score}</span>}
+                  <button onClick={()=>scoreChapter(idx)} disabled={loading===idx||!ch.content} className="text-xs bg-purple-500/20 text-purple-300 border border-purple-500/30 px-3 py-1.5 rounded-lg hover:bg-purple-500/30 disabled:opacity-40">{loading===idx?<><Spin size="h-3 w-3"/>…</>:s?"Re-score":"Score"}</button>
+                </div>
+              </div>
+              {s&&<><div className="grid grid-cols-5 gap-2 mb-3">{[["Pace","pacing_score"],["Tension","tension_score"],["Voice","character_voice_score"],["Prose","prose_quality_score"],["Hook","hook_score"]].map(([label,key])=><div key={key} className="text-center"><div className={`text-sm font-bold ${scoreColor(s[key])}`}>{s[key]}</div><div className="text-white/25 text-xs">{label}</div></div>)}</div><div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mb-2">{s.strengths?.map((st,i)=><p key={i} className="text-green-400/70 text-xs flex gap-1"><span>✓</span>{st}</p>)}{s.weaknesses?.map((w,i)=><p key={i} className="text-red-400/70 text-xs flex gap-1"><span>✗</span>{w}</p>)}</div>{s.rewrite_suggestion&&<p className="text-white/30 text-xs italic bg-white/5 rounded-lg p-2">💡 {s.rewrite_suggestion}</p>}</> }</div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 // ──────────────────────────────────────────────────────────────────
 // MAIN APP
 // ──────────────────────────────────────────────────────────────────
 function App(){
   const [view,setView]=useState("library");
+  const [activeTab,setActiveTab]=useState("library");
   const [editingId,setEditingId]=useState(null);
   const [settingsOpen,setSettingsOpen]=useState(false);
 
@@ -156,10 +300,8 @@ function App(){
   return(
     <div className="min-h-screen bg-gradient-to-br from-slate-950 via-purple-950 to-slate-950">
       {settingsOpen&&<SettingsModal onClose={()=>setSettingsOpen(false)}/>}
-      {view==="library"&&<LibraryPage navigate={navigate} onSettings={()=>setSettingsOpen(true)}/>}
+      {(view==="library"||view==="main")&&<LibraryPage navigate={navigate} onSettings={()=>setSettingsOpen(true)} activeTab={activeTab} setActiveTab={setActiveTab}/>}
       {view==="editor"&&editingId&&<EditorPage bookId={editingId} onBack={()=>setView("library")} onSettings={()=>setSettingsOpen(true)}/>}
-      {view==="series"&&<SeriesPage navigate={navigate} onSettings={()=>setSettingsOpen(true)}/>}
-      {view==="queue"&&<QueuePage navigate={navigate} onSettings={()=>setSettingsOpen(true)}/>}
     </div>
   );
 }
@@ -167,7 +309,7 @@ function App(){
 // ──────────────────────────────────────────────────────────────────
 // LIBRARY PAGE
 // ──────────────────────────────────────────────────────────────────
-function LibraryPage({navigate,onSettings}){
+function LibraryPage({navigate,onSettings,activeTab,setActiveTab}){
   const [books,setBooks]=useState(getBooks());
   const [showCreate,setShowCreate]=useState(false);
   const [form,setForm]=useState({title:"",genre:"",audience:"",description:""});
@@ -180,7 +322,7 @@ function LibraryPage({navigate,onSettings}){
     if(!getKey()){onSettings();return;}
     setLoading(true);
     try{
-      const raw=await callGemini(`For a ${form.genre} book titled "${form.title}" for ${form.audience} audience: "${form.description}". Generate 8-10 chapter titles and outlines. Respond ONLY with JSON: {"chapters":[{"number":1,"title":"","description":""}]}`);
+      const raw=await callGemini(`For ${form.genre} book "${form.title}" for ${form.audience}. Generate 8-10 chapter titles. Respond ONLY JSON: {"chapters":[{"number":1,"title":"","description":""}]}`);
       trackUsage();
       const match=raw.match(/\{[\s\S]*\}/);
       if(!match)throw{code:"PARSE"};
@@ -189,8 +331,7 @@ function LibraryPage({navigate,onSettings}){
         id:"book_"+Date.now()+"_"+Math.random().toString(36).slice(2,7),
         title:form.title,subtitle:"",genre:form.genre,target_audience:form.audience,description:form.description,
         chapters:(outline.chapters||[]).map((c,i)=>({...c,number:i+1,content:"",generated:false})),
-        outline:"",status:"outlining",word_count:0,cover_image_url:"",seo_title:"",seo_description:"",seo_keywords:"",
-        review:null,needs_outline:false,created_date:new Date().toISOString()
+        status:"outlining",word_count:0,review:null,created_date:new Date().toISOString()
       };
       getBooks().unshift(book);
       setBooks(getBooks());
@@ -200,31 +341,22 @@ function LibraryPage({navigate,onSettings}){
     finally{setLoading(false);}
   };
 
-  const deleteBook=(id,e)=>{e.stopPropagation();if(!confirm("Delete this book?"))return;setBooks(getBooks().filter(b=>b.id!==id));};
+  const deleteBook=(id,e)=>{e.stopPropagation();if(!confirm("Delete?"))return;setBooks(getBooks().filter(b=>b.id!==id));};
 
   return(
-    <div className="max-w-7xl mx-auto px-4 sm:px-6 py-8">
-      <Header title="BookForge AI" subtitle="Outline • Write • Review • Publish" onSettings={onSettings}/>
-      <div className="mt-8 flex justify-between items-center mb-6"><h2 className="text-white text-2xl font-bold">📚 My Books</h2><button onClick={()=>setShowCreate(!showCreate)} className="bg-gradient-to-r from-purple-500 to-pink-500 text-white px-6 py-3 rounded-xl font-semibold hover:opacity-90">+ New Book</button></div>
-      {showCreate&&(
-        <div className="bg-white/5 border border-purple-500/30 rounded-2xl p-6 mb-8">
-          <h3 className="text-white font-bold text-lg mb-4">Create a New Book</h3>
-          <div className="space-y-4">
-            <input type="text" placeholder="Book Title" value={form.title} onChange={e=>setForm({...form,title:e.target.value})} className="w-full bg-white/10 border border-white/20 rounded-lg px-4 py-3 text-white placeholder-white/30 focus:outline-none focus:border-purple-500"/>
-            <select value={form.genre} onChange={e=>setForm({...form,genre:e.target.value})} className="w-full bg-white/10 border border-white/20 rounded-lg px-4 py-3 text-white focus:outline-none focus:border-purple-500"><option value="">Select Genre</option>{GENRES.map(g=><option key={g} value={g}>{g}</option>)}</select>
-            <select value={form.audience} onChange={e=>setForm({...form,audience:e.target.value})} className="w-full bg-white/10 border border-white/20 rounded-lg px-4 py-3 text-white focus:outline-none focus:border-purple-500"><option value="">Target Audience</option>{AUDIENCES.map(a=><option key={a} value={a}>{a}</option>)}</select>
-            <textarea rows={3} placeholder="Brief description or hook" value={form.description} onChange={e=>setForm({...form,description:e.target.value})} className="w-full bg-white/10 border border-white/20 rounded-lg px-4 py-3 text-white placeholder-white/30 focus:outline-none focus:border-purple-500"/>
-            <div className="flex gap-3"><button onClick={()=>setShowCreate(false)} className="flex-1 border border-white/20 text-white/50 py-3 rounded-lg hover:bg-white/5">Cancel</button><button onClick={createBook} disabled={loading||!form.title||!form.genre||!form.audience} className="flex-[2] bg-gradient-to-r from-purple-500 to-pink-500 text-white py-3 rounded-lg font-semibold hover:opacity-90 disabled:opacity-40 flex items-center justify-center gap-2">{loading?<><Spin size="h-4 w-4"/>Creating…</>:"Create & Outline"}</button></div>
-          </div>
-        </div>
-      )}
-      {books.length===0?<div className="text-center py-20"><div className="text-7xl mb-4">📖</div><h2 className="text-white text-xl font-bold mb-2">No books yet</h2><p className="text-white/40">Start by creating your first book.</p></div>:<div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">{books.map(b=><div key={b.id} onClick={()=>navigate("editor",b.id)} className="bg-white/5 border border-white/10 rounded-2xl p-6 cursor-pointer hover:bg-white/10 transition-all"><div className="flex items-start justify-between gap-3 mb-3"><div><div className={`inline-block px-3 py-1 rounded-full text-xs font-semibold ${STATUS_COLORS[b.status]||STATUS_COLORS.idea}`}>{STATUS_ICONS[b.status]} {b.status}</div></div><button onClick={e=>{e.stopPropagation();deleteBook(b.id,e);}} className="text-white/30 hover:text-red-400">✕</button></div><h3 className="text-white font-bold text-lg truncate">{b.title}</h3><p className="text-white/50 text-sm">{b.genre}</p><p className="text-white/30 text-xs mt-2">{b.chapters?.length||0} chapters • {b.word_count||0} words</p></div>)}</div>}
+    <div className="min-h-screen bg-gradient-to-br from-slate-950 via-purple-950 to-slate-950">
+      <Header title="BookForge AI" subtitle="Outline • Write • Review • Publish" onSettings={onSettings} activeTab={activeTab} setActiveTab={setActiveTab}/>
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 py-8">
+        <div className="flex justify-between items-center mb-6"><h2 className="text-white text-2xl font-bold">📚 My Books</h2><button onClick={()=>setShowCreate(!showCreate)} className="bg-gradient-to-r from-purple-500 to-pink-500 text-white px-6 py-3 rounded-xl font-semibold hover:opacity-90">+ New Book</button></div>
+        {showCreate&&(<div className="bg-white/5 border border-purple-500/30 rounded-2xl p-6 mb-8"><h3 className="text-white font-bold text-lg mb-4">Create a New Book</h3><div className="space-y-4"><input type="text" placeholder="Book Title" value={form.title} onChange={e=>setForm({...form,title:e.target.value})} className="w-full bg-white/10 border border-white/20 rounded-lg px-4 py-3 text-white placeholder-white/30 focus:outline-none focus:border-purple-500"/><select value={form.genre} onChange={e=>setForm({...form,genre:e.target.value})} className="w-full bg-white/10 border border-white/20 rounded-lg px-4 py-3 text-white focus:outline-none focus:border-purple-500"><option value="">Select Genre</option>{GENRES.map(g=><option key={g} value={g}>{g}</option>)}</select><select value={form.audience} onChange={e=>setForm({...form,audience:e.target.value})} className="w-full bg-white/10 border border-white/20 rounded-lg px-4 py-3 text-white focus:outline-none focus:border-purple-500"><option value="">Target Audience</option>{AUDIENCES.map(a=><option key={a} value={a}>{a}</option>)}</select><textarea rows={3} placeholder="Brief description" value={form.description} onChange={e=>setForm({...form,description:e.target.value})} className="w-full bg-white/10 border border-white/20 rounded-lg px-4 py-3 text-white placeholder-white/30 focus:outline-none focus:border-purple-500"/><div className="flex gap-3"><button onClick={()=>setShowCreate(false)} className="flex-1 border border-white/20 text-white/50 py-3 rounded-lg hover:bg-white/5">Cancel</button><button onClick={createBook} disabled={loading||!form.title||!form.genre||!form.audience} className="flex-[2] bg-gradient-to-r from-purple-500 to-pink-500 text-white py-3 rounded-lg font-semibold hover:opacity-90 disabled:opacity-40 flex items-center justify-center gap-2">{loading?<><Spin size="h-4 w-4"/>Creating…</>:"Create & Outline"}</button></div></div></div>)}
+        {books.length===0?<div className="text-center py-20"><div className="text-7xl mb-4">📖</div><h2 className="text-white text-xl font-bold mb-2">No books yet</h2><p className="text-white/40">Start by creating your first book.</p></div>:<div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">{books.map(b=><div key={b.id} onClick={()=>navigate("editor",b.id)} className="bg-white/5 border border-white/10 rounded-2xl p-6 cursor-pointer hover:bg-white/10 transition-all"><div className="flex items-start justify-between gap-3 mb-3"><div className={`inline-block px-3 py-1 rounded-full text-xs font-semibold ${STATUS_COLORS[b.status]||STATUS_COLORS.idea}`}>{STATUS_ICONS[b.status]} {b.status}</div><button onClick={e=>{e.stopPropagation();deleteBook(b.id,e);}} className="text-white/30 hover:text-red-400">✕</button></div><h3 className="text-white font-bold text-lg truncate">{b.title}</h3><p className="text-white/50 text-sm">{b.genre}</p><p className="text-white/30 text-xs mt-2">{b.chapters?.length||0} chapters</p></div>)}</div>}
+      </div>
     </div>
   );
 }
 
 // ──────────────────────────────────────────────────────────────────
-// EDITOR PAGE (Simplified)
+// EDITOR PAGE
 // ──────────────────────────────────────────────────────────────────
 function EditorPage({bookId,onBack,onSettings}){
   const [book,setBook]=useState(getBook(bookId));
@@ -238,48 +370,18 @@ function EditorPage({bookId,onBack,onSettings}){
     <div className="min-h-screen bg-gradient-to-br from-slate-950 via-purple-950 to-slate-950">
       <Header onBack={onBack} title={book.title} subtitle={book.genre} onSettings={onSettings}/>
       <div className="max-w-7xl mx-auto px-4 sm:px-6 py-8">
-        <div className="flex gap-2 mb-6">
-          {[["overview","📖 Overview"],["outline","📝 Outline"],["write","✍️ Write"],["review","🤖 Review"],["quality","✍️ Quality"]].map(([id,label])=>(
-            <button key={id} onClick={()=>setActiveTab(id)} className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${activeTab===id?"bg-purple-500 text-white":"bg-white/5 text-white/50 hover:bg-white/10"}`}>{label}</button>
+        <div className="flex gap-2 mb-6 overflow-x-auto pb-2">
+          {[["overview","📖 Overview"],["outline","📝 Outline"],["review","🤖 Review"],["competitor","🔎 Market"],["hooks","🪝 Hooks"],["quality","✍️ Quality"],["chapters","📊 Chapters"]].map(([id,label])=>(
+            <button key={id} onClick={()=>setActiveTab(id)} className={`px-4 py-2 rounded-lg text-sm font-medium whitespace-nowrap transition-all ${activeTab===id?"bg-purple-500 text-white":"bg-white/5 text-white/50 hover:bg-white/10"}`}>{label}</button>
           ))}
         </div>
-        {activeTab==="overview"&&<Card><h2 className="text-white text-xl font-bold mb-4">Book Overview</h2><p className="text-white/70">{book.description}</p><p className="text-white/50 text-sm mt-4">Status: {book.status} • Chapters: {book.chapters?.length} • Words: {book.word_count}</p></Card>}
+        {activeTab==="overview"&&<Card><h2 className="text-white text-xl font-bold mb-4">Book Overview</h2><p className="text-white/70 mb-4">{book.description}</p><p className="text-white/50 text-sm">Status: {book.status} • Chapters: {book.chapters?.length} • Words: {book.word_count}</p></Card>}
         {activeTab==="outline"&&<div className="space-y-3">{(book.chapters||[]).map((ch,i)=><Card key={i}><p className="text-white font-semibold">Ch. {ch.number}: {ch.title}</p><p className="text-white/50 text-sm mt-1">{ch.description}</p></Card>)}</div>}
-        {activeTab==="write"&&<Card><p className="text-white/50">Chapter writing interface would go here</p></Card>}
-        {activeTab==="review"&&<Card><p className="text-white/50">Review agent would go here</p></Card>}
-        {activeTab==="quality"&&<Card><p className="text-white/50">Writing quality checker would go here</p></Card>}
-      </div>
-    </div>
-  );
-}
-
-// ──────────────────────────────────────────────────────────────────
-// QUEUE PAGE
-// ──────────────────────────────────────────────────────────────────
-function QueuePage({navigate,onSettings}){
-  const [queue,setQueueState]=useState(getQueue());
-
-  return(
-    <div className="min-h-screen bg-gradient-to-br from-slate-950 via-purple-950 to-slate-950">
-      <Header title="Build Queue" onSettings={onSettings}/>
-      <div className="max-w-4xl mx-auto px-4 sm:px-6 py-8">
-        <Card><h2 className="text-white text-xl font-bold mb-2">⏳ Build Queue</h2><p className="text-white/40 text-sm">Queue multiple books to build automatically.</p><p className="text-white/50 text-sm mt-4">Queue length: {queue.length}</p></Card>
-      </div>
-    </div>
-  );
-}
-
-// ──────────────────────────────────────────────────────────────────
-// SERIES PAGE
-// ──────────────────────────────────────────────────────────────────
-function SeriesPage({navigate,onSettings}){
-  const [seriesList,setSeriesList]=useState(getSeries());
-
-  return(
-    <div className="min-h-screen bg-gradient-to-br from-slate-950 via-purple-950 to-slate-950">
-      <Header title="Series Manager" onSettings={onSettings}/>
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 py-8">
-        <Card><h2 className="text-white text-xl font-bold mb-2">📗 Series Manager</h2><p className="text-white/40 text-sm">Manage multi-book series.</p></Card>
+        {activeTab==="review"&&<ReviewPanel book={book} onSettings={onSettings}/>}
+        {activeTab==="competitor"&&<CompetitorPanel book={book} onSettings={onSettings}/>}
+        {activeTab==="hooks"&&<HookPanel book={book} onSettings={onSettings}/>}
+        {activeTab==="quality"&&<WritingQualityPanel book={book} onSettings={onSettings}/>}
+        {activeTab==="chapters"&&<ChapterQualityPanel book={book} onSettings={onSettings}/>}
       </div>
     </div>
   );
