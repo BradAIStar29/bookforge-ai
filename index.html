@@ -353,13 +353,48 @@ function HookPanel({book,onSettings}){
 // WRITING QUALITY AGENT — AI-Detection & Human-Level Polish
 // ══════════════════════════════════════════════════════════════════════════════
 const AI_TELLS=[
-  "It was a moment","He couldn't help but feel","She found herself","He realized that",
-  "In that moment","Warmth spread","A wave of","His heart raced","She felt a pang",
-  "He let out a breath","It was clear that","There was something about",
-  "A mixture of","As if on cue","He swallowed hard","She bit her lip",
-  "A beat of silence","He opened his mouth","She searched his face",
-  "Something shifted","It hit him like","The weight of","He wasn't sure why",
-  "A small smile","Despite himself","His chest tightened","She exhaled slowly"
+  // Hollow openers
+  "It was a moment","In that moment","In this moment","At that moment",
+  "He couldn't help but","She couldn't help but","They couldn't help but",
+  "She found herself","He found himself","They found themselves",
+  "He realized that","She realized that","It dawned on him","It dawned on her",
+  "There was something about","Something about the way",
+  // Stated emotions (show don't tell)
+  "Warmth spread through","A wave of","A rush of","A surge of","A flood of",
+  "His heart raced","Her heart raced","His heart pounded","Her heart pounded",
+  "She felt a pang","He felt a pang","A pang of",
+  "His chest tightened","Her chest tightened","A knot formed in",
+  "Emotions welled","Tears pricked","His throat tightened","Her throat tightened",
+  // Filler beats
+  "He let out a breath","She let out a breath","He exhaled slowly","She exhaled slowly",
+  "He swallowed hard","She swallowed hard","He swallowed the lump",
+  "He bit his lip","She bit her lip","He bit back a smile","She bit back",
+  "A beat of silence","A moment of silence","Silence stretched between",
+  "He opened his mouth","She opened her mouth","Words failed him","Words escaped her",
+  // Hollow observations
+  "It was clear that","It was obvious that","It was evident that","It seemed that",
+  "A mixture of","A blend of","A combination of","A tangle of emotions",
+  "Something shifted","Something changed","Something broke inside",
+  "The weight of","The enormity of","The reality of","The gravity of",
+  // Unnatural hedging
+  "He wasn't sure why","She wasn't sure why","He didn't know why","She didn't know why",
+  "He couldn't explain","She couldn't explain","He didn't understand why",
+  "Despite himself","Despite herself","Against his better judgment",
+  // Cliche physical responses
+  "A small smile played","A smile tugged","A ghost of a smile",
+  "He searched her face","She searched his face","He studied her expression",
+  "As if on cue","As if on instinct","Almost instinctively",
+  "It hit him like","It struck him like","Like a punch to the gut",
+  // AI structural patterns
+  "Not just X, but Y","Not only X, but also Y","More than X, it was Y",
+  "He was X, but he was also Y","She was X, but also Y",
+  "First X, then Y, and finally Z",
+  "Little did he know","Little did she know",
+  "What he didn't know","What she didn't realize",
+  // Over-explained interiority
+  "He thought to himself","She thought to herself",
+  "He mused","She mused","He pondered","She pondered",
+  "He reflected on","She reflected on"
 ];
 
 async function analyzeChapterHumanness(chapterText, bookTitle, genre, chapterTitle){
@@ -372,30 +407,36 @@ async function analyzeChapterHumanness(chapterText, bookTitle, genre, chapterTit
   const localTells = AI_TELLS.filter(t => chapterText.toLowerCase().includes(t.toLowerCase()));
 
   const raw = await callGemini(
-    `You are a literary editor who specializes in detecting AI-generated writing. Your job is to make this chapter indistinguishable from a human bestselling author.\n\n` +
+    `You are a senior literary editor at a major publishing house with 20 years of experience spotting AI-generated fiction. You have read thousands of manuscripts and know exactly what separates authentic human prose from machine-generated text. You are RUTHLESS and STRICT — your job is to catch every AI tell before this book goes to market. A false PASS is a career-ending mistake.\n\n` +
     `Book: "${bookTitle}" (${genre})\nChapter: "${chapterTitle}"\n\n` +
     `CHAPTER SAMPLE:\n${sample}\n\n` +
-    `Analyze ruthlessly for AI writing patterns. Common AI tells:\n` +
-    `- Filler openers: "It was a moment that...", "He couldn't help but feel...", "She found herself..."\n` +
-    `- Hollow emotion: stating feelings instead of showing them through action/dialogue\n` +
-    `- Em-dash overuse, overly balanced sentence pairs ("He was X, but he was also Y")\n` +
-    `- Unnatural internal monologue dumps (paragraphs of character just thinking)\n` +
-    `- Repetitive sentence rhythm (every sentence same length)\n` +
-    `- Generic sensory details that could apply to any scene\n` +
-    `- Passive constructions pros avoid\n` +
-    `- Purple prose / over-description\n` +
-    `- Dialogue tags beyond said/asked used repeatedly\n` +
-    `- Resolution that feels too neat, conflict that evaporates too quickly\n\n` +
+    `MANDATORY CHECKS — flag every instance you find:\n` +
+    `1. HOLLOW OPENERS: "In that moment", "He couldn't help but", "She found herself", "It dawned on", "Something about the way" — these are AI fingerprints\n` +
+    `2. STATED EMOTIONS: AI tells feelings instead of showing them. "His chest tightened" = told. "He pressed his fist to the wall until his knuckles ached" = shown. Flag every told emotion.\n` +
+    `3. BALANCED SENTENCE PAIRS: AI loves "He was X, but he was also Y" / "Not just X, but Y" / "More than X, it was Y". These feel mechanical. Flag them all.\n` +
+    `4. INTERNAL MONOLOGUE DUMPS: Paragraphs of pure thinking with no action/dialogue/sensation grounding them. Real authors anchor interiority.\n` +
+    `5. RHYTHM MONOTONY: Measure sentence length variation. AI defaults to medium-length declarative sentences. Real prose has short punchy sentences. Fragments. Then longer, winding ones that breathe and slow the reader down.\n` +
+    `6. GENERIC SENSORY DETAILS: "The air smelled of coffee and rain" — could be any book. Real authors name specific things: the brand, the exact shade, the texture under fingernails.\n` +
+    `7. RESOLUTION TOO CLEAN: AI resolves conflict neatly. Real fiction leaves residue — characters don't fully recover, misunderstandings linger.\n` +
+    `8. CLICHE PHYSICAL BEATS: "Heart raced", "breath caught", "throat tightened", "swallowed hard", "searched his face", "bit her lip" — automatic red flags.\n` +
+    `9. DIALOGUE STAGINESS: AI dialogue explains too much, ends on perfect note. Real dialogue is messier, talks past each other, leaves things unsaid.\n` +
+    `10. EM-DASH OVERUSE: AI uses em-dashes constantly for dramatic effect. Flag if more than 2 per page equivalent.\n` +
+    `11. HEDGED UNCERTAINTY: "He wasn't sure why", "She didn't know what made her", "Despite himself" — AI uses these to avoid committing to character psychology.\n` +
+    `12. PURPLE PROSE: Over-description that slows everything down and feels performative.\n\n` +
+    `Score HARSHLY. A chapter with even 3-4 significant AI tells should score below 70.\n` +
+    `A human score of 85+ means this chapter could genuinely fool a publisher.\n\n` +
     `Respond ONLY with valid JSON:\n` +
-    `{"human_score":72,"verdict":"NEEDS_WORK","verdict_label":"Reads 70% human",` +
-    `"ai_tells_found":["exact quote or pattern from the text that feels AI-written"],` +
-    `"structural_issues":["issue 1 — be specific to this chapter"],` +
-    `"voice_issues":["voice problem — be specific"],` +
-    `"rewrite_examples":[{"original":"exact short quote from chapter","rewrite":"your human rewrite of just that line","why":"brief reason"}],` +
-    `"overall_advice":"2-3 sentences of what this author needs to do to make this chapter feel fully human.",` +
-    `"strengths":["what this chapter does well that feels authentically human"]}` +
-    `\nVerdict must be: "PASS" if human_score>=75, "NEEDS_WORK" if 50-74, "AI_HEAVY" if below 50.` +
-    `\nverdict_label should be a plain English label like "Reads 85% human" or "Heavy AI patterns".`, 0.2
+    `{"human_score":65,"verdict":"NEEDS_WORK","verdict_label":"Reads 65% human — AI patterns present",` +
+    `"ai_tells_found":["EXACT quote from the text — do not paraphrase, quote the actual words"],` +
+    `"structural_issues":["specific structural problem with page/location reference if possible"],` +
+    `"voice_issues":["specific voice problem — quote the offending passage"],` +
+    `"rhythm_analysis":"Specific assessment of sentence rhythm — is it varied or monotonous?",` +
+    `"dialogue_assessment":"Specific assessment of dialogue naturalness",` +
+    `"rewrite_examples":[{"original":"EXACT quote from chapter (copy-paste quality)","rewrite":"your human rewrite — grittier, more specific, less tidy","why":"one-line reason"}],` +
+    `"overall_advice":"3 specific actionable things this writer must change to pass. Be direct.",` +
+    `"strengths":["specific thing that reads authentically human — quote if possible"]}` +
+    `\nVerdict: "PASS" if human_score>=78, "NEEDS_WORK" if 55-77, "AI_HEAVY" if below 55.` +
+    `\nBe strict. Default to NEEDS_WORK when uncertain. Only PASS chapters that genuinely read like a skilled human author.`, 0.15
   );
   trackUsage();
   const match = raw.match(/\{[\s\S]*\}/);
@@ -416,19 +457,29 @@ async function runManuscriptHumanCheck(book){
   const samples = sample.map(c=>c.content.slice(0,800)).join("\n\n---CHAPTER BREAK---\n\n");
 
   const raw = await callGemini(
-    `You are a senior literary editor assessing whether this manuscript reads like a human author.\n\n` +
+    `You are a senior literary editor at a major publishing house. You have 20 years of experience and you are STRICT about AI-generated writing. You know every pattern. Your reputation depends on catching AI prose before it reaches readers.\n\n` +
     `Book: "${book.title}" (${book.genre})\n\n` +
-    `MANUSCRIPT SAMPLES (${sample.length} chapters):\n${samples}\n\n` +
-    `Give an overall manuscript-level assessment of human-quality writing.\n\n` +
+    `MANUSCRIPT SAMPLES (${sample.length} chapters sampled):\n${samples}\n\n` +
+    `Assess the OVERALL manuscript for human authenticity. Look for:\n` +
+    `- Consistency of voice — does it feel like one human wrote this, or like a language model averaging across styles?\n` +
+    `- Emotional truth — do characters feel psychologically real, or do they react in expected/convenient ways?\n` +
+    `- Prose fingerprint — does the writing have idiosyncrasies, unexpected word choices, a point of view that feels lived-in?\n` +
+    `- Dialogue authenticity — do characters talk past each other, leave things unsaid, interrupt? Or does every exchange resolve perfectly?\n` +
+    `- Sentence rhythm — is there genuine variety (fragments, run-ons, short punches, long sweeps) or medium-length monotony?\n` +
+    `- Specificity — does the world feel observed (real brands, textures, smells) or generic?\n` +
+    `- Structural crutches — does the book lean on "in that moment", "he couldn't help but", balanced sentence pairs?\n\n` +
+    `Score STRICTLY. Average AI chapter rewriting gets 60-70. Genuinely human-sounding prose scores 80+.\n` +
+    `A manuscript needs 75+ to pass — not 72.\n\n` +
     `Respond ONLY with valid JSON:\n` +
-    `{"overall_human_score":75,"manuscript_verdict":"PASS","verdict_summary":"One sentence overall assessment.",` +
-    `"top_ai_patterns":["most common AI pattern across the manuscript"],` +
-    `"voice_consistency":"Assessment of whether the author voice is consistent and human",` +
-    `"dialogue_quality":"Assessment of dialogue naturalness",` +
-    `"prose_variety":"Assessment of sentence variety and rhythm",` +
-    `"emotional_authenticity":"Assessment of whether emotions feel real vs stated",` +
-    `"priority_fixes":["most important fix #1","fix #2","fix #3"]}` +
-    `\nManuscript verdict: "PASS" if overall_human_score>=72, otherwise "FAIL".`, 0.2
+    `{"overall_human_score":68,"manuscript_verdict":"FAIL","verdict_summary":"One blunt sentence on whether this reads human.",` +
+    `"top_ai_patterns":["most pervasive AI pattern found — be specific with examples"],` +
+    `"voice_consistency":"Detailed assessment — does it feel like one human voice?",` +
+    `"dialogue_quality":"Detailed assessment — quote a line that feels staged vs one that feels real if possible",` +
+    `"prose_variety":"Detailed assessment — describe the actual sentence rhythm you found",` +
+    `"emotional_authenticity":"Detailed assessment — are emotions shown or told? Quote evidence.",` +
+    `"specificity_score":"Are details generic or observed? Give examples.",` +
+    `"priority_fixes":["most critical fix #1 — be prescriptive","fix #2","fix #3","fix #4"]}` +
+    `\nManuscript verdict: "PASS" only if overall_human_score>=75. Otherwise "FAIL". Be strict — err on the side of FAIL.`, 0.15
   );
   trackUsage();
   const match = raw.match(/\{[\s\S]*\}/);
@@ -454,6 +505,9 @@ function WritingQualityPanel({book,onSettings}){
       const updated = {...chScores,[idx]:result};
       setChScores(updated);
       updateBook(book.id,{writing_quality:updated});
+      // Refresh local chapter list in case parent hasn't re-rendered
+      const fresh=getBook(book.id);
+      if(fresh?.writing_quality) setChScores(fresh.writing_quality);
     }catch(e){setError(errMsg(e));}
     finally{setLoadingCh(null);}
   };
@@ -461,16 +515,18 @@ function WritingQualityPanel({book,onSettings}){
   const scoreAll = async() => {
     if(!getKey()){onSettings();return;}
     setError("");
-    for(const [idx,ch] of (book.chapters||[]).entries()){
-      if(!ch.content) continue;
-      if(getUsage()>=DAILY_LIMIT) break;
+    const unscored=(book.chapters||[]).map((ch,idx)=>({ch,idx})).filter(({ch,idx})=>ch.content&&!chScores[idx]);
+    const toScore=unscored.length>0?unscored:(book.chapters||[]).map((ch,idx)=>({ch,idx})).filter(({ch})=>ch.content);
+    for(const {ch,idx} of toScore){
+      if(getUsage()>=DAILY_LIMIT){setError("Quota reached — scored what we could.");break;}
       setLoadingCh(idx);
       try{
         const result = await analyzeChapterHumanness(ch.content, book.title, book.genre, ch.title);
-        const updated = {...chScores,[idx]:result};
-        setChScores(updated);
+        const fresh=getBook(book.id);
+        const updated = {...(fresh?.writing_quality||chScores),[idx]:result};
+        setChScores({...updated});
         updateBook(book.id,{writing_quality:updated});
-      }catch(e){if(e?.code==="QUOTA")break;}
+      }catch(e){if(e?.code==="QUOTA"){setError("Quota reached.");break;} /* skip chapter on other errors */}
     }
     setLoadingCh(null);
   };
@@ -695,13 +751,13 @@ function ChapterQualityPanel({book,onSettings}){
 // ══════════════════════════════════════════════════════════════════════════════
 function QueuePage({navigate,onSettings}){
   const [queue,setQueueState]=useState(getQueue());
-  const [books,setBooks]=useState(getBooks());
+  const [qBooks,setQBooks]=useState(getBooks());
   const [running,setRunning]=useState(false);
   const [currentId,setCurrentId]=useState(null);
   const [log,setLog]=useState([]);
   const runRef=useRef(false);
 
-  const reload=()=>{setQueueState(getQueue());setBooks(getBooks());};
+  const reload=()=>{setQueueState(getQueue());setQBooks(getBooks());};
   const addToQueue=id=>{const q=getQueue();if(q.includes(id))return;setQueue([...q,id]);reload();};
   const removeFromQueue=id=>{setQueue(getQueue().filter(x=>x!==id));reload();};
   const moveUp=(id)=>{const q=[...getQueue()];const i=q.indexOf(id);if(i>0){[q[i-1],q[i]]=[q[i],q[i-1]];setQueue(q);reload();}};
@@ -784,7 +840,7 @@ function QueuePage({navigate,onSettings}){
     reload();
   };
 
-  const eligibleBooks=books.filter(b=>!["published"].includes(b.status)&&!b.chapters?.every(c=>c.generated));
+  const eligibleBooks=qBooks.filter(b=>!["published"].includes(b.status)&&!b.chapters?.every(c=>c.generated));
   const queuedIds=getQueue();
 
   return(
@@ -1165,6 +1221,7 @@ function EditorPage({bookId,navigate,onSettings}){
     const b=getBook(bookId);if(!b){navigate("home");return;}
     setBook(b);if(getUsage()>=DAILY_LIMIT)setQuotaHit(true);
     if(b.auto_build&&!buildRef.current){buildRef.current=true;runAutoBuild(b);}
+    return()=>{buildRef.current=false;};
   },[bookId]);
 
   const upd=(updates)=>{const b=updateBook(bookId,updates);if(b)setBook(b);return b;};
@@ -1246,7 +1303,7 @@ function EditorPage({bookId,navigate,onSettings}){
 
       if(getUsage()<DAILY_LIMIT){
         // Writing Quality manuscript check
-        log("✍️ Running Writing Quality check…");setTab(8);
+        log("✍️ Running Writing Quality check…");
         try{
           const freshBook=getBook(bookId);
           const wq=await runManuscriptHumanCheck(freshBook);
@@ -1287,6 +1344,8 @@ function EditorPage({bookId,navigate,onSettings}){
   const download=()=>{
     if(!book.review){setError("Run the Review Agent first (Review tab).");setTab(4);return;}
     if(book.review.verdict!=="PASS"){setError(`Review score ${book.review.overall_score}/100 — needs 70+. Check Review tab.`);setTab(4);return;}
+    if(!book.manuscript_quality){setError("Run the Writing Quality check first (Writing tab).");setTab(8);return;}
+    if(book.manuscript_quality.manuscript_verdict!=="PASS"){setError(`Writing Quality score ${book.manuscript_quality.overall_human_score}/100 — needs 72+. Fix AI patterns in Writing tab.`);setTab(8);return;}
     if(!book.chapters?.some(c=>c.content)){setError("Write at least one chapter first.");return;}
     const seriesPage=book.hooks?.series_read_order_page?`\n\n---\n\n# Also By This Author\n\n${book.hooks.series_read_order_page}`:"";
     const md=`# ${book.title}\n${book.subtitle?`## ${book.subtitle}\n`:""}\n${book.description||""}\n\n---\n\n`+(book.chapters||[]).map(c=>`# Chapter ${c.number}: ${c.title}\n\n${c.content||""}`).join("\n\n---\n\n")+seriesPage;
