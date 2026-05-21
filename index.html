@@ -32,7 +32,7 @@ const ls={get:(k,d)=>{try{const v=localStorage.getItem(k);return v===null?d:JSON
 const getKey=()=>localStorage.getItem("gemini_api_key")||"";
 const setKey=k=>localStorage.setItem("gemini_api_key",k.trim());
 const getBooks=()=>ls.get("bfai_books",[]);
-const setBooks=b=>ls.set("bfai_books",b);
+const setBooks=b=>{ls.set("bfai_books",b);};
 const getBook=id=>getBooks().find(b=>b.id===id)||null;
 const getSeries=()=>ls.get("bfai_series",[]);
 const setSeries=s=>ls.set("bfai_series",s);
@@ -100,7 +100,7 @@ function SettingsModal({onClose}){
       <div className="bg-slate-800 border border-white/10 rounded-2xl p-8 max-w-md w-full shadow-2xl">
         <div className="flex items-center justify-between mb-6"><h2 className="text-white text-xl font-bold">⚙️ Settings</h2><button onClick={onClose} className="text-white/30 hover:text-white text-xl">✕</button></div>
         <label className="text-white/60 text-sm font-medium block mb-2">Gemini API Key</label>
-        <p className="text-white/35 text-xs mb-3">Stored only in your browser. Enter once — works forever.</p>
+        <p className="text-white/35 text-xs mb-3">🔒 Stored locally in your browser. Never sent to servers.</p>
         <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noopener noreferrer" className="inline-block text-purple-400 text-xs underline mb-4 hover:text-purple-300">Get a free key →</a>
         <input type="password" placeholder="AIza..." value={draft} onChange={e=>setDraft(e.target.value)} onKeyDown={e=>e.key==="Enter"&&save()} className="w-full bg-white/10 border border-white/20 rounded-lg px-3 py-2 text-white mb-4 focus:outline-none focus:border-purple-500"/>
         <button onClick={save} disabled={!draft.trim()} className={`w-full py-3 rounded-xl font-semibold transition-all ${saved?"bg-green-500 text-white":"bg-gradient-to-r from-purple-500 to-pink-500 text-white hover:opacity-90 disabled:opacity-50"}`}>{saved?"✓ Saved!":"Save API Key"}</button>
@@ -182,7 +182,7 @@ function CompetitorPanel({book,onSettings}){
   const run=async()=>{if(!getKey()){onSettings();return;}setLoading(true);setError("");try{const raw=await callGemini(`You are an Amazon KDP market expert. Analyze competitive landscape for:\nTitle: ${book.title}\nGenre: ${book.genre}\nAudience: ${book.target_audience}\n\nRespond ONLY JSON:\n{"top_competitors":[{"title":"T","author":"A","rating":4.5,"reviews":200,"price":9.99,"unique_angle":""}],"market_gaps":["gap1","gap2"],"pricing_strategy":"Strategy","marketing_angles":["angle1","angle2"],"estimated_market_size":"Large"}`,0.6);trackUsage();const match=raw.match(/\{[\s\S]*\}/);if(!match)throw{code:"PARSE"};setData(JSON.parse(match[0]));updateBook(book.id,{competitor_analysis:JSON.parse(match[0])});}catch(e){setError(errMsg(e));}finally{setLoading(false);}};
   return(
     <div className="space-y-5">
-      <Card><div className="flex items-start justify-between gap-4 mb-4"><div><h2 className="text-white text-xl font-bold">🔎 Competitor Analysis</h2><p className="text-white/40 text-sm mt-1">Market position, gaps & pricing strategy.</p></div><button onClick={run} disabled={loading} className="bg-purple-500/20 hover:bg-purple-500/30 text-purple-300 border border-purple-500/30 px-4 py-2 rounded-lg text-sm font-medium disabled:opacity-50">{loading?<><Spin size="h-4 w-4"/> Analyzing</>:"Analyze"}</button></div>{error&&<div className="bg-red-500/20 border border-red-500/30 text-red-300 rounded-lg p-3 text-sm">{error}</div>}{data&&<div className="space-y-4">{data.market_gaps?.length>0&&<div><p className="text-white/60 text-xs uppercase mb-2">📊 Market Gaps</p><ul className="space-y-1">{data.market_gaps.map((g,i)=><li key={i} className="text-green-300 text-sm">• {g}</li>)}</ul></div>}{data.marketing_angles?.length>0&&<div><p className="text-white/60 text-xs uppercase mb-2">🎯 Marketing Angles</p><div className="space-y-1">{data.marketing_angles.map((a,i)=><div key={i} className="bg-white/5 border border-white/10 rounded px-3 py-2 text-white/80 text-sm">{a}</div>)}</div></div>{data.pricing_strategy&&<div className="bg-white/5 border border-white/10 rounded-lg p-4"><p className="text-white/60 text-xs uppercase mb-1">💰 Pricing Strategy</p><p className="text-white">{data.pricing_strategy}</p></div>}{data.estimated_market_size&&<div className="bg-white/5 border border-white/10 rounded-lg p-4"><p className="text-white/60 text-xs uppercase mb-1">📈 Market Size</p><p className="text-white">{data.estimated_market_size}</p></div>}</div>}</Card>
+      <Card><div className="flex items-start justify-between gap-4 mb-4"><div><h2 className="text-white text-xl font-bold">🔎 Competitor Analysis</h2><p className="text-white/40 text-sm mt-1">Market position, gaps & pricing strategy.</p></div><button onClick={run} disabled={loading} className="bg-purple-500/20 hover:bg-purple-500/30 text-purple-300 border border-purple-500/30 px-4 py-2 rounded-lg text-sm font-medium disabled:opacity-50">{loading?<><Spin size="h-4 w-4"/> Analyzing</>:"Analyze"}</button></div>{error&&<div className="bg-red-500/20 border border-red-500/30 text-red-300 rounded-lg p-3 text-sm">{error}</div>}{data&&<div className="space-y-4">{data.market_gaps?.length>0&&<div><p className="text-white/60 text-xs uppercase mb-2">📊 Market Gaps</p><ul className="space-y-1">{data.market_gaps.map((g,i)=><li key={i} className="text-green-300 text-sm">• {g}</li>)}</ul></div>}{data.marketing_angles?.length>0&&<div><p className="text-white/60 text-xs uppercase mb-2">🎯 Marketing Angles</p><div className="space-y-1">{data.marketing_angles.map((a,i)=><div key={i} className="bg-white/5 border border-white/10 rounded px-3 py-2 text-white/80 text-sm">{a}</div>)}</div></div>}{data.pricing_strategy&&<div className="bg-white/5 border border-white/10 rounded-lg p-4"><p className="text-white/60 text-xs uppercase mb-1">💰 Pricing Strategy</p><p className="text-white">{data.pricing_strategy}</p></div>}{data.estimated_market_size&&<div className="bg-white/5 border border-white/10 rounded-lg p-4"><p className="text-white/60 text-xs uppercase mb-1">📈 Market Size</p><p className="text-white">{data.estimated_market_size}</p></div>}</div>}</Card>
     </div>
   );
 }
@@ -287,6 +287,33 @@ function ChapterQualityPanel({book,onSettings}){
   );
 }
 
+// ── Chapter Editor ─────────────────────────────────────────────────────────
+function ChapterEditor({book,onBack}){
+  const [chapterIdx,setChapterIdx]=useState(0);
+  const [content,setContent]=useState(book.chapters?.[0]?.content||"");
+  const ch=book.chapters?.[chapterIdx];
+  const save=()=>{if(!ch)return;const chp={...ch,content};const ch_list=[...book.chapters];ch_list[chapterIdx]=chp;updateBook(book.id,{chapters:ch_list});};
+  const wordCount=content.trim().split(/\s+/).filter(w=>w).length;
+  return(
+    <div className="max-w-5xl mx-auto space-y-4">
+      <div className="flex gap-2 overflow-x-auto pb-2">
+        {book.chapters?.map((c,i)=><button key={i} onClick={()=>{save();setChapterIdx(i);setContent(book.chapters[i]?.content||"");}} className={`px-4 py-2 rounded-lg text-sm whitespace-nowrap ${i===chapterIdx?"bg-purple-500 text-white":"bg-white/5 text-white/60 hover:text-white/80"}`}>Ch. {c.number}</button>)}
+      </div>
+      <Card>
+        <div className="mb-4">
+          <h2 className="text-white text-xl font-bold">{ch?.title}</h2>
+          <p className="text-white/50 text-xs mt-1">{ch?.description}</p>
+        </div>
+        <textarea value={content} onChange={e=>setContent(e.target.value)} placeholder="Start writing your chapter..." className="w-full bg-white/10 border border-white/20 rounded-lg px-4 py-3 text-white h-96 focus:outline-none focus:border-purple-500 resize-none"/>
+        <div className="flex items-center justify-between mt-4">
+          <span className="text-white/50 text-xs">{wordCount} words</span>
+          <button onClick={save} className="bg-gradient-to-r from-purple-500 to-pink-500 text-white px-4 py-2 rounded-lg text-sm font-medium hover:opacity-90">💾 Save</button>
+        </div>
+      </Card>
+    </div>
+  );
+}
+
 // ─────────────────────────────────────────────────────────────────────
 // MAIN APP
 // ─────────────────────────────────────────────────────────────────────
@@ -303,6 +330,7 @@ function App(){
       {settingsOpen&&<SettingsModal onClose={()=>setSettingsOpen(false)}/>}
       {(view==="library"||view==="main")&&<LibraryPage navigate={navigate} onSettings={()=>setSettingsOpen(true)} activeTab={activeTab} setActiveTab={setActiveTab}/>}
       {view==="editor"&&editingId&&<EditorPage bookId={editingId} onBack={()=>setView("library")} onSettings={()=>setSettingsOpen(true)}/>}
+      {view==="chapter-editor"&&editingId&&<ChapterEditorPage bookId={editingId} onBack={()=>setView("library")} onSettings={()=>setSettingsOpen(true)}/>}
     </div>
   );
 }
@@ -334,15 +362,19 @@ function LibraryPage({navigate,onSettings,activeTab,setActiveTab}){
         chapters:(outline.chapters||[]).map((c,i)=>({...c,number:i+1,content:"",generated:false})),
         status:"outlining",word_count:0,review:null,created_date:new Date().toISOString()
       };
-      getBooks().unshift(book);
-      setBooks(getBooks());
+      const newBooks=getBooks();
+      newBooks.unshift(book);
+      setBooks(newBooks);
       setShowCreate(false);
       setForm({title:"",genre:"",audience:"",description:""});
     }catch(e){alert(errMsg(e));}
     finally{setLoading(false);}
   };
 
-  const deleteBook=(id,e)=>{e.stopPropagation();if(!confirm("Delete?"))return;setBooks(getBooks().filter(b=>b.id!==id));};
+  const deleteBook=(id,e)=>{e.stopPropagation();if(!confirm("Delete?"))return;const updated=getBooks().filter(b=>b.id!==id);setBooks(updated);};
+
+  if(activeTab==="series")return<SeriesPage onSettings={onSettings}/>;
+  if(activeTab==="queue")return<QueuePage onSettings={onSettings}/>;
 
   return(
     <div className="min-h-screen bg-gradient-to-br from-slate-950 via-purple-950 to-slate-950">
@@ -351,6 +383,37 @@ function LibraryPage({navigate,onSettings,activeTab,setActiveTab}){
         <div className="flex justify-between items-center mb-6"><h2 className="text-white text-2xl font-bold">📚 My Books</h2><button onClick={()=>setShowCreate(!showCreate)} className="bg-gradient-to-r from-purple-500 to-pink-500 hover:opacity-90 text-white px-4 py-2 rounded-lg font-medium text-sm transition-all">+ New Book</button></div>
         {showCreate&&(<div className="bg-white/5 border border-purple-500/30 rounded-2xl p-6 mb-8"><h3 className="text-white font-bold text-lg mb-4">Create a New Book</h3><div className="space-y-4"><div><label className="text-white/60 text-sm block mb-1">Title</label><input type="text" placeholder="My Epic Novel" value={form.title} onChange={e=>setForm({...form,title:e.target.value})} className="w-full bg-white/10 border border-white/20 rounded-lg px-3 py-2 text-white focus:outline-none focus:border-purple-500"/></div><div><label className="text-white/60 text-sm block mb-1">Genre</label><select value={form.genre} onChange={e=>setForm({...form,genre:e.target.value})} className="w-full bg-white/10 border border-white/20 rounded-lg px-3 py-2 text-white focus:outline-none focus:border-purple-500"><option value="">Select genre...</option>{GENRES.map((g,i)=><option key={i} value={g}>{g}</option>)}</select></div><div><label className="text-white/60 text-sm block mb-1">Target Audience</label><select value={form.audience} onChange={e=>setForm({...form,audience:e.target.value})} className="w-full bg-white/10 border border-white/20 rounded-lg px-3 py-2 text-white focus:outline-none focus:border-purple-500"><option value="">Select audience...</option>{AUDIENCES.map((a,i)=><option key={i} value={a}>{a}</option>)}</select></div><div><label className="text-white/60 text-sm block mb-1">Description</label><textarea placeholder="Brief book description..." value={form.description} onChange={e=>setForm({...form,description:e.target.value})} className="w-full bg-white/10 border border-white/20 rounded-lg px-3 py-2 text-white focus:outline-none focus:border-purple-500 h-20" /></div><button onClick={createBook} disabled={!form.title||!form.genre||!form.audience||loading} className="w-full bg-gradient-to-r from-purple-500 to-pink-500 text-white font-semibold py-2.5 rounded-lg disabled:opacity-50 transition-all">{loading?<><Spin size="h-4 w-4"/> Creating</>:"Create Book"}</button></div></div>)}
         {books.length===0?<div className="text-center py-20"><div className="text-7xl mb-4">📖</div><h2 className="text-white text-xl font-bold mb-2">No books yet</h2><p className="text-white/40">Start creating your first book to see it here.</p></div>:<div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">{books.map(b=><div key={b.id} onClick={()=>navigate("editor",b.id)} className="bg-white/5 border border-white/10 rounded-2xl p-5 hover:border-white/20 cursor-pointer transition-all"><div className="flex items-start justify-between mb-3"><div className="flex-1"><h3 className="text-white font-bold text-sm">{b.title}</h3><p className="text-white/40 text-xs mt-0.5">{b.genre}</p></div><button onClick={(e)=>deleteBook(b.id,e)} className="text-white/30 hover:text-red-400">🗑️</button></div><p className="text-white/50 text-xs mb-3 line-clamp-2">{b.description}</p><div className="flex items-center justify-between"><span className={`text-xs font-medium px-2 py-1 rounded ${STATUS_COLORS[b.status]||STATUS_COLORS.idea}`}>{STATUS_ICONS[b.status]} {b.status}</span><span className="text-white/40 text-xs">{b.chapters?.length||0} ch.</span></div></div>)}</div>}
+      </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// SERIES PAGE
+// ─────────────────────────────────────────────────────────────────────
+function SeriesPage({onSettings}){
+  return<div className="min-h-screen bg-gradient-to-br from-slate-950 via-purple-950 to-slate-950"><Header title="Series" subtitle="Manage series & related books"/><div className="max-w-7xl mx-auto px-4 sm:px-6 py-8"><Card><h2 className="text-white text-2xl font-bold mb-4">📗 Series Management</h2><p className="text-white/60">Plan and organize multi-book series with shared worlds, characters, and plot arcs.</p><div className="mt-6 p-8 border-2 border-dashed border-white/10 rounded-lg text-center"><p className="text-white/40 text-sm">Series builder coming soon. Link books, manage character continuity, and track series timeline.</p></div></Card></div></div>;
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// QUEUE PAGE
+// ─────────────────────────────────────────────────────────────────────
+function QueuePage({onSettings}){
+  return<div className="min-h-screen bg-gradient-to-br from-slate-950 via-purple-950 to-slate-950"><Header title="Queue" subtitle="Batch processing"/><div className="max-w-7xl mx-auto px-4 sm:px-6 py-8"><Card><h2 className="text-white text-2xl font-bold mb-4">⏳ Processing Queue</h2><p className="text-white/60">Queue chapters for batch AI processing: reviews, quality scores, and hooks.</p><div className="mt-6 p-8 border-2 border-dashed border-white/10 rounded-lg text-center"><p className="text-white/40 text-sm">Queue processor coming soon. Process multiple chapters at once to save API quota.</p></div></Card></div></div>;
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// CHAPTER EDITOR PAGE
+// ─────────────────────────────────────────────────────────────────────
+function ChapterEditorPage({bookId,onBack,onSettings}){
+  const [book,setBook]=useState(getBook(bookId));
+  if(!book)return<div className="text-white text-center py-20">Book not found</div>;
+  const refresh=()=>setBook(getBook(bookId));
+  return(
+    <div className="min-h-screen bg-gradient-to-br from-slate-950 via-purple-950 to-slate-950">
+      <Header onBack={onBack} title={`${book.title} - Chapter Writer`} subtitle="Write & Save chapters" onSettings={onSettings}/>
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 py-8">
+        <ChapterEditor book={book} onBack={onBack}/>
       </div>
     </div>
   );
@@ -376,7 +439,7 @@ function EditorPage({bookId,onBack,onSettings}){
             <button key={id} onClick={()=>setActiveTab(id)} className={`px-4 py-2 rounded-lg text-sm font-medium whitespace-nowrap transition-all ${activeTab===id?"bg-purple-500 text-white":"bg-white/5 text-white/60 hover:text-white/80"}`}>{label}</button>
           ))}
         </div>
-        {activeTab==="overview"&&<Card><h2 className="text-white text-xl font-bold mb-4">Book Overview</h2><p className="text-white/70 mb-4">{book.description}</p><p className="text-white/50 text-sm">{book.chapters?.length||0} chapters • {book.word_count} words</p></Card>}
+        {activeTab==="overview"&&<Card><h2 className="text-white text-xl font-bold mb-4">Book Overview</h2><p className="text-white/70 mb-4">{book.description}</p><p className="text-white/50 text-sm">{book.chapters?.length||0} chapters • {book.word_count} words</p><button onClick={()=>window.location.href=`#chapter-editor/${bookId}`} className="mt-4 bg-purple-500/20 hover:bg-purple-500/30 text-purple-300 border border-purple-500/30 px-4 py-2 rounded-lg text-sm">✍️ Write Chapters</button></Card>}
         {activeTab==="outline"&&<div className="space-y-3">{(book.chapters||[]).map((ch,i)=><Card key={i}><p className="text-white font-semibold">Ch. {ch.number}: {ch.title}</p><p className="text-white/50 text-sm mt-2">{ch.description}</p></Card>)}</div>}
         {activeTab==="review"&&<ReviewPanel book={book} onSettings={onSettings}/>}
         {activeTab==="competitor"&&<CompetitorPanel book={book} onSettings={onSettings}/>}
