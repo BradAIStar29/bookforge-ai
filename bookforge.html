@@ -24,6 +24,22 @@ body{margin:0;font-family:system-ui,-apple-system,sans-serif;background:#0f0a1e}
 </style>
 </head>
 <body>
+<script>
+// If React/Babel hasn't mounted within 14 seconds, show a reload button
+setTimeout(function(){
+  var el=document.getElementById('loading');
+  if(el&&getComputedStyle(el).display!=='none'){
+    document.getElementById('load-logo').textContent='⚠️';
+    document.querySelector('#loading div:nth-child(2)').textContent='Taking longer than expected…';
+    document.querySelector('#loading div:nth-child(3)').textContent='Click below to reload';
+    var btn=document.createElement('button');
+    btn.textContent='🔄 Reload App';
+    btn.style.cssText='margin-top:1.5rem;background:linear-gradient(90deg,#8b5cf6,#ec4899);color:white;border:none;padding:.75rem 2rem;border-radius:.75rem;font-weight:600;cursor:pointer;font-size:.9rem';
+    btn.onclick=function(){location.reload(true);};
+    el.appendChild(btn);
+  }
+},14000);
+</script>
 <div id="loading">
   <div id="load-logo">📚</div>
   <div style="color:white;font-weight:700;font-size:1.2rem;margin-top:.5rem">BookForge AI</div>
@@ -31,7 +47,7 @@ body{margin:0;font-family:system-ui,-apple-system,sans-serif;background:#0f0a1e}
   <div id="load-bar"><div id="load-bar-fill"></div></div>
 </div>
 <div id="root"></div>
-<script type="text/babel">
+<script type="text/babel" data-presets="react">
 const {useState,useEffect,useRef}=React;
 
 // ── Constants ─────────────────────────────────────────────────────────────────
