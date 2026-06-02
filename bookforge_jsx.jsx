@@ -10,7 +10,7 @@ const STATUS_COLORS={idea:"bg-gray-500/20 text-gray-300",outlining:"bg-blue-500/
 const STATUS_ICONS={idea:"💡",outlining:"📋",writing:"✍️",ready:"✅",published:"🚀",queued:"⏳"};
 
 // ── Storage ───────────────────────────────────────────────────────────────────
-const ls={get:(k,d)=>{try{const v=localStorage.getItem(k);return v===null?d:JSON.parse(v)}catch{return d}},set:(k,v)=>{try{localStorage.setItem(k,JSON.stringify(v))}catch{}}};
+const ls={get:(k,d)=>{try{const v=localStorage.getItem(k);return v===null?d:JSON.parse(v)}catch{return d}},set:(k,v)=>{try{localStorage.setItem(k,JSON.stringify(v))}catch(e){if(e.name==="QuotaExceededError"){alert("⚠️ Storage full! Export your books to free space.");}}}};
 const getKey=()=>localStorage.getItem("gemini_api_key")||"";
 const setKey=k=>localStorage.setItem("gemini_api_key",k.trim());
 const getBooks=()=>ls.get("bfai_books",[]);
@@ -80,6 +80,7 @@ function buildEPUB(book){
 async function callGemini(prompt,temp=0.85){
   const key=getKey();
   if(!key)throw{code:"NO_KEY"};
+  if(getUsage()>=DAILY_LIMIT)throw{code:"QUOTA"};
   const res=await fetch(`${GEMINI_URL}?key=${key}`,{method:"POST",headers:{"Content-Type":"application/json"},
     body:JSON.stringify({contents:[{parts:[{text:prompt}]}],generationConfig:{temperature:temp,maxOutputTokens:8192}})});
   const data=await res.json();
@@ -1510,6 +1511,59 @@ function CreatePage({navigate,onSettings}){
 // ══════════════════════════════════════════════════════════════════════════════
 // EDITOR PAGE
 // ══════════════════════════════════════════════════════════════════════════════
+
+// ── Inline Chapter Editor ─────────────────────────────────────────────────────
+function ChapterEditor({book,chIdx,upd}){
+  const ch=book.chapters?.[chIdx];
+  const [editing,setEditing]=useState(false);
+  const [draft,setDraft]=useState(ch?.content||"");
+  const wordCount=draft.trim()?draft.trim().split(/\s+/).length:0;
+
+  useEffect(()=>{
+    setDraft(ch?.content||"");
+    setEditing(false);
+  },[chIdx,ch?.content]);
+
+  const save=()=>{
+    const chapters=[...(book.chapters||[])];
+    chapters[chIdx]={...chapters[chIdx],content:draft,generated:true};
+    const wc=chapters.reduce((a,c)=>a+(c.content?c.content.split(/\s+/).length:0),0);
+    upd({chapters,word_count:wc});
+    setEditing(false);
+  };
+
+  if(editing){
+    return(
+      <div>
+        <div className="flex items-center justify-between mb-3">
+          <span className="text-white/40 text-xs">{wordCount.toLocaleString()} words</span>
+          <div className="flex gap-2">
+            <button onClick={()=>{setDraft(ch?.content||"");setEditing(false);}} className="text-xs px-3 py-1.5 rounded-lg bg-white/5 text-white/50 hover:bg-white/10">Cancel</button>
+            <button onClick={save} className="text-xs px-3 py-1.5 rounded-lg bg-green-500/20 text-green-300 border border-green-500/30 hover:bg-green-500/30 font-medium">✅ Save</button>
+          </div>
+        </div>
+        <textarea
+          value={draft}
+          onChange={e=>setDraft(e.target.value)}
+          className="w-full h-[560px] bg-white/5 border border-white/10 rounded-xl p-4 text-white/80 text-sm leading-relaxed resize-none focus:outline-none focus:border-purple-500/50"
+          placeholder="Write or paste chapter content here…"
+          spellCheck={true}
+        />
+      </div>
+    );
+  }
+
+  return(
+    <div>
+      <div className="flex items-center justify-between mb-3">
+        <span className="text-white/40 text-xs">{ch?.content?ch.content.trim().split(/\s+/).length.toLocaleString():0} words</span>
+        <button onClick={()=>{setDraft(ch?.content||"");setEditing(true);}} className="text-xs px-3 py-1.5 rounded-lg bg-white/5 text-white/50 border border-white/10 hover:bg-white/10 hover:text-white/80 transition-all">✏️ Edit</button>
+      </div>
+      <div className="text-white/75 text-sm leading-relaxed whitespace-pre-wrap max-h-[560px] overflow-y-auto pr-2">{ch?.content}</div>
+    </div>
+  );
+}
+
 function EditorPage({bookId,navigate,onSettings}){
   const [book,setBook]=useState(null);
   const [tab,setTab]=useState(0);
@@ -1717,7 +1771,7 @@ function EditorPage({bookId,navigate,onSettings}){
         {tab===0&&<div className="max-w-3xl mx-auto"><Card>{book.series_name&&<div className="flex items-center gap-2 mb-3"><span className="bg-cyan-500/20 text-cyan-300 text-xs px-3 py-1 rounded-full border border-cyan-500/30">📗 {book.series_name} — Book {book.series_number}</span></div>}<h2 className="text-white text-xl font-bold">{book.title}</h2>{book.subtitle&&<p className="text-purple-300 mt-1 mb-4 text-sm">{book.subtitle}</p>}<p className="text-white/60 text-sm leading-relaxed mb-6">{book.description}</p>{book.chapters?.length>0&&<><p className="text-white/40 text-xs uppercase tracking-wider mb-3">Chapters ({book.chapters.length})</p><div className="space-y-2">{book.chapters.map((ch,i)=><div key={i} className={`rounded-xl p-3 border flex gap-3 items-start ${ch.generated?"bg-green-500/10 border-green-500/20":"bg-white/5 border-white/10"}`}><span className={`font-bold text-sm min-w-[24px] ${ch.generated?"text-green-400":"text-purple-400"}`}>{ch.generated?"✓":ch.number+"."}</span><div className="flex-1"><p className="text-white text-sm font-medium">{ch.title}</p><p className="text-white/35 text-xs mt-0.5">{ch.description}</p></div>{ch.generated&&<span className="text-green-400/50 text-xs shrink-0">Written</span>}</div>)}</div><div className="mt-5 bg-white/5 rounded-xl p-4"><div className="flex justify-between text-xs text-white/40 mb-2"><span>Progress</span><span>{book.chapters.filter(c=>c.generated).length}/{book.chapters.length} chapters</span></div><div className="h-2 bg-white/10 rounded-full overflow-hidden"><div className="h-full bg-gradient-to-r from-purple-500 to-pink-500 rounded-full" style={{width:`${(book.chapters.filter(c=>c.generated).length/book.chapters.length)*100}%`}}/></div></div></>}{(!book.chapters||book.chapters.length===0)&&isBuilding&&<div className="text-center py-8 text-white/30"><Spin/><p className="mt-3 text-sm">Generating outline…</p></div>}</Card></div>}
 
         {/* CHAPTERS */}
-        {tab===1&&<div className="grid grid-cols-1 lg:grid-cols-3 gap-5"><div className="lg:col-span-1"><div className="bg-white/5 border border-white/10 rounded-2xl p-4 sticky top-24"><div className="flex items-center justify-between mb-3"><h3 className="text-white font-semibold text-sm">Chapters</h3>{!isBuilding&&<button onClick={async()=>{for(const i of (book.chapters||[]).map((_,i)=>i).filter(i=>!book.chapters[i].generated)){if(quotaHit)break;await genChapter(i);}}} disabled={busy||busyCh!==null||quotaHit||isBuilding} className="text-xs bg-purple-500/20 text-purple-300 border border-purple-500/30 px-3 py-1.5 rounded-lg hover:bg-purple-500/30 disabled:opacity-40">Write All</button>}</div><div className="space-y-1">{(book.chapters||[]).map((ch,i)=><button key={i} onClick={()=>setSelCh(i)} className={`w-full text-left px-3 py-2 rounded-lg text-sm transition-all ${selCh===i?"bg-purple-500/20 text-white border border-purple-500/30":"text-white/50 hover:bg-white/5"}`}><span className={ch.generated?"text-green-400":""}>{ch.generated?"✓ ":""}</span>{ch.number}. {ch.title}</button>)}</div></div></div><div className="lg:col-span-2">{book.chapters?.[selCh]&&<Card><div className="flex items-start justify-between mb-5 gap-4"><div><h2 className="text-white text-lg font-bold">Ch. {book.chapters[selCh].number}: {book.chapters[selCh].title}</h2><p className="text-white/35 text-sm mt-1">{book.chapters[selCh].description}</p></div>{!isBuilding&&<button onClick={()=>genChapter(selCh)} disabled={busyCh!==null||quotaHit||isBuilding} className="bg-gradient-to-r from-purple-500 to-pink-500 text-white px-4 py-2 rounded-xl font-medium text-sm hover:opacity-90 disabled:opacity-50 flex items-center gap-2 shrink-0">{busyCh===selCh?<><Spin size="h-4 w-4"/>Writing…</>:book.chapters[selCh].generated?"✍️ Rewrite":"✍️ Write"}</button>}</div>{book.chapters[selCh].content?<div className="text-white/75 text-sm leading-relaxed whitespace-pre-wrap max-h-[600px] overflow-y-auto pr-2">{book.chapters[selCh].content}</div>:<div className="text-center py-16 text-white/25"><div className="text-4xl mb-3">✍️</div><p>{isBuilding?"Generating…":"Click Write to generate"}</p></div>}</Card>}</div></div>}
+        {tab===1&&<div className="grid grid-cols-1 lg:grid-cols-3 gap-5"><div className="lg:col-span-1"><div className="bg-white/5 border border-white/10 rounded-2xl p-4 sticky top-24"><div className="flex items-center justify-between mb-3"><h3 className="text-white font-semibold text-sm">Chapters</h3>{!isBuilding&&<button onClick={async()=>{for(const i of (book.chapters||[]).map((_,i)=>i).filter(i=>!book.chapters[i].generated)){if(quotaHit)break;await genChapter(i);}}} disabled={busy||busyCh!==null||quotaHit||isBuilding} className="text-xs bg-purple-500/20 text-purple-300 border border-purple-500/30 px-3 py-1.5 rounded-lg hover:bg-purple-500/30 disabled:opacity-40">Write All</button>}</div><div className="space-y-1">{(book.chapters||[]).map((ch,i)=><button key={i} onClick={()=>setSelCh(i)} className={`w-full text-left px-3 py-2 rounded-lg text-sm transition-all ${selCh===i?"bg-purple-500/20 text-white border border-purple-500/30":"text-white/50 hover:bg-white/5"}`}><span className={ch.generated?"text-green-400":""}>{ch.generated?"✓ ":""}</span>{ch.number}. {ch.title}</button>)}</div></div></div><div className="lg:col-span-2">{book.chapters?.[selCh]&&<Card><div className="flex items-start justify-between mb-5 gap-4"><div><h2 className="text-white text-lg font-bold">Ch. {book.chapters[selCh].number}: {book.chapters[selCh].title}</h2><p className="text-white/35 text-sm mt-1">{book.chapters[selCh].description}</p></div>{!isBuilding&&<button onClick={()=>genChapter(selCh)} disabled={busyCh!==null||quotaHit||isBuilding} className="bg-gradient-to-r from-purple-500 to-pink-500 text-white px-4 py-2 rounded-xl font-medium text-sm hover:opacity-90 disabled:opacity-50 flex items-center gap-2 shrink-0">{busyCh===selCh?<><Spin size="h-4 w-4"/>Writing…</>:book.chapters[selCh].generated?"✍️ Rewrite":"✍️ Write"}</button>}</div>{book.chapters[selCh].content?<ChapterEditor book={book} chIdx={selCh} upd={upd}/>:<div className="text-center py-16 text-white/25"><div className="text-4xl mb-3">✍️</div><p>{isBuilding?"Generating…":"Click Write to generate"}</p></div>}</Card>}</div></div>}
 
         {/* COVER */}
         {tab===2&&<div className="max-w-5xl mx-auto"><div className="grid grid-cols-1 lg:grid-cols-2 gap-8"><div><h2 className="text-white text-xl font-bold mb-4">Cover Preview</h2>{book.cover_image_url?<><img src={book.cover_image_url} alt="Cover" className="w-full max-w-xs rounded-2xl shadow-2xl shadow-purple-900/60 mx-auto block"/><div className="flex gap-2 mt-4 justify-center"><button onClick={newVariation} disabled={busy||isBuilding} className="text-sm border border-white/20 text-white/50 px-4 py-2 rounded-lg hover:bg-white/5 disabled:opacity-40">🎲 Variation</button><a href={book.cover_image_url} target="_blank" rel="noopener noreferrer" className="text-sm border border-white/20 text-white/50 px-4 py-2 rounded-lg hover:bg-white/5">⬇️ Download</a></div></>:<div className="w-full max-w-xs aspect-[2/3] bg-white/5 border-2 border-dashed border-white/15 rounded-2xl flex items-center justify-center mx-auto"><div className="text-center text-white/20">{isBuilding?<><Spin/><p className="text-sm mt-2">Generating…</p></>:<><div className="text-5xl mb-2">🎨</div><p className="text-sm">Cover appears here</p></>}</div></div>}</div><div className="space-y-5"><h2 className="text-white text-xl font-bold">Cover Settings</h2><div className="bg-white/5 border border-white/10 rounded-xl p-1 flex gap-1">{[["auto","✨ AI Auto"],["custom","✏️ Custom"]].map(([m,label])=><button key={m} onClick={()=>setCoverMode(m)} className={`flex-1 py-2 rounded-lg text-sm font-medium transition-all ${coverMode===m?"bg-purple-500 text-white":"text-white/40 hover:text-white"}`}>{label}</button>)}</div>{coverMode==="auto"?<div className="bg-white/5 border border-white/10 rounded-xl p-4 text-sm text-white/50">Gemini analyzes your book and writes a detailed character-specific prompt.{lastAiPrompt&&<p className="text-white/25 text-xs mt-3 italic leading-relaxed">{lastAiPrompt}</p>}</div>:<div><label className="text-white/60 text-sm font-medium block mb-2">Describe your cover</label><textarea rows={7} value={customPrompt} onChange={e=>setCustomPrompt(e.target.value)} placeholder="E.g. Two men in their 20s, dark curly hair and red hair, standing close on a rainy rooftop at dusk, golden light, painterly cinematic style, no text..." className="w-full bg-white/10 border border-white/20 rounded-xl px-4 py-3 text-white placeholder-white/20 focus:outline-none focus:border-purple-500 resize-none text-sm"/></div>}<button onClick={genCover} disabled={busy||quotaHit||isBuilding||(coverMode==="custom"&&!customPrompt.trim())} className="w-full bg-gradient-to-r from-purple-500 to-pink-500 text-white py-4 rounded-xl font-semibold text-lg hover:opacity-90 disabled:opacity-40 flex items-center justify-center gap-2">{busy?<><Spin/>Generating…</>:book.cover_image_url?"🔄 Regenerate":"🎨 Generate Cover"}</button></div></div></div>}
@@ -1775,6 +1829,29 @@ function EditorPage({bookId,navigate,onSettings}){
 }
 
 // ── App Shell ─────────────────────────────────────────────────────────────────
+
+// ── Error Boundary ────────────────────────────────────────────────────────────
+class ErrorBoundary extends React.Component{
+  constructor(props){super(props);this.state={error:null};}
+  static getDerivedStateFromError(e){return{error:e};}
+  componentDidCatch(e,info){console.error("BookForge Error:",e,info);}
+  render(){
+    if(this.state.error){
+      return(
+        <div className="min-h-screen bg-[#0f0a1e] flex items-center justify-center p-6">
+          <div className="bg-red-500/10 border border-red-500/30 rounded-2xl p-8 max-w-md text-center">
+            <div className="text-4xl mb-4">😵</div>
+            <h2 className="text-white font-bold text-xl mb-2">Something went wrong</h2>
+            <p className="text-red-300/70 text-sm mb-4">{this.state.error.message}</p>
+            <button onClick={()=>{this.setState({error:null});}} className="bg-purple-500/20 text-purple-300 border border-purple-500/30 px-6 py-2 rounded-xl text-sm hover:bg-purple-500/30">Try Again</button>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
 function App(){
   const [page,setPage]=useState("home");
   const [bookId,setBookId]=useState(null);
@@ -1807,4 +1884,4 @@ function App(){
     </div>
   );
 }
-ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+ReactDOM.createRoot(document.getElementById("root")).render(<ErrorBoundary><App/></ErrorBoundary>);
