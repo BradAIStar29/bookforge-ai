@@ -511,7 +511,7 @@ async function analyzeChapterHumanness(chapterText, bookTitle, genre, chapterTit
   const result = JSON.parse(match[0]);
   // Merge local scan tells
   if(localTells.length > 0){
-    result.ai_tells_found = [...new Set([...(result.ai_tells_found||[]), ...localTells.map(t=>`Pattern detected: "${t}...")])];
+    result.ai_tells_found = [...new Set([...(result.ai_tells_found||[]), ...localTells.map(t=>`Pattern detected: "${t}..."`)])];
   }
   return result;
 }
