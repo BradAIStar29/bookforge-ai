@@ -462,7 +462,21 @@ const AI_TELLS=[
   // Over-explained interiority
   "He thought to himself","She thought to herself",
   "He mused","She mused","He pondered","She pondered",
-  "He reflected on","She reflected on"
+  "He reflected on","She reflected on",
+  // More em-dash/qualifier abuse
+  "—but","—yet","—though","—still","—however",
+  // Overwrought nature
+  "The sun dipped","The moon hung","Stars scattered","The sky painted",
+  // Faux profound endings
+  "Everything had changed","Nothing would ever be","The world felt different",
+  "Nothing was the same","He would never forget","She would always remember",
+  // Announce-the-theme sentences
+  "This was the moment","This changed everything","This was why","This is why",
+  // Safe vagueness
+  "somehow","inexplicably","indescribably","overwhelmingly","inexplicably",
+  "an emotion he couldn't name","a feeling she couldn't describe",
+  // AI closure tells
+  "a new chapter","a fresh start","moving forward","one step at a time"
 ];
 
 async function analyzeChapterHumanness(chapterText, bookTitle, genre, chapterTitle){
@@ -1029,7 +1043,7 @@ function QueuePage({navigate,onSettings}){
           const content=await callGemini(
             `Write Chapter ${chapters[i].number}: "${chapters[i].title}" for a ${book.genre} book titled "${outline.title||book.title}".${seriesCtx}\n`+
             `Chapter description: ${chapters[i].description}\nPrevious: ${prev}\nAudience: ${book.target_audience}\n\n`+
-            `2,500–3,500 words. Match genre tone. For romance/LGBT+: authentic emotion and representation.`
+            `2,500–3,500 words. Match genre tone.\n\nWRITING RULES — violating these will get this chapter rejected:\n• NEVER start a sentence with 'He/She/They couldn't help but', 'In that moment', 'It dawned on', 'Something about the way', 'A wave of', 'A surge of'\n• NEVER state emotions directly ('he felt sad', 'warmth spread through her') — express through physical action, dialogue, or specific sensory detail\n• NEVER use em-dashes for dramatic effect more than once per page\n• VARY sentence length violently: one-word sentences. Fragments. Then a long, breathing sentence that winds through a scene and refuses to end neatly.\n• Dialogue must be messy and human: people talk past each other, leave things half-said, interrupt, change subject\n• Use SPECIFIC details: not 'the coffee shop smelled like coffee' but the burnt-sugar smell of the espresso machine at 6am, the sticky ring on the table from someone's iced latte\n• No clean emotional resolutions — conflict leaves residue\n• Character psychology must be specific, not convenient\n• Read like a novel — no chapter summaries, no scene headers, no markdown`
           );
           trackUsage();
           chapters[i]={...chapters[i],content,generated:true};
@@ -1329,15 +1343,17 @@ function SeriesPage({navigate,onSettings}){
 // HOME PAGE
 // ══════════════════════════════════════════════════════════════════════════════
 function HomePage({navigate,onSettings}){
-  const [books,setBooksList]=useState([]);
+  const [allBooks,setBooksList]=useState([]);
+  const [search,setSearch]=useState("");
   useEffect(()=>setBooksList(getBooks()),[]);
+  const books=search.trim()?allBooks.filter(b=>(b.title||"").toLowerCase().includes(search.toLowerCase())||(b.genre||"").toLowerCase().includes(search.toLowerCase())||(b.status||"").toLowerCase().includes(search.toLowerCase())):allBooks;
   const del=(id,e)=>{e.stopPropagation();if(!confirm("Delete this book?"))return;const b=getBooks().filter(x=>x.id!==id);setBooks(b);setBooksList(b);};
   const pct=b=>b.chapters?.length>0?(b.chapters.filter(c=>c.generated).length/b.chapters.length)*100:0;
   return(
     <div className="max-w-7xl mx-auto px-4 sm:px-6 py-8">
       {!getKey()&&<div className="bg-amber-500/15 border border-amber-500/40 rounded-xl p-4 mb-6 flex items-center gap-3"><span className="text-2xl">🔑</span><div className="flex-1"><p className="text-amber-300 font-semibold text-sm">Gemini API key not set</p><p className="text-amber-200/50 text-xs">Required to generate books. Free from Google AI Studio.</p></div><button onClick={onSettings} className="bg-amber-500 text-black text-xs font-bold px-4 py-2 rounded-lg hover:bg-amber-400">Set Key</button></div>}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-8">
-        {[{label:"Total",value:books.length,icon:"📚"},{label:"In Progress",value:books.filter(b=>["outlining","writing"].includes(b.status)).length,icon:"✍️"},{label:"Ready",value:books.filter(b=>b.status==="ready").length,icon:"✅"},{label:"Published",value:books.filter(b=>b.status==="published").length,icon:"🚀"}].map(s=>(
+        {[{label:"Total",value:allBooks.length,icon:"📚"},{label:"In Progress",value:allBooks.filter(b=>["outlining","writing"].includes(b.status)).length,icon:"✍️"},{label:"Ready",value:allBooks.filter(b=>b.status==="ready").length,icon:"✅"},{label:"Published",value:allBooks.filter(b=>b.status==="published").length,icon:"🚀"}].map(s=>(
           <div key={s.label} className="bg-white/5 border border-white/10 rounded-2xl p-4"><div className="text-2xl mb-1">{s.icon}</div><div className="text-white text-2xl font-bold">{s.value}</div><div className="text-white/40 text-sm">{s.label}</div></div>
         ))}
       </div>
@@ -1345,6 +1361,7 @@ function HomePage({navigate,onSettings}){
         <h2 className="text-white text-xl font-bold">Your Library</h2>
         <button onClick={()=>navigate("create")} className="bg-gradient-to-r from-purple-500 to-pink-500 text-white px-5 py-2.5 rounded-xl font-semibold hover:opacity-90">+ New Book</button>
       </div>
+            <input type="text" placeholder="🔍 Search by title, genre, or status…" value={search} onChange={e=>setSearch(e.target.value)} className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-2.5 text-white text-sm placeholder-white/30 focus:outline-none focus:border-purple-500/50 mb-4"/>
       {books.length===0?(
         <div className="text-center py-24"><div className="text-7xl mb-4">📖</div><h2 className="text-white text-2xl font-bold mb-2">No books yet</h2><p className="text-white/40 mb-8">Generate your first AI-powered book in minutes</p><button onClick={()=>navigate("create")} className="bg-gradient-to-r from-purple-500 to-pink-500 text-white px-10 py-4 rounded-xl font-semibold text-lg hover:opacity-90">✨ Create Your First Book</button></div>
       ):(
@@ -1407,9 +1424,9 @@ function CreatePage({navigate,onSettings}){
       const langNote=form.language!=="English"?`\nWrite in: ${form.language}`:"";
       let prompt;
       if(mode==="import"){
-        prompt=`You are a professional book editor. Analyze this draft/notes and build a polished book outline from it.\n\nDRAFT/NOTES:\n${importText.slice(0,6000)}\n\nGenre: ${form.genre||"Fiction"}\nAudience: ${form.audience||"General Adults"}${styleCtx}${langNote}\n\n${form.nonfiction_mode?"Include exercises/reflections/action-steps fields per chapter.":""}\n\nRespond ONLY with valid JSON:\n{"title":"","subtitle":"","description":"","themes":[""],"estimated_word_count":50000,"writing_language":"${form.language}","chapters":[{"number":1,"title":"","description":"","${form.nonfiction_mode?"exercise":"notes"}":""}]}`;
+        prompt=`You are a professional book editor. Analyze this draft/notes and build a polished book outline from it.\n\nDRAFT/NOTES:\n${importText.slice(0,6000)}\n\nGenre: ${form.genre||"Fiction"}\nAudience: ${form.audience||"General Adults"}${styleCtx}${langNote}\n\n${form.nonfiction_mode?"Include exercises/reflections/action-steps fields per chapter.":""}\n\nRespond ONLY with valid JSON:\n{"title":"","subtitle":"","description":"","themes":[""],"tone_notes":"describe the intended emotional register and prose style","estimated_word_count":50000,"writing_language":"${form.language}","chapters":[{"number":1,"title":"","description":"","opening_hook":"how this chapter should open — first line or image","${form.nonfiction_mode?"exercise":"notes"}":""}]}`;
       } else {
-        prompt=`You are a bestselling author. Create a detailed book outline.\nTopic: ${form.topic}\nGenre: ${form.genre}\nAudience: ${form.audience}${styleCtx}${langNote}\n${form.nonfiction_mode?"Nonfiction mode: include exercises, reflections, and action steps per chapter.":""}\n\nRespond ONLY with valid JSON:\n{"title":"","subtitle":"","description":"","themes":[""],"estimated_word_count":50000,"writing_language":"${form.language}","chapters":[{"number":1,"title":"","description":"","${form.nonfiction_mode?"exercise":"notes"}":""}]}`;
+        prompt=`You are a bestselling author. Create a detailed book outline.\nTopic: ${form.topic}\nGenre: ${form.genre}\nAudience: ${form.audience}${styleCtx}${langNote}\n${form.nonfiction_mode?"Nonfiction mode: include exercises, reflections, and action steps per chapter.":""}\n\nRespond ONLY with valid JSON:\n{"title":"","subtitle":"","description":"","themes":[""],"tone_notes":"describe the intended emotional register and prose style","estimated_word_count":50000,"writing_language":"${form.language}","chapters":[{"number":1,"title":"","description":"","opening_hook":"how this chapter should open — first line or image","${form.nonfiction_mode?"exercise":"notes"}":""}]}`;
       }
       const raw=await callGemini(prompt);
       trackUsage();
@@ -1636,7 +1653,7 @@ function EditorPage({bookId,navigate,onSettings}){
           const charCtx=chars.length?`\n\nESTABLISHED CHARACTERS (maintain exact consistency):\n${chars.map(c=>`${c.name} [${c.role||""}]: ${c.appearance||""} — ${c.personality||""}`).join("\n")}`:"";
           const langNote=b.writing_language&&b.writing_language!=="English"?`\n\nWRITE IN: ${b.writing_language}`:"";
           const nonfictionNote=b.nonfiction_mode?"\n\nNONFICTION MODE: End the chapter with a clearly marked Exercise, Reflection question, and Action Step.":"";
-          const content=await callGemini(`Write Chapter ${chapters[i].number}: "${chapters[i].title}" for a ${b.genre} book titled "${outline.title}".${seriesCtx}${voiceCtx}${charCtx}${langNote}${nonfictionNote}\n\nChapter: ${chapters[i].description}\nPrevious: ${prev}\nAudience: ${b.target_audience}\n\n2,500–3,500 words. Match genre tone precisely. For romance/LGBT+: authentic emotion, genuine representation. Weave in world-building naturally.`);
+          const content=await callGemini(`Write Chapter ${chapters[i].number}: "${chapters[i].title}" for a ${b.genre} book titled "${outline.title}".${seriesCtx}${voiceCtx}${charCtx}${langNote}${nonfictionNote}\n\nChapter: ${chapters[i].description}\nPrevious: ${prev}\nAudience: ${b.target_audience}\n\n2,500–3,500 words. Match genre tone precisely.\n\nWRITING RULES — violating these will get this chapter rejected:\n• NEVER start a sentence with 'He/She/They couldn't help but', 'In that moment', 'It dawned on', 'Something about the way', 'A wave of', 'A surge of'\n• NEVER state emotions directly ('he felt sad', 'warmth spread through her') — express through physical action, dialogue, or specific sensory detail\n• NEVER use em-dashes for dramatic effect more than once per page\n• VARY sentence length violently: one-word sentences. Fragments. Then a long, breathing sentence that winds through a scene and refuses to end neatly.\n• Dialogue must be messy and human: people talk past each other, leave things half-said, interrupt, change subject\n• Use SPECIFIC details: not 'the coffee shop smelled like coffee' but the burnt-sugar smell of the espresso machine at 6am, the sticky ring on the table from someone's iced latte\n• No clean emotional resolutions — conflict leaves residue\n• Character psychology must be specific, not convenient\n• Read like a novel — no chapter summaries, no scene headers, no markdown`);
           bump();chapters[i]={...chapters[i],content,generated:true};
           const wc=chapters.reduce((a,c)=>a+(c.content?c.content.split(/\s+/).length:0),0);
           updateBook(bookId,{chapters:[...chapters],word_count:wc});setBook(getBook(bookId));
@@ -1694,7 +1711,7 @@ function EditorPage({bookId,navigate,onSettings}){
   const genChapter=async(idx)=>{
     if(quotaHit||isBuilding)return;setBusyCh(idx);setError("");
     try{
-      const outline=JSON.parse(book.outline||"{}");const ch=outline.chapters[idx];
+      const outline=JSON.parse(book.outline||"{}");const ch=outline.chapters?.[idx];if(!ch){setError("Chapter outline missing — regenerate the outline.");setBusyCh(null);return;}
       const prev=(book.chapters||[]).slice(0,idx).filter(c=>c.generated).map(c=>c.title).join(", ")||"None";
       const series=book.series_id?getSeriesById(book.series_id):null;
       const seriesCtx=series?`\n\n${buildSeriesContext(series)}\nMaintain full consistency.`:"";
@@ -1704,7 +1721,7 @@ function EditorPage({bookId,navigate,onSettings}){
       const charCtx=chars.length?`\n\nCHARACTERS:\n${chars.map(c=>`${c.name}: ${c.appearance||""} — ${c.personality||""}`).join("\n")}`:"";
       const langNote=book.writing_language&&book.writing_language!=="English"?`\n\nWRITE IN: ${book.writing_language}`:"";
       const nfNote=book.nonfiction_mode?"\n\nEnd with: Exercise, Reflection, Action Step.":"";
-      const content=await callGemini(`Write Chapter ${ch.number}: "${ch.title}" for a ${book.genre} book titled "${outline.title}".${seriesCtx}${voiceCtx}${charCtx}${langNote}${nfNote}\n\nDesc: ${ch.description}\nPrevious: ${prev}\nAudience: ${book.target_audience}\n\n2,500–3,500 words. Match genre tone. For romance/LGBT+: authentic emotion and representation.`);
+      const content=await callGemini(`Write Chapter ${ch.number}: "${ch.title}" for a ${book.genre} book titled "${outline.title}".${seriesCtx}${voiceCtx}${charCtx}${langNote}${nfNote}\n\nDesc: ${ch.description}\nPrevious: ${prev}\nAudience: ${book.target_audience}\n\n2,500–3,500 words. Match genre tone.\n\nWRITING RULES — violating these will get this chapter rejected:\n• NEVER start a sentence with 'He/She/They couldn't help but', 'In that moment', 'It dawned on', 'Something about the way', 'A wave of', 'A surge of'\n• NEVER state emotions directly ('he felt sad', 'warmth spread through her') — express through physical action, dialogue, or specific sensory detail\n• NEVER use em-dashes for dramatic effect more than once per page\n• VARY sentence length violently: one-word sentences. Fragments. Then a long, breathing sentence that winds through a scene and refuses to end neatly.\n• Dialogue must be messy and human: people talk past each other, leave things half-said, interrupt, change subject\n• Use SPECIFIC details: not 'the coffee shop smelled like coffee' but the burnt-sugar smell of the espresso machine at 6am, the sticky ring on the table from someone's iced latte\n• No clean emotional resolutions — conflict leaves residue\n• Character psychology must be specific, not convenient\n• Read like a novel — no chapter summaries, no scene headers, no markdown`);
       bump();const chapters=[...(book.chapters||[])];chapters[idx]={...chapters[idx],content,generated:true};
       const wc=chapters.reduce((a,c)=>a+(c.content?c.content.split(/\s+/).length:0),0);
       upd({chapters,word_count:wc,status:"writing"});flash(`Chapter ${idx+1} written! ✍️`);
