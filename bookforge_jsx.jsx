@@ -1740,7 +1740,7 @@ function EditorPage({bookId,navigate,onSettings}){
   const [customPrompt,setCustomPrompt]=useState("");
   const [lastAiPrompt,setLastAiPrompt]=useState("");
   const buildRef=useRef(false);
-  const TABS=["📋 Outline","✍️ Chapters","🎨 Cover","🔍 SEO","🤖 Review","🔎 Market","🪝 Hooks","📊 Quality","✍️ Writing","👥 Characters","📤 Publish","🌍 Translate"];
+  const TABS=["📋 Outline","✍️ Chapters","🎨 Cover","🔍 SEO","🤖 Review","🔎 Market","🪝 Hooks","📊 Quality","✍️ Writing","👥 Characters","📤 Publish","🌍 Translate","🎙️ Audio Studio"];
 
   useEffect(()=>{
     const b=getBook(bookId);if(!b){navigate("home");return;}
@@ -2083,6 +2083,340 @@ function EditorPage({bookId,navigate,onSettings}){
           </div>
         </div>}
         {tab===11&&<TranslatePanel book={book} upd={upd} quotaHit={quotaHit} bump={bump} handleErr={handleErr} flash={flash}/>}
+        {tab===12&&<AudioStudioPanel book={book} bookId={bookId} onSettings={onSettings} flash={flash}/>}
+      </div>
+    </div>
+  );
+}
+
+
+// ══════════════════════════════════════════════════════════════════════════════
+// 🎙️ AUDIO STUDIO — Powered by Kokoro TTS (82M param ONNX model, runs in browser)
+// Model: onnx-community/Kokoro-82M-v1.0-ONNX | License: Apache 2.0
+// Quality: comparable to commercial TTS, 27 voices, 100% free, no API key
+// First load: ~82MB download, cached in browser IndexedDB afterwards
+// ══════════════════════════════════════════════════════════════════════════════
+const KOKORO_VOICES = [
+  {id:"af_heart",label:"Heart ❤️",gender:"F",accent:"American"},
+  {id:"af_bella",label:"Bella 🔥",gender:"F",accent:"American"},
+  {id:"am_michael",label:"Michael",gender:"M",accent:"American"},
+  {id:"am_fenrir",label:"Fenrir",gender:"M",accent:"American"},
+  {id:"am_puck",label:"Puck",gender:"M",accent:"American"},
+  {id:"af_nicole",label:"Nicole 🎧",gender:"F",accent:"American"},
+  {id:"af_aoede",label:"Aoede",gender:"F",accent:"American"},
+  {id:"af_sarah",label:"Sarah",gender:"F",accent:"American"},
+  {id:"af_kore",label:"Kore",gender:"F",accent:"American"},
+  {id:"af_sky",label:"Sky",gender:"F",accent:"American"},
+  {id:"bf_emma",label:"Emma",gender:"F",accent:"British"},
+  {id:"bf_isabella",label:"Isabella",gender:"F",accent:"British"},
+  {id:"bm_george",label:"George",gender:"M",accent:"British"},
+  {id:"bm_daniel",label:"Daniel",gender:"M",accent:"British"},
+  {id:"bm_fable",label:"Fable",gender:"M",accent:"British"},
+];
+
+let _kokoroTTS = null;
+let _kokoroLoading = false;
+let _kokoroLoadCallbacks = [];
+
+async function loadKokoro(onProgress){
+  if(_kokoroTTS)return _kokoroTTS;
+  if(_kokoroLoading){return new Promise(res=>_kokoroLoadCallbacks.push(res));}
+  _kokoroLoading=true;
+  try{
+    onProgress("Loading Kokoro TTS module…");
+    const { KokoroTTS } = await import("https://cdn.jsdelivr.net/npm/kokoro-js@1.2.1/dist/kokoro.js");
+    onProgress("Downloading model (~82MB, cached after first use)…");
+    const tts = await KokoroTTS.from_pretrained("onnx-community/Kokoro-82M-v1.0-ONNX",{
+      dtype:"q8",
+      device:"wasm",
+      progress_callback:(p)=>{
+        if(p.status==="progress"&&p.total>0){
+          const pct=Math.round(p.loaded/p.total*100);
+          onProgress(`Downloading model: ${pct}% — (${(p.loaded/1024/1024).toFixed(0)}MB / ${(p.total/1024/1024).toFixed(0)}MB)`);
+        }
+      }
+    });
+    _kokoroTTS=tts;
+    _kokoroLoadCallbacks.forEach(cb=>cb(tts));
+    _kokoroLoadCallbacks=[];
+    return tts;
+  }catch(err){
+    _kokoroLoading=false;
+    throw err;
+  }
+}
+
+function AudioStudioPanel({book,bookId,onSettings,flash}){
+  const [modelState,setModelState]=useState("idle"); // idle | loading | ready | error
+  const [modelProgress,setModelProgress]=useState("");
+  const [voice,setVoice]=useState("af_heart");
+  const [speed,setSpeed]=useState(1.0);
+  const [selectedChapters,setSelectedChapters]=useState([]);
+  const [generating,setGenerating]=useState(false);
+  const [genLog,setGenLog]=useState([]);
+  const [audioBlobs,setAudioBlobs]=useState({}); // {chapterIdx: blobUrl}
+  const [playingCh,setPlayingCh]=useState(null);
+  const audioRef=useRef(null);
+  const cancelRef=useRef(false);
+
+  const chapters=(book.chapters||[]).filter(c=>c.content);
+  const addLog=msg=>setGenLog(prev=>[{msg,time:new Date().toLocaleTimeString()},...prev.slice(0,49)]);
+
+  const loadModel=async()=>{
+    if(modelState==="ready")return true;
+    setModelState("loading");setModelProgress("Starting…");
+    try{
+      await loadKokoro(msg=>{setModelProgress(msg);});
+      setModelState("ready");setModelProgress("");
+      addLog("✅ Kokoro TTS loaded and ready");
+      return true;
+    }catch(err){
+      setModelState("error");setModelProgress(err.message||"Load failed");
+      addLog("❌ Model load error: "+(err.message||String(err)));
+      return false;
+    }
+  };
+
+  // Helper: split text into narration-safe chunks (max ~400 chars, split at sentence boundaries)
+  const splitText=(text)=>{
+    const clean=text.replace(/[#*_`]/g,"").replace(/---+/g," ").replace(/\n{3,}/g,"\n\n").trim();
+    const sentences=clean.match(/[^.!?]+[.!?]+["'»]?|[^.!?]+$/g)||[clean];
+    const chunks=[];let cur="";
+    for(const s of sentences){
+      if((cur+s).length>380){if(cur.trim())chunks.push(cur.trim());cur=s;}
+      else cur+=s;
+    }
+    if(cur.trim())chunks.push(cur.trim());
+    return chunks.filter(c=>c.length>5);
+  };
+
+  // Generate audio for a single chapter using Kokoro
+  const generateChapter=async(tts,ch,chIdx)=>{
+    addLog(`🎙️ Generating Ch.${ch.number}: "${ch.title}"…`);
+    const chunks=splitText(ch.content);
+    const buffers=[];
+    for(let i=0;i<chunks.length;i++){
+      if(cancelRef.current)throw new Error("Cancelled");
+      addLog(`  ↳ Segment ${i+1}/${chunks.length}…`);
+      const audio=await tts.generate(chunks[i],{voice,speed});
+      // audio.audio is a Float32Array at 24000 Hz
+      buffers.push(audio.audio);
+    }
+    // Concatenate all Float32Arrays into one
+    const totalLen=buffers.reduce((a,b)=>a+b.length,0);
+    const combined=new Float32Array(totalLen);
+    let offset=0;for(const b of buffers){combined.set(b,offset);offset+=b.length;}
+    // Encode as WAV
+    const wavBlob=float32ToWav(combined,24000);
+    const url=URL.createObjectURL(wavBlob);
+    setAudioBlobs(prev=>({...prev,[chIdx]:url}));
+    addLog(`  ✅ Ch.${ch.number} done — ${(combined.length/24000/60).toFixed(1)} min`);
+    return{chIdx,url,audio:combined};
+  };
+
+  // WAV encoder (PCM 16-bit)
+  const float32ToWav=(samples,sampleRate)=>{
+    const buf=new ArrayBuffer(44+samples.length*2);
+    const view=new DataView(buf);
+    const writeStr=(o,s)=>{for(let i=0;i<s.length;i++)view.setUint8(o+i,s.charCodeAt(i));};
+    writeStr(0,"RIFF");view.setUint32(4,36+samples.length*2,true);writeStr(8,"WAVE");
+    writeStr(12,"fmt ");view.setUint32(16,16,true);view.setUint16(20,1,true);
+    view.setUint16(22,1,true);view.setUint32(24,sampleRate,true);
+    view.setUint32(28,sampleRate*2,true);view.setUint16(32,2,true);view.setUint16(34,16,true);
+    writeStr(36,"data");view.setUint32(40,samples.length*2,true);
+    let offset=44;
+    for(let i=0;i<samples.length;i++){
+      const s=Math.max(-1,Math.min(1,samples[i]));
+      view.setInt16(offset,s<0?s*0x8000:s*0x7FFF,true);offset+=2;
+    }
+    return new Blob([buf],{type:"audio/wav"});
+  };
+
+  const generateSelected=async()=>{
+    if(selectedChapters.length===0){flash("Select at least one chapter");return;}
+    cancelRef.current=false;
+    setGenerating(true);setGenLog([]);
+    try{
+      const tts=await loadKokoro(msg=>setModelProgress(msg));
+      setModelState("ready");
+      const selected=chapters.filter((_,i)=>selectedChapters.includes(i));
+      addLog(`🚀 Starting ${selected.length} chapter(s) with voice: ${voice}`);
+      for(let i=0;i<selected.length;i++){
+        if(cancelRef.current)break;
+        const ch=selected[i];
+        const chIdx=chapters.indexOf(ch);
+        await generateChapter(tts,ch,chIdx);
+      }
+      addLog("🎉 Generation complete!");
+      flash("Audio generated! 🎙️");
+    }catch(err){
+      if(err.message!=="Cancelled")addLog("❌ Error: "+err.message);
+    }finally{setGenerating(false);cancelRef.current=false;}
+  };
+
+  const downloadAllWav=async()=>{
+    const indices=Object.keys(audioBlobs);
+    if(indices.length===0){flash("Generate audio first");return;}
+    addLog("📦 Bundling all chapters into ZIP-like download…");
+    // Download each chapter individually (browser limitation — no zip without lib)
+    for(const idx of indices){
+      const ch=chapters[Number(idx)];
+      if(!ch)continue;
+      const a=document.createElement("a");
+      a.href=audioBlobs[idx];
+      a.download=`${(book.title||"book").replace(/[^a-z0-9]/gi,"_")}_ch${ch.number}_${ch.title.replace(/[^a-z0-9]/gi,"_")}.wav`;
+      a.click();await new Promise(r=>setTimeout(r,300));
+    }
+    flash("Downloaded "+indices.length+" chapter WAVs 🎧");
+  };
+
+  const playChapter=(idx)=>{
+    const url=audioBlobs[idx];if(!url)return;
+    if(audioRef.current){audioRef.current.pause();audioRef.current.src="";}
+    const audio=new Audio(url);audio.playbackRate=1.0;
+    audioRef.current=audio;setPlayingCh(idx);
+    audio.play();
+    audio.onended=()=>setPlayingCh(null);
+  };
+
+  const toggleAll=()=>{
+    if(selectedChapters.length===chapters.length)setSelectedChapters([]);
+    else setSelectedChapters(chapters.map((_,i)=>i));
+  };
+
+  const voicesByAccent={
+    American:KOKORO_VOICES.filter(v=>v.accent==="American"),
+    British:KOKORO_VOICES.filter(v=>v.accent==="British"),
+  };
+
+  return(
+    <div className="space-y-5 max-w-4xl mx-auto">
+      {/* Header */}
+      <Card>
+        <div className="flex items-start gap-4">
+          <div className="w-12 h-12 bg-gradient-to-br from-purple-500 to-pink-500 rounded-2xl flex items-center justify-center text-2xl shrink-0">🎙️</div>
+          <div className="flex-1">
+            <h2 className="text-white text-xl font-bold">Audio Studio</h2>
+            <p className="text-white/40 text-sm mt-1">Powered by <a href="https://github.com/hexgrad/kokoro" target="_blank" className="text-purple-400 hover:text-purple-300">Kokoro TTS</a> — 82M parameter open-source model, 100% in-browser, no API key. Near-ElevenLabs quality.</p>
+          </div>
+          <div className={`text-xs px-3 py-1 rounded-full border font-semibold shrink-0 ${modelState==="ready"?"bg-green-500/20 text-green-300 border-green-500/30":modelState==="loading"?"bg-amber-500/20 text-amber-300 border-amber-500/30":modelState==="error"?"bg-red-500/20 text-red-300 border-red-500/30":"bg-white/10 text-white/40 border-white/10"}`}>
+            {modelState==="ready"?"✅ Model Ready":modelState==="loading"?"⏳ Loading…":modelState==="error"?"❌ Error":"Not Loaded"}
+          </div>
+        </div>
+        {modelState==="loading"&&modelProgress&&(
+          <div className="mt-4">
+            <div className="bg-white/5 rounded-lg p-3 text-amber-300/70 text-xs">{modelProgress}</div>
+            <p className="text-white/20 text-xs mt-2">After the first download (~82MB), the model is cached in your browser — future loads are instant.</p>
+          </div>
+        )}
+        {modelState==="error"&&<div className="mt-3 bg-red-500/10 border border-red-500/20 rounded-xl p-3 text-red-300 text-sm">{modelProgress}<br/><span className="text-red-300/50 text-xs">Tip: Try in Chrome/Edge with WebAssembly support.</span></div>}
+      </Card>
+
+      {/* Voice & Settings */}
+      <Card>
+        <h3 className="text-white font-semibold mb-4">Voice & Settings</h3>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-4">
+          <div>
+            <label className="text-white/50 text-xs uppercase tracking-wider block mb-2">Narrator Voice</label>
+            <select value={voice} onChange={e=>setVoice(e.target.value)} className="w-full bg-white/10 border border-white/20 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-purple-500 text-sm">
+              {Object.entries(voicesByAccent).map(([accent,voices])=>(
+                <optgroup key={accent} label={`─── ${accent} ───`}>
+                  {voices.map(v=><option key={v.id} value={v.id}>{v.label} [{v.gender}]</option>)}
+                </optgroup>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label className="text-white/50 text-xs uppercase tracking-wider block mb-2">Speed: {speed.toFixed(2)}×</label>
+            <input type="range" min="0.7" max="1.3" step="0.05" value={speed} onChange={e=>setSpeed(Number(e.target.value))} className="w-full accent-purple-500 mt-2"/>
+            <div className="flex justify-between text-white/20 text-xs mt-1"><span>0.7× slow</span><span>1.0× natural</span><span>1.3× fast</span></div>
+          </div>
+        </div>
+        <div className="bg-purple-500/10 border border-purple-500/20 rounded-xl p-3 text-xs text-purple-300/70">
+          <strong>Voice guide:</strong> Heart ❤️ / Bella 🔥 = warmest, most natural. Michael / George = strong male narrator. Emma / Isabella = polished British.
+        </div>
+      </Card>
+
+      {/* Chapter Selection */}
+      <Card>
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="text-white font-semibold">Select Chapters ({selectedChapters.length}/{chapters.length})</h3>
+          <div className="flex gap-2">
+            <button onClick={toggleAll} className="text-xs border border-white/20 text-white/40 px-3 py-1.5 rounded-lg hover:bg-white/5">{selectedChapters.length===chapters.length?"Deselect All":"Select All"}</button>
+          </div>
+        </div>
+        {chapters.length===0?(
+          <div className="text-center py-8 text-white/20 text-sm">No chapters written yet — write chapters first.</div>
+        ):(
+          <div className="space-y-2 max-h-[400px] overflow-y-auto pr-1">
+            {chapters.map((ch,i)=>{
+              const hasAudio=!!audioBlobs[i];
+              const isPlaying=playingCh===i;
+              const isSelected=selectedChapters.includes(i);
+              return(
+                <div key={i} className={`flex items-center gap-3 p-3 rounded-xl border transition-all cursor-pointer ${isSelected?"bg-purple-500/15 border-purple-500/30":"bg-white/5 border-white/10 hover:border-white/20"}`}>
+                  <input type="checkbox" checked={isSelected} onChange={e=>{e.stopPropagation();setSelectedChapters(prev=>isSelected?prev.filter(x=>x!==i):[...prev,i]);}} className="accent-purple-500 w-4 h-4 shrink-0" onClick={e=>e.stopPropagation()}/>
+                  <div className="flex-1 min-w-0" onClick={()=>setSelectedChapters(prev=>isSelected?prev.filter(x=>x!==i):[...prev,i])}>
+                    <p className="text-white text-sm font-medium truncate">Ch.{ch.number}: {ch.title}</p>
+                    <p className="text-white/30 text-xs">{(ch.content||"").split(/\s+/).length} words · ~{Math.round((ch.content||"").split(/\s+/).length/150)} min audio</p>
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0">
+                    {hasAudio&&(
+                      <>
+                        <button onClick={e=>{e.stopPropagation();if(isPlaying){audioRef.current?.pause();setPlayingCh(null);}else{playChapter(i);}}} className={`w-8 h-8 rounded-full flex items-center justify-center text-sm transition-all ${isPlaying?"bg-pink-500/30 text-pink-300":"bg-green-500/20 text-green-300 hover:bg-green-500/30"}`}>
+                          {isPlaying?"⏸":"▶"}
+                        </button>
+                        <a href={audioBlobs[i]} download={`ch${ch.number}_${ch.title.replace(/[^a-z0-9]/gi,"_")}.wav`} onClick={e=>e.stopPropagation()} className="w-8 h-8 rounded-full bg-white/10 flex items-center justify-center text-white/40 hover:text-white text-xs">💾</a>
+                      </>
+                    )}
+                    {hasAudio&&<span className="text-green-400/70 text-xs shrink-0">✅</span>}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </Card>
+
+      {/* Generate Controls */}
+      <Card>
+        <div className="flex gap-3 mb-4">
+          {!generating?(
+            <button onClick={generateSelected} disabled={selectedChapters.length===0||chapters.length===0} className="flex-1 bg-gradient-to-r from-purple-500 to-pink-500 text-white py-3.5 rounded-xl font-semibold hover:opacity-90 disabled:opacity-40 flex items-center justify-center gap-2">
+              🎙️ Generate Audio ({selectedChapters.length} ch)
+            </button>
+          ):(
+            <button onClick={()=>{cancelRef.current=true;addLog("⏹ Cancelling…");}} className="flex-1 bg-red-500/20 border border-red-500/30 text-red-300 py-3.5 rounded-xl font-semibold hover:bg-red-500/30 flex items-center justify-center gap-2">
+              <Spin/>Generating… (click to cancel)
+            </button>
+          )}
+          {Object.keys(audioBlobs).length>0&&(
+            <button onClick={downloadAllWav} className="border border-white/20 text-white/60 px-5 py-3.5 rounded-xl hover:bg-white/5 text-sm whitespace-nowrap">💾 Download All</button>
+          )}
+        </div>
+
+        {/* Generation Log */}
+        {genLog.length>0&&(
+          <div className="bg-black/30 rounded-xl p-4 max-h-48 overflow-y-auto space-y-1">
+            {genLog.map((entry,i)=>(
+              <div key={i} className="flex gap-2 text-xs">
+                <span className="text-white/20 shrink-0">{entry.time}</span>
+                <span className="text-white/60">{entry.msg}</span>
+              </div>
+            ))}
+          </div>
+        )}
+
+        <div className="mt-4 grid grid-cols-2 sm:grid-cols-3 gap-3 text-center">
+          <div className="bg-white/5 rounded-xl p-3"><p className="text-white text-lg font-bold">{Object.keys(audioBlobs).length}</p><p className="text-white/30 text-xs">Chapters ready</p></div>
+          <div className="bg-white/5 rounded-xl p-3"><p className="text-white text-lg font-bold">{chapters.reduce((a,c)=>a+Math.round((c.content||"").split(/\s+/).length/150),0)}</p><p className="text-white/30 text-xs">Est. total minutes</p></div>
+          <div className="bg-white/5 rounded-xl p-3"><p className="text-white text-lg font-bold">FREE</p><p className="text-white/30 text-xs">No API cost</p></div>
+        </div>
+      </Card>
+
+      {/* Info box */}
+      <div className="bg-white/3 border border-white/8 rounded-xl p-4 text-xs text-white/30 leading-relaxed">
+        <strong className="text-white/50">How it works:</strong> Kokoro-82M runs entirely in your browser via WebAssembly. The model (~82MB) downloads once and is cached permanently. Audio is WAV format (24kHz, 16-bit PCM) — import into Audacity, Adobe Premiere, or ACX-compatible software for final mastering. Each chapter generates independently so you can regenerate just the chapters that need it.
       </div>
     </div>
   );
