@@ -36,6 +36,29 @@ const getCharacters=bookId=>ls.get("bfai_chars_"+bookId,[]);
 const setCharacters=(bookId,chars)=>ls.set("bfai_chars_"+bookId,chars);
 
 // ── EPUB builder (client-side, no deps needed) ────────────────────────────────
+
+// ── RTF/DOCX Export (KDP-ready, opens in Word/LibreOffice) ───────────────────
+function buildRTF(book){
+  const chaps=(book.chapters||[]).filter(c=>c.content);
+  const rtfEscape=s=>(s||"").replace(/\\/g,"\\\\").replace(/\{/g,"\\{").replace(/\}/g,"\\}").replace(/[^\x00-\x7F]/g,c=>{const code=c.charCodeAt(0);return code<256?`\\'${code.toString(16).padStart(2,"0")}`:code<32768?`\\u${code}?`:`\\u${code-65536}?`;});
+  const para=text=>`{\\pard\\sa180\\sb0\\sl360\\slmult1\\f0\\fs24 ${rtfEscape(text)}\\par}\n`;
+  const h1=text=>`{\\pard\\qc\\sa360\\sb720\\b\\fs40\\f0 ${rtfEscape(text)}\\b0\\par}\n`;
+  const h2=text=>`{\\pard\\sa240\\sb360\\b\\fs28\\f0 ${rtfEscape(text)}\\b0\\par}\n`;
+  let body=`{\\rtf1\\ansi\\deff0\n{\\fonttbl{\\f0\\froman\\fcharset0 Times New Roman;}}\n{\\colortbl;\\red0\\green0\\blue0;}\n\\paperw12240\\paperh15840\\margl1800\\margr1800\\margt1440\\margb1440\n\\widowctrl\\hyphauto\n`;
+  body+=`{\\pard\\qc\\sa720\\sb1440\\b\\fs72\\f0 ${rtfEscape(book.title)}\\b0\\par}\n`;
+  if(book.subtitle)body+=`{\\pard\\qc\\sa360\\i\\fs36\\f0 ${rtfEscape(book.subtitle)}\\i0\\par}\n`;
+  body+=`{\\pard\\qc\\sa360\\fs28\\f0 ${rtfEscape(book.author_name||"Author")}\\par}\n`;
+  body+=`{\\pard\\qc\\fs22\\f0 ${rtfEscape(book.genre||"")}\\par}\n\\page\n`;
+  if(book.description){body+=h2("About This Book");body+=para(book.description);body+=`\\page\n`;}
+  chaps.forEach(ch=>{
+    body+=h1(`Chapter ${ch.number}: ${ch.title}`);
+    ch.content.split(/\n+/).filter(p=>p.trim()).forEach(p=>{body+=para(p);});
+    body+=`\\page\n`;
+  });
+  body+=`}`;
+  return body;
+}
+
 function buildEPUB(book){
   // Returns a data-URI blob — basic but valid EPUB3
   const title=book.title||"Book";
@@ -46,8 +69,9 @@ function buildEPUB(book){
   // Build XHTML for each chapter
   const chFiles=chapters.map((ch,i)=>{
     const chSlug="ch_"+(i+1);
+    const illustrationHtml=ch.illustration_url?`<figure style="text-align:center;margin:1.5em 0 2em"><img src="${ch.illustration_url}" alt="Chapter ${ch.number} illustration" style="max-width:90%;border-radius:6px"/></figure>`:"";
     const paras=ch.content.split(/\n+/).filter(p=>p.trim()).map(p=>`<p>${safe(p)}</p>`).join("\n");
-    return{name:chSlug+".xhtml",content:`<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html><html xmlns="http://www.w3.org/1999/xhtml"><head><title>${safe(ch.title)}</title><link rel="stylesheet" type="text/css" href="../styles/main.css"/></head><body><h1>${safe(ch.title)}</h1>${paras}</body></html>`};
+    return{name:chSlug+".xhtml",content:`<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html><html xmlns="http://www.w3.org/1999/xhtml"><head><title>${safe(ch.title)}</title><link rel="stylesheet" type="text/css" href="../styles/main.css"/></head><body><h1>${safe(ch.title)}</h1>${illustrationHtml}${paras}</body></html>`};
   });
 
   const manifest=chFiles.map((f,i)=>`<item id="ch${i+1}" href="Text/${f.name}" media-type="application/xhtml+xml"/>`).join("\n    ");
@@ -1039,7 +1063,10 @@ function QueuePage({navigate,onSettings}){
           addLog(`  ✍️ Ch.${i+1}/${chapters.length}: "${chapters[i].title}"`);
           const series=book.series_id?getSeriesById(book.series_id):null;
           const seriesCtx=series?`\n\n${buildSeriesContext(series)}\nMaintain full consistency.`:"";
-          const prev=chapters.slice(0,i).filter(c=>c.generated).map(c=>c.title).join(", ")||"None";
+          const prevChaps=chapters.slice(0,i).filter(c=>c.generated);
+          const prev=prevChaps.length===0?"None":
+            prevChaps.length<=2?prevChaps.map(c=>c.title).join(", "):
+            prevChaps.slice(-3).map(c=>`Ch.${c.number} "${c.title}": ${(c.content||"").slice(0,200).replace(/\n/g," ")}…`).join("\n");
           const content=await callGemini(
             `Write Chapter ${chapters[i].number}: "${chapters[i].title}" for a ${book.genre} book titled "${outline.title||book.title}".${seriesCtx}\n`+
             `Chapter description: ${chapters[i].description}\nPrevious: ${prev}\nAudience: ${book.target_audience}\n\n`+
@@ -1529,17 +1556,38 @@ function CreatePage({navigate,onSettings}){
 // EDITOR PAGE
 // ══════════════════════════════════════════════════════════════════════════════
 
+
+// ── Book Stats Bar ────────────────────────────────────────────────────────────
+function BookStatsBar({book}){
+  const wc=book.word_count||0;
+  const totalMins=Math.ceil(wc/250);
+  const hrs=Math.floor(totalMins/60);
+  const mins=totalMins%60;
+  const timeStr=hrs>0?`${hrs}h ${mins}m`:`${totalMins}m`;
+  const pages=Math.round(wc/250);
+  const writtenChs=(book.chapters||[]).filter(c=>c.content).length;
+  return(
+    <div className="flex items-center gap-6 p-4 bg-purple-500/10 border border-purple-500/20 rounded-xl mb-6 flex-wrap justify-center sm:justify-start">
+      <div className="text-center"><p className="text-white text-2xl font-bold">{wc.toLocaleString()}</p><p className="text-white/40 text-xs">Words</p></div>
+      <div className="text-center"><p className="text-white text-2xl font-bold">{writtenChs}</p><p className="text-white/40 text-xs">Chapters</p></div>
+      <div className="text-center"><p className="text-white text-2xl font-bold">{timeStr}</p><p className="text-white/40 text-xs">Read Time</p></div>
+      <div className="text-center"><p className="text-white text-2xl font-bold">{pages}</p><p className="text-white/40 text-xs">Pages</p></div>
+    </div>
+  );
+}
+
 // ── Inline Chapter Editor ─────────────────────────────────────────────────────
 function ChapterEditor({book,chIdx,upd}){
   const ch=book.chapters?.[chIdx];
   const [editing,setEditing]=useState(false);
   const [draft,setDraft]=useState(ch?.content||"");
+  const [selPara,setSelPara]=useState(null);
+  const [rewriting,setRewriting]=useState(false);
+  const [rewriteErr,setRewriteErr]=useState("");
+  const textareaRef=useRef(null);
   const wordCount=draft.trim()?draft.trim().split(/\s+/).length:0;
 
-  useEffect(()=>{
-    setDraft(ch?.content||"");
-    setEditing(false);
-  },[chIdx,ch?.content]);
+  useEffect(()=>{setDraft(ch?.content||"");setEditing(false);setSelPara(null);},[chIdx,ch?.content]);
 
   const save=()=>{
     const chapters=[...(book.chapters||[])];
@@ -1549,20 +1597,59 @@ function ChapterEditor({book,chIdx,upd}){
     setEditing(false);
   };
 
+  // Paragraph-level rewrite
+  const rewriteParagraph=async(paraText,paraIdx,paragraphs)=>{
+    if(rewriting||!getKey())return;
+    setRewriting(true);setRewriteErr("");
+    try{
+      const vp=getVoiceProfile();
+      const voiceCtx=vp?.sample_analysis?`\nVOICE STYLE: ${vp.sample_analysis}\nMatch this style exactly.`:"";
+      const result=await callGemini(
+        `You are a master editor. Rewrite ONLY this paragraph to sound more human, specific, and vivid.\n`+
+        `Book: "${book.title}" (${book.genre})\n`+
+        `Chapter: "${ch?.title||""}"\n${voiceCtx}\n\n`+
+        `ORIGINAL PARAGRAPH:\n${paraText}\n\n`+
+        `RULES:\n• Keep the same scene/action/meaning\n• Remove ALL AI tells (hollow openers, stated emotions, em-dash drama)\n• Add specific sensory detail\n• Vary sentence length — use fragments\n• Sound like a novelist, not a language model\n• Return ONLY the rewritten paragraph — no preamble, no explanation`,
+        0.9
+      );
+      trackUsage();
+      const newParas=[...paragraphs];
+      newParas[paraIdx]=result.trim();
+      const newContent=newParas.join("\n\n");
+      setDraft(newContent);
+    }catch(e){setRewriteErr(errMsg(e));}finally{setRewriting(false);}
+  };
+
   if(editing){
+    const paragraphs=draft.split(/\n\n+/).filter(p=>p.trim());
     return(
       <div>
         <div className="flex items-center justify-between mb-3">
           <span className="text-white/40 text-xs">{wordCount.toLocaleString()} words</span>
           <div className="flex gap-2">
-            <button onClick={()=>{setDraft(ch?.content||"");setEditing(false);}} className="text-xs px-3 py-1.5 rounded-lg bg-white/5 text-white/50 hover:bg-white/10">Cancel</button>
+            <button onClick={()=>{setDraft(ch?.content||"");setEditing(false);setSelPara(null);}} className="text-xs px-3 py-1.5 rounded-lg bg-white/5 text-white/50 hover:bg-white/10">Cancel</button>
             <button onClick={save} className="text-xs px-3 py-1.5 rounded-lg bg-green-500/20 text-green-300 border border-green-500/30 hover:bg-green-500/30 font-medium">✅ Save</button>
           </div>
         </div>
+        {rewriteErr&&<p className="text-red-400 text-xs mb-2">{rewriteErr}</p>}
+        <div className="mb-3 p-3 bg-purple-500/10 border border-purple-500/20 rounded-xl">
+          <p className="text-purple-300 text-xs font-medium mb-2">✨ Click any paragraph below to rewrite it with AI</p>
+          <div className="space-y-2 max-h-64 overflow-y-auto pr-1">
+            {paragraphs.map((p,i)=>(
+              <div key={i}
+                onClick={()=>!rewriting&&rewriteParagraph(p,i,paragraphs)}
+                className={`text-xs p-2 rounded-lg cursor-pointer transition-all leading-relaxed ${rewriting?"opacity-40 cursor-wait":"hover:bg-purple-500/20 text-white/60 hover:text-white/90 bg-white/5 border border-white/5"}`}
+              >
+                {rewriting&&selPara===i?<span className="text-purple-300">Rewriting…</span>:p.slice(0,120)+(p.length>120?"…":"")}
+              </div>
+            ))}
+          </div>
+        </div>
         <textarea
+          ref={textareaRef}
           value={draft}
           onChange={e=>setDraft(e.target.value)}
-          className="w-full h-[560px] bg-white/5 border border-white/10 rounded-xl p-4 text-white/80 text-sm leading-relaxed resize-none focus:outline-none focus:border-purple-500/50"
+          className="w-full h-[420px] bg-white/5 border border-white/10 rounded-xl p-4 text-white/80 text-sm leading-relaxed resize-none focus:outline-none focus:border-purple-500/50"
           placeholder="Write or paste chapter content here…"
           spellCheck={true}
         />
@@ -1573,8 +1660,11 @@ function ChapterEditor({book,chIdx,upd}){
   return(
     <div>
       <div className="flex items-center justify-between mb-3">
-        <span className="text-white/40 text-xs">{ch?.content?ch.content.trim().split(/\s+/).length.toLocaleString():0} words</span>
-        <button onClick={()=>{setDraft(ch?.content||"");setEditing(true);}} className="text-xs px-3 py-1.5 rounded-lg bg-white/5 text-white/50 border border-white/10 hover:bg-white/10 hover:text-white/80 transition-all">✏️ Edit</button>
+        <div className="flex items-center gap-3">
+          <span className="text-white/40 text-xs">{ch?.content?ch.content.trim().split(/\s+/).length.toLocaleString():0} words</span>
+          {ch?.content&&<span className="text-white/25 text-xs">~{Math.ceil((ch.content.split(/\s+/).length||0)/200)} min read</span>}
+        </div>
+        <button onClick={()=>{setDraft(ch?.content||"");setEditing(true);}} className="text-xs px-3 py-1.5 rounded-lg bg-white/5 text-white/50 border border-white/10 hover:bg-white/10 hover:text-white/80 transition-all">✏️ Edit & Rewrite</button>
       </div>
       <div className="text-white/75 text-sm leading-relaxed whitespace-pre-wrap max-h-[560px] overflow-y-auto pr-2">{ch?.content}</div>
     </div>
@@ -1585,6 +1675,7 @@ function EditorPage({bookId,navigate,onSettings}){
   const [book,setBook]=useState(null);
   const [tab,setTab]=useState(0);
   const [busy,setBusy]=useState(false);
+  const [altTitles,setAltTitles]=useState([]);
   const [busyCh,setBusyCh]=useState(null);
   const [error,setError]=useState("");
   const [success,setSuccess]=useState("");
@@ -1596,7 +1687,7 @@ function EditorPage({bookId,navigate,onSettings}){
   const [customPrompt,setCustomPrompt]=useState("");
   const [lastAiPrompt,setLastAiPrompt]=useState("");
   const buildRef=useRef(false);
-  const TABS=["📋 Outline","✍️ Chapters","🎨 Cover","🔍 SEO","🤖 Review","🔎 Market","🪝 Hooks","📊 Quality","✍️ Writing","👥 Characters","📤 Publish"];
+  const TABS=["📋 Outline","✍️ Chapters","🎨 Cover","🔍 SEO","🤖 Review","🔎 Market","🪝 Hooks","📊 Quality","✍️ Writing","👥 Characters","📤 Publish","🌍 Translate"];
 
   useEffect(()=>{
     const b=getBook(bookId);if(!b){navigate("home");return;}
@@ -1712,7 +1803,10 @@ function EditorPage({bookId,navigate,onSettings}){
     if(quotaHit||isBuilding)return;setBusyCh(idx);setError("");
     try{
       const outline=JSON.parse(book.outline||"{}");const ch=outline.chapters?.[idx];if(!ch){setError("Chapter outline missing — regenerate the outline.");setBusyCh(null);return;}
-      const prev=(book.chapters||[]).slice(0,idx).filter(c=>c.generated).map(c=>c.title).join(", ")||"None";
+      const prevChaps=(book.chapters||[]).slice(0,idx).filter(c=>c.generated);
+      const prev=prevChaps.length===0?"None":
+        prevChaps.length<=2?prevChaps.map(c=>c.title).join(", "):
+        prevChaps.slice(-3).map(c=>`Ch.${c.number} "${c.title}": ${(c.content||"").slice(0,200).replace(/\n/g," ")}…`).join("\n");
       const series=book.series_id?getSeriesById(book.series_id):null;
       const seriesCtx=series?`\n\n${buildSeriesContext(series)}\nMaintain full consistency.`:"";
       const vp=getVoiceProfile();
@@ -1728,7 +1822,42 @@ function EditorPage({bookId,navigate,onSettings}){
     }catch(e){handleErr(e);}finally{setBusyCh(null);}
   };
 
+  const genChapterIllustration=async(idx)=>{
+    if(quotaHit||isBuilding||busy)return;
+    const ch=book.chapters?.[idx];if(!ch?.content){setError("Write this chapter first.");return;}
+    setBusy(true);setError("");
+    try{
+      // Generate image prompt from chapter content
+      const imgPrompt=await callGemini(
+        `You are a book illustrator. Write a Stable Diffusion prompt for an illustration for this chapter.\n`+
+        `Book: "${book.title}" (${book.genre})\n`+
+        `Chapter: "${ch.title}"\n`+
+        `Chapter excerpt: ${ch.content.slice(0,600)}\n\n`+
+        `Rules: describe ONE key visual scene from this chapter. No text/words in the image. Cinematic, painterly style. Max 100 words. Return ONLY the prompt.`,
+        0.7
+      );
+      bump();
+      const seed=Date.now();
+      const illustrationUrl=`https://image.pollinations.ai/prompt/${encodeURIComponent(imgPrompt.trim()+". Book illustration, painterly, cinematic, no text.")}?width=768&height=512&model=flux&nologo=true&enhance=true&seed=${seed}`;
+      const chapters=[...(book.chapters||[])];
+      chapters[idx]={...chapters[idx],illustration_url:illustrationUrl,illustration_prompt:imgPrompt.trim()};
+      upd({chapters});
+      flash(`Chapter ${idx+1} illustration generated! 🖼️`);
+    }catch(e){handleErr(e);}finally{setBusy(false);}
+  };
+
   const genSEO=async()=>{if(quotaHit||isBuilding)return;setBusy(true);setError("");try{const outline=JSON.parse(book.outline||"{}");const raw=await callGemini(`Amazon KDP SEO expert.\nTitle: ${outline.title}\nGenre: ${book.genre}\nDesc: ${outline.description}\nRespond ONLY JSON: {"seo_title":"","seo_description":"","primary_keywords":[""],"bisac_categories":[""],"back_cover_copy":"","author_bio_template":""}`);bump();const match=raw.match(/\{[\s\S]*\}/);if(!match)throw{code:"PARSE"};const seo=JSON.parse(match[0]);upd({seo_title:seo.seo_title||"",seo_description:seo.seo_description||"",seo_keywords:(seo.primary_keywords||[]).join(", "),notes:JSON.stringify(seo)});flash("SEO generated! 🔍");}catch(e){handleErr(e);}finally{setBusy(false);}};
+
+  const genAltTitles=async()=>{
+    if(quotaHit||isBuilding||busy)return;setBusy(true);setError("");
+    try{
+      const outline=JSON.parse(book.outline||"{}");
+      const raw=await callGemini(`You are an Amazon KDP bestseller expert. Generate 5 KILLER alternative titles for this book.\nBook: "${book.title}"\nGenre: ${book.genre}\nAudience: ${book.target_audience}\nDescription: ${outline.description||book.description}\n\nRules:\n• Each title must be unique in approach (curiosity, benefit, transformation, emotional, bold claim)\n• For fiction: evocative, genre-appropriate, memorable\n• For nonfiction: benefit-driven, searchable on Amazon\n\nRespond ONLY with valid JSON: {"alternatives":[{"title":"","subtitle":"","rationale":"why this works on KDP"}]}`);
+      bump();const m=raw.match(/\{[\s\S]*\}/);if(!m)throw{code:"PARSE"};
+      const d=JSON.parse(m[0]);setAltTitles(d.alternatives||[]);
+      flash("5 alternative titles generated! 📝");
+    }catch(e){handleErr(e);}finally{setBusy(false);}
+  };
 
   const genCover=async()=>{if(quotaHit||isBuilding)return;setBusy(true);setError("");try{let finalPrompt="";if(coverMode==="custom"&&customPrompt.trim()){finalPrompt=customPrompt.trim()+". Professional book cover, no text, no letters.";}else{const outline=JSON.parse(book.outline||"{}");const aiPrompt=await callGemini(`Professional book cover image prompt.\nBook: "${outline.title}"\nGenre: ${book.genre}\nDesc: ${outline.description}\n\n- Describe characters (gender, age, look)\n- For gay/LGBT+ romance: two male characters, emotional interaction\n- Setting, mood, lighting, palette, art style\n- NO text\nReturn ONLY the prompt.`);bump();finalPrompt=aiPrompt.trim()+". No text, no words, no letters.";setLastAiPrompt(finalPrompt);}const url=`https://image.pollinations.ai/prompt/${encodeURIComponent(finalPrompt)}?width=832&height=1216&model=flux&nologo=true&enhance=true&seed=${Date.now()}`;upd({cover_image_url:url});flash("Cover generated! 🎨");}catch(e){handleErr(e);}finally{setBusy(false);}};
 
@@ -1751,6 +1880,9 @@ function EditorPage({bookId,navigate,onSettings}){
     } else if(fmt==="txt"){
       const txt=(book.title||"")+(book.subtitle?"\n"+book.subtitle:"")+"\n"+"=".repeat(50)+"\n\n"+(book.description||"")+"\n\n"+chaps.map(c=>"CHAPTER "+c.number+": "+c.title.toUpperCase()+"\n\n"+c.content).join("\n\n"+"─".repeat(40)+"\n\n")+seriesPage;
       const a=Object.assign(document.createElement("a"),{href:URL.createObjectURL(new Blob([txt],{type:"text/plain"})),download:(book.title||"book").replace(/[^a-z0-9]/gi,"_")+".txt"});a.click();
+    } else if(fmt==="rtf"){
+      const rtfContent=buildRTF({...book,author_name:getAuthorProfile().name||"Author"});
+      const a=Object.assign(document.createElement("a"),{href:URL.createObjectURL(new Blob([rtfContent],{type:"application/rtf"})),download:(book.title||"book").replace(/[^a-z0-9]/gi,"_")+".rtf"});a.click();
     } else if(fmt==="audio"){
       const ap=getAuthorProfile();
       const script="AUDIOBOOK NARRATION SCRIPT\n"+"=".repeat(50)+"\nTitle: "+(book.title||"")+"\n"+(book.subtitle?"Subtitle: "+book.subtitle+"\n":"")+"Author: "+(ap.name||"Author")+"\n"+"=".repeat(50)+"\n\n[NARRATOR NOTE: "+book.genre+" — "+book.target_audience+". Approx. 150 words/min.]\n\n"+chaps.map(c=>"[CHAPTER "+c.number+"]\n"+c.title.toUpperCase()+"\n\n"+c.content.replace(/[#*_`]/g,"")).join("\n\n[CHAPTER BREAK — 3 second pause]\n\n")+"\n\n[END OF BOOK]";
@@ -1785,16 +1917,16 @@ function EditorPage({bookId,navigate,onSettings}){
         {success&&<div className="bg-green-500/20 border border-green-500/30 text-green-300 rounded-xl p-4 mb-5 text-sm">{success}</div>}
 
         {/* OUTLINE */}
-        {tab===0&&<div className="max-w-3xl mx-auto"><Card>{book.series_name&&<div className="flex items-center gap-2 mb-3"><span className="bg-cyan-500/20 text-cyan-300 text-xs px-3 py-1 rounded-full border border-cyan-500/30">📗 {book.series_name} — Book {book.series_number}</span></div>}<h2 className="text-white text-xl font-bold">{book.title}</h2>{book.subtitle&&<p className="text-purple-300 mt-1 mb-4 text-sm">{book.subtitle}</p>}<p className="text-white/60 text-sm leading-relaxed mb-6">{book.description}</p>{book.chapters?.length>0&&<><p className="text-white/40 text-xs uppercase tracking-wider mb-3">Chapters ({book.chapters.length})</p><div className="space-y-2">{book.chapters.map((ch,i)=><div key={i} className={`rounded-xl p-3 border flex gap-3 items-start ${ch.generated?"bg-green-500/10 border-green-500/20":"bg-white/5 border-white/10"}`}><span className={`font-bold text-sm min-w-[24px] ${ch.generated?"text-green-400":"text-purple-400"}`}>{ch.generated?"✓":ch.number+"."}</span><div className="flex-1"><p className="text-white text-sm font-medium">{ch.title}</p><p className="text-white/35 text-xs mt-0.5">{ch.description}</p></div>{ch.generated&&<span className="text-green-400/50 text-xs shrink-0">Written</span>}</div>)}</div><div className="mt-5 bg-white/5 rounded-xl p-4"><div className="flex justify-between text-xs text-white/40 mb-2"><span>Progress</span><span>{book.chapters.filter(c=>c.generated).length}/{book.chapters.length} chapters</span></div><div className="h-2 bg-white/10 rounded-full overflow-hidden"><div className="h-full bg-gradient-to-r from-purple-500 to-pink-500 rounded-full" style={{width:`${(book.chapters.filter(c=>c.generated).length/book.chapters.length)*100}%`}}/></div></div></>}{(!book.chapters||book.chapters.length===0)&&isBuilding&&<div className="text-center py-8 text-white/30"><Spin/><p className="mt-3 text-sm">Generating outline…</p></div>}</Card></div>}
+        {tab===0&&<div className="max-w-3xl mx-auto"><Card>{book.series_name&&<div className="flex items-center gap-2 mb-3"><span className="bg-cyan-500/20 text-cyan-300 text-xs px-3 py-1 rounded-full border border-cyan-500/30">📗 {book.series_name} — Book {book.series_number}</span></div>}<h2 className="text-white text-xl font-bold">{book.title}</h2>{book.subtitle&&<p className="text-purple-300 mt-1 mb-4 text-sm">{book.subtitle}</p>}<p className="text-white/60 text-sm leading-relaxed mb-6">{book.description}</p>{book.chapters?.length>0&&<><p className="text-white/40 text-xs uppercase tracking-wider mb-3">Chapters ({book.chapters.length})</p><div className="space-y-2">{book.chapters.map((ch,i)=><div key={i} className={`rounded-xl p-3 border flex gap-3 items-start ${ch.generated?"bg-green-500/10 border-green-500/20":"bg-white/5 border-white/10"}`}><span className={`font-bold text-sm min-w-[24px] ${ch.generated?"text-green-400":"text-purple-400"}`}>{ch.generated?"✓":ch.number+"."}</span><div className="flex-1"><p className="text-white text-sm font-medium">{ch.title}</p><p className="text-white/35 text-xs mt-0.5">{ch.description}</p>{ch.content&&<div className="flex items-center gap-3 mt-1.5"><span className="text-green-400/70 text-xs">{ch.content.split(/\s+/).length.toLocaleString()} words</span><span className="text-white/20 text-xs">~{Math.ceil(ch.content.split(/\s+/).length/200)} min read</span></div>}{ch.opening_hook&&!ch.content&&<p className="text-purple-300/50 text-xs mt-1 italic">Hook: {ch.opening_hook.slice(0,80)}…</p>}</div>{ch.generated?<span className="text-green-400/50 text-xs shrink-0">✅ Done</span>:<span className="text-white/20 text-xs shrink-0">Pending</span>}</div>)}</div><div className="mt-5 bg-white/5 rounded-xl p-4"><div className="flex justify-between text-xs text-white/40 mb-2"><span>Progress</span><span>{book.chapters.filter(c=>c.generated).length}/{book.chapters.length} chapters</span></div><div className="h-2 bg-white/10 rounded-full overflow-hidden"><div className="h-full bg-gradient-to-r from-purple-500 to-pink-500 rounded-full" style={{width:`${(book.chapters.filter(c=>c.generated).length/book.chapters.length)*100}%`}}/></div></div></>}{(!book.chapters||book.chapters.length===0)&&isBuilding&&<div className="text-center py-8 text-white/30"><Spin/><p className="mt-3 text-sm">Generating outline…</p></div>}</Card></div>}
 
         {/* CHAPTERS */}
-        {tab===1&&<div className="grid grid-cols-1 lg:grid-cols-3 gap-5"><div className="lg:col-span-1"><div className="bg-white/5 border border-white/10 rounded-2xl p-4 sticky top-24"><div className="flex items-center justify-between mb-3"><h3 className="text-white font-semibold text-sm">Chapters</h3>{!isBuilding&&<button onClick={async()=>{for(const i of (book.chapters||[]).map((_,i)=>i).filter(i=>!book.chapters[i].generated)){if(quotaHit)break;await genChapter(i);}}} disabled={busy||busyCh!==null||quotaHit||isBuilding} className="text-xs bg-purple-500/20 text-purple-300 border border-purple-500/30 px-3 py-1.5 rounded-lg hover:bg-purple-500/30 disabled:opacity-40">Write All</button>}</div><div className="space-y-1">{(book.chapters||[]).map((ch,i)=><button key={i} onClick={()=>setSelCh(i)} className={`w-full text-left px-3 py-2 rounded-lg text-sm transition-all ${selCh===i?"bg-purple-500/20 text-white border border-purple-500/30":"text-white/50 hover:bg-white/5"}`}><span className={ch.generated?"text-green-400":""}>{ch.generated?"✓ ":""}</span>{ch.number}. {ch.title}</button>)}</div></div></div><div className="lg:col-span-2">{book.chapters?.[selCh]&&<Card><div className="flex items-start justify-between mb-5 gap-4"><div><h2 className="text-white text-lg font-bold">Ch. {book.chapters[selCh].number}: {book.chapters[selCh].title}</h2><p className="text-white/35 text-sm mt-1">{book.chapters[selCh].description}</p></div>{!isBuilding&&<button onClick={()=>genChapter(selCh)} disabled={busyCh!==null||quotaHit||isBuilding} className="bg-gradient-to-r from-purple-500 to-pink-500 text-white px-4 py-2 rounded-xl font-medium text-sm hover:opacity-90 disabled:opacity-50 flex items-center gap-2 shrink-0">{busyCh===selCh?<><Spin size="h-4 w-4"/>Writing…</>:book.chapters[selCh].generated?"✍️ Rewrite":"✍️ Write"}</button>}</div>{book.chapters[selCh].content?<ChapterEditor book={book} chIdx={selCh} upd={upd}/>:<div className="text-center py-16 text-white/25"><div className="text-4xl mb-3">✍️</div><p>{isBuilding?"Generating…":"Click Write to generate"}</p></div>}</Card>}</div></div>}
+        {tab===1&&<div className="grid grid-cols-1 lg:grid-cols-3 gap-5"><div className="lg:col-span-1"><div className="bg-white/5 border border-white/10 rounded-2xl p-4 sticky top-24"><div className="flex items-center justify-between mb-3"><h3 className="text-white font-semibold text-sm">Chapters</h3>{!isBuilding&&<button onClick={async()=>{for(const i of (book.chapters||[]).map((_,i)=>i).filter(i=>!book.chapters[i].generated)){if(quotaHit)break;await genChapter(i);}}} disabled={busy||busyCh!==null||quotaHit||isBuilding} className="text-xs bg-purple-500/20 text-purple-300 border border-purple-500/30 px-3 py-1.5 rounded-lg hover:bg-purple-500/30 disabled:opacity-40">Write All</button>}</div><div className="space-y-1">{(book.chapters||[]).map((ch,i)=><button key={i} onClick={()=>setSelCh(i)} className={`w-full text-left px-3 py-2 rounded-lg text-sm transition-all ${selCh===i?"bg-purple-500/20 text-white border border-purple-500/30":"text-white/50 hover:bg-white/5"}`}><span className={ch.generated?"text-green-400":""}>{ch.generated?"✓ ":""}</span>{ch.number}. {ch.title}</button>)}</div></div></div><div className="lg:col-span-2">{book.chapters?.[selCh]&&<Card><div className="flex items-start justify-between mb-5 gap-4"><div><h2 className="text-white text-lg font-bold">Ch. {book.chapters[selCh].number}: {book.chapters[selCh].title}</h2><p className="text-white/35 text-sm mt-1">{book.chapters[selCh].description}</p></div>{!isBuilding&&<div className="flex gap-2 shrink-0"><button onClick={()=>genChapterIllustration(selCh)} disabled={busyCh!==null||quotaHit||isBuilding||busy} className="bg-white/5 border border-white/10 text-white/60 px-3 py-2 rounded-xl font-medium text-sm hover:bg-white/10 disabled:opacity-40 flex items-center gap-1.5" title="Generate chapter illustration">🖼️</button><button onClick={()=>genChapter(selCh)} disabled={busyCh!==null||quotaHit||isBuilding} className="bg-gradient-to-r from-purple-500 to-pink-500 text-white px-4 py-2 rounded-xl font-medium text-sm hover:opacity-90 disabled:opacity-50 flex items-center gap-2">{busyCh===selCh?<><Spin size="h-4 w-4"/>Writing…</>:book.chapters[selCh].generated?"✍️ Rewrite":"✍️ Write"}</button></div>}</div>{book.chapters?.[selCh]?.illustration_url&&<div className="mb-4"><img src={book.chapters[selCh].illustration_url} alt={`Chapter ${book.chapters[selCh].number} illustration`} className="w-full rounded-xl max-h-48 object-cover border border-white/10"/><p className="text-white/20 text-xs mt-1 text-center italic">{book.chapters[selCh].illustration_prompt?.slice(0,80)}…</p></div>}{book.chapters[selCh].content?<ChapterEditor book={book} chIdx={selCh} upd={upd}/>:<div className="text-center py-16 text-white/25"><div className="text-4xl mb-3">✍️</div><p>{isBuilding?"Generating…":"Click Write to generate"}</p></div>}</Card>}</div></div>}
 
         {/* COVER */}
         {tab===2&&<div className="max-w-5xl mx-auto"><div className="grid grid-cols-1 lg:grid-cols-2 gap-8"><div><h2 className="text-white text-xl font-bold mb-4">Cover Preview</h2>{book.cover_image_url?<><img src={book.cover_image_url} alt="Cover" className="w-full max-w-xs rounded-2xl shadow-2xl shadow-purple-900/60 mx-auto block"/><div className="flex gap-2 mt-4 justify-center"><button onClick={newVariation} disabled={busy||isBuilding} className="text-sm border border-white/20 text-white/50 px-4 py-2 rounded-lg hover:bg-white/5 disabled:opacity-40">🎲 Variation</button><a href={book.cover_image_url} target="_blank" rel="noopener noreferrer" className="text-sm border border-white/20 text-white/50 px-4 py-2 rounded-lg hover:bg-white/5">⬇️ Download</a></div></>:<div className="w-full max-w-xs aspect-[2/3] bg-white/5 border-2 border-dashed border-white/15 rounded-2xl flex items-center justify-center mx-auto"><div className="text-center text-white/20">{isBuilding?<><Spin/><p className="text-sm mt-2">Generating…</p></>:<><div className="text-5xl mb-2">🎨</div><p className="text-sm">Cover appears here</p></>}</div></div>}</div><div className="space-y-5"><h2 className="text-white text-xl font-bold">Cover Settings</h2><div className="bg-white/5 border border-white/10 rounded-xl p-1 flex gap-1">{[["auto","✨ AI Auto"],["custom","✏️ Custom"]].map(([m,label])=><button key={m} onClick={()=>setCoverMode(m)} className={`flex-1 py-2 rounded-lg text-sm font-medium transition-all ${coverMode===m?"bg-purple-500 text-white":"text-white/40 hover:text-white"}`}>{label}</button>)}</div>{coverMode==="auto"?<div className="bg-white/5 border border-white/10 rounded-xl p-4 text-sm text-white/50">Gemini analyzes your book and writes a detailed character-specific prompt.{lastAiPrompt&&<p className="text-white/25 text-xs mt-3 italic leading-relaxed">{lastAiPrompt}</p>}</div>:<div><label className="text-white/60 text-sm font-medium block mb-2">Describe your cover</label><textarea rows={7} value={customPrompt} onChange={e=>setCustomPrompt(e.target.value)} placeholder="E.g. Two men in their 20s, dark curly hair and red hair, standing close on a rainy rooftop at dusk, golden light, painterly cinematic style, no text..." className="w-full bg-white/10 border border-white/20 rounded-xl px-4 py-3 text-white placeholder-white/20 focus:outline-none focus:border-purple-500 resize-none text-sm"/></div>}<button onClick={genCover} disabled={busy||quotaHit||isBuilding||(coverMode==="custom"&&!customPrompt.trim())} className="w-full bg-gradient-to-r from-purple-500 to-pink-500 text-white py-4 rounded-xl font-semibold text-lg hover:opacity-90 disabled:opacity-40 flex items-center justify-center gap-2">{busy?<><Spin/>Generating…</>:book.cover_image_url?"🔄 Regenerate":"🎨 Generate Cover"}</button></div></div></div>}
 
         {/* SEO */}
-        {tab===3&&<div className="max-w-3xl mx-auto"><Card><div className="flex items-center justify-between mb-6"><div><h2 className="text-white text-xl font-bold">SEO Optimization</h2><p className="text-white/40 text-sm mt-1">Amazon KDP & publishing metadata</p></div>{!isBuilding&&<button onClick={genSEO} disabled={busy||quotaHit||isBuilding} className="bg-gradient-to-r from-purple-500 to-pink-500 text-white px-5 py-2.5 rounded-xl font-semibold hover:opacity-90 disabled:opacity-50 flex items-center gap-2">{busy?<><Spin size="h-4 w-4"/>Generating…</>:"🔍 Generate SEO"}</button>}</div><div className="space-y-5">{[{label:"SEO Title",val:book.seo_title},{label:"SEO Description",val:book.seo_description,large:true},{label:"Keywords",val:book.seo_keywords}].map(f=><div key={f.label}><p className="text-white/40 text-xs uppercase tracking-wider mb-2">{f.label}</p>{f.val?<div className={`bg-white/10 rounded-xl p-4 text-white/80 text-sm ${f.large?"leading-relaxed":""}`}>{f.val}</div>:<div className="bg-white/5 border border-dashed border-white/10 rounded-xl p-4 text-white/20 text-sm italic">{isBuilding?"Generating…":"Auto-populated during build"}</div>}</div>)}{book.notes&&(()=>{try{const n=JSON.parse(book.notes);return n.back_cover_copy?<div><p className="text-white/40 text-xs uppercase tracking-wider mb-2">Back Cover Copy</p><div className="bg-white/10 rounded-xl p-4 text-white/80 text-sm leading-relaxed">{n.back_cover_copy}</div></div>:null;}catch{return null;}})()}</div></Card></div>}
+        {tab===3&&<div className="max-w-3xl mx-auto"><Card><div className="flex items-center justify-between mb-6"><div><h2 className="text-white text-xl font-bold">SEO Optimization</h2><p className="text-white/40 text-sm mt-1">Amazon KDP & publishing metadata</p></div>{!isBuilding&&<button onClick={genSEO} disabled={busy||quotaHit||isBuilding} className="bg-gradient-to-r from-purple-500 to-pink-500 text-white px-5 py-2.5 rounded-xl font-semibold hover:opacity-90 disabled:opacity-50 flex items-center gap-2">{busy?<><Spin size="h-4 w-4"/>Generating…</>:"🔍 Generate SEO"}</button>}</div><div className="space-y-5">{[{label:"SEO Title",val:book.seo_title},{label:"SEO Description",val:book.seo_description,large:true},{label:"Keywords",val:book.seo_keywords}].map(f=><div key={f.label}><div className="flex items-center justify-between mb-2"><p className="text-white/40 text-xs uppercase tracking-wider">{f.label}</p>{f.val&&<button onClick={()=>{navigator.clipboard.writeText(f.val);flash("Copied! 📋");}} className="text-xs text-white/30 hover:text-white/60 transition-colors">📋 Copy</button>}</div>{f.val?<div className={`bg-white/10 rounded-xl p-4 text-white/80 text-sm ${f.large?"leading-relaxed":""}`}>{f.val}</div>:<div className="bg-white/5 border border-dashed border-white/10 rounded-xl p-4 text-white/20 text-sm italic">{isBuilding?"Generating…":"Auto-populated during build"}</div>}</div>)}{book.notes&&(()=>{try{const n=JSON.parse(book.notes);return(<div className="space-y-5">{n.back_cover_copy&&<div><p className="text-white/40 text-xs uppercase tracking-wider mb-2">Back Cover Copy</p><div className="bg-white/10 rounded-xl p-4 text-white/80 text-sm leading-relaxed">{n.back_cover_copy}</div></div>}{n.bisac_categories?.length>0&&<div><p className="text-white/40 text-xs uppercase tracking-wider mb-2">BISAC Categories (KDP)</p><div className="flex flex-wrap gap-2">{n.bisac_categories.map((c,i)=><span key={i} className="bg-blue-500/20 text-blue-300 border border-blue-500/30 px-3 py-1 rounded-full text-xs">{c}</span>)}</div></div>}</div>);}catch{return null;}})()}{/* Title A/B Testing */}<div className="mt-6 pt-6 border-t border-white/10"><div className="flex items-center justify-between mb-4"><div><h3 className="text-white font-bold text-sm">Title A/B Testing</h3><p className="text-white/35 text-xs mt-0.5">Generate alternative titles to find your bestseller hook</p></div><button onClick={genAltTitles} disabled={busy||quotaHit||isBuilding} className="text-xs bg-purple-500/20 text-purple-300 border border-purple-500/30 px-3 py-1.5 rounded-lg hover:bg-purple-500/30 disabled:opacity-40 flex items-center gap-1">{busy?<><Spin size="h-3 w-3"/>Generating…</>:"📝 Generate 5 Titles"}</button></div>{altTitles.length>0&&<div className="space-y-3">{altTitles.map((t,i)=><div key={i} className="bg-white/5 border border-white/10 rounded-xl p-4"><div className="flex items-start justify-between gap-3"><div className="flex-1"><p className="text-white font-semibold text-sm">{t.title}</p>{t.subtitle&&<p className="text-white/50 text-xs mt-0.5 italic">{t.subtitle}</p>}<p className="text-white/30 text-xs mt-2">💡 {t.rationale}</p></div><button onClick={()=>upd({title:t.title,subtitle:t.subtitle||book.subtitle})} className="text-xs bg-green-500/20 text-green-300 border border-green-500/30 px-2 py-1 rounded-lg hover:bg-green-500/30 shrink-0">Use This</button></div></div>)}</div>}</div></div></Card></div>}
 
         {/* REVIEW */}
         {tab===4&&<ReviewPanel book={book} onSettings={onSettings} onApply={(updates)=>{upd(updates);flash("Applied! Re-run review to update score.");}}/>}
@@ -1825,13 +1957,14 @@ function EditorPage({bookId,navigate,onSettings}){
           :<div className="bg-green-500/10 border border-green-500/30 rounded-2xl p-4 flex items-center gap-3"><span className="text-2xl">✅</span><div><p className="text-green-300 font-bold text-sm">Writing Quality Passed — {writingScore}/100 human</p></div></div>)}
           {reviewPassed&&writingPassed&&<Card><h2 className="text-white text-xl font-bold mb-2">Publish Your Book</h2><p className="text-white/40 mb-6 text-sm">Your book includes the series read-order page (if hooks were generated).</p>
             <div className="space-y-3 mb-8">
-              {[{label:"Chapters written",done:book.chapters?.some(c=>c.content)},{label:"Cover generated",done:!!book.cover_image_url},{label:"SEO ready",done:!!book.seo_title},{label:"Review Agent passed (70+)",done:reviewPassed},{label:"Writing Quality passed (72+)",done:writingPassed},{label:"Market analysis done",done:!!book.competitor_analysis},{label:"Hooks & blurbs generated",done:!!book.hooks},{label:"Characters documented",done:(getCharacters(bookId)||[]).length>0}].map((item,i)=><div key={i} className={`flex items-center gap-3 px-4 py-3 rounded-lg ${item.done?"bg-green-500/10":"bg-white/5"}`}><span>{item.done?"✅":"⭕"}</span><span className={`text-sm ${item.done?"text-white":"text-white/35"}`}>{item.label}</span></div>)}
+              <BookStatsBar book={book}/>}{[{label:"Chapters written",done:book.chapters?.some(c=>c.content)},{label:"Cover generated",done:!!book.cover_image_url},{label:"SEO ready",done:!!book.seo_title},{label:"Review Agent passed (70+)",done:reviewPassed},{label:"Writing Quality passed (72+)",done:writingPassed},{label:"Market analysis done",done:!!book.competitor_analysis},{label:"Hooks & blurbs generated",done:!!book.hooks},{label:"Characters documented",done:(getCharacters(bookId)||[]).length>0}].map((item,i)=><div key={i} className={`flex items-center gap-3 px-4 py-3 rounded-lg ${item.done?"bg-green-500/10":"bg-white/5"}`}><span>{item.done?"✅":"⭕"}</span><span className={`text-sm ${item.done?"text-white":"text-white/35"}`}>{item.label}</span></div>)}
             </div>
             <p className="text-white/50 text-sm font-semibold mb-3">Export Formats</p>
             <div className="grid grid-cols-2 gap-3">
               <button onClick={()=>download("md")} className="bg-gradient-to-r from-purple-500 to-pink-500 text-white py-3 rounded-xl font-semibold hover:opacity-90 flex items-center justify-center gap-2 text-sm">📝 Markdown (.md)</button>
               <button onClick={()=>download("epub")} className="bg-gradient-to-r from-blue-500 to-cyan-500 text-white py-3 rounded-xl font-semibold hover:opacity-90 flex items-center justify-center gap-2 text-sm">📖 EPUB-ready (.html)</button>
               <button onClick={()=>download("txt")} className="bg-white/10 border border-white/20 text-white py-3 rounded-xl font-semibold hover:bg-white/15 flex items-center justify-center gap-2 text-sm">📄 Plain Text (.txt)</button>
+              <button onClick={()=>download("rtf")} className="bg-gradient-to-r from-orange-500 to-amber-500 text-white py-3 rounded-xl font-semibold hover:opacity-90 flex items-center justify-center gap-2 text-sm">📋 Word Doc (.rtf)</button>
               <button onClick={()=>download("audio")} className="bg-gradient-to-r from-green-500 to-emerald-500 text-white py-3 rounded-xl font-semibold hover:opacity-90 flex items-center justify-center gap-2 text-sm">🎙️ Audiobook Script</button>
             </div>
             <p className="text-white/20 text-xs text-center mt-3">EPUB: open the .html file in Calibre → File → Add to Library → Convert to EPUB. Series read-order page included.</p>
@@ -1840,12 +1973,93 @@ function EditorPage({bookId,navigate,onSettings}){
             {[{name:"Amazon KDP",url:"https://kdp.amazon.com",icon:"📦",color:"border-orange-500/30 bg-orange-500/10"},{name:"Smashwords",url:"https://www.smashwords.com",icon:"📚",color:"border-blue-500/30 bg-blue-500/10"},{name:"Draft2Digital",url:"https://draft2digital.com",icon:"🌐",color:"border-green-500/30 bg-green-500/10"}].map(p=><a key={p.name} href={p.url} target="_blank" rel="noopener noreferrer" className={`border ${p.color} rounded-xl p-4 text-center hover:opacity-80`}><div className="text-2xl mb-2">{p.icon}</div><p className="text-white font-semibold text-sm">{p.name}</p><p className="text-white/30 text-xs mt-1">Open →</p></a>)}
           </div>
         </div>}
+        {tab===11&&<TranslatePanel book={book} upd={upd} quotaHit={quotaHit} bump={bump} handleErr={handleErr} flash={flash}/>}
       </div>
     </div>
   );
 }
 
 // ── App Shell ─────────────────────────────────────────────────────────────────
+
+
+// ── Book Translation Panel ────────────────────────────────────────────────────
+function TranslatePanel({book,upd,quotaHit,bump,handleErr,flash}){
+  const LANGS=["Spanish","French","German","Italian","Portuguese","Dutch","Polish","Swedish","Norwegian","Danish","Finnish","Russian","Ukrainian","Chinese (Simplified)","Chinese (Traditional)","Japanese","Korean","Arabic","Hebrew","Hindi","Turkish","Greek","Romanian","Czech","Hungarian","Thai","Vietnamese","Indonesian","Malay"];
+  const [targetLang,setTargetLang]=useState("Spanish");
+  const [translating,setTranslating]=useState(false);
+  const [progress,setProgress]=useState("");
+  const [done,setDone]=useState(false);
+  const [error,setError]=useState("");
+
+  const translate=async()=>{
+    if(quotaHit||translating)return;
+    if(!book.chapters?.some(c=>c.content)){setError("Write at least one chapter first.");return;}
+    if(!confirm(`Translate all chapters to ${targetLang}? This will use ${(book.chapters||[]).filter(c=>c.content).length} API calls.`))return;
+    setTranslating(true);setError("");setDone(false);
+    try{
+      const chapters=[...(book.chapters||[])];
+      const toTranslate=chapters.filter(c=>c.content);
+      for(let i=0;i<toTranslate.length;i++){
+        if(getUsage()>=DAILY_LIMIT){setError("Daily quota hit — translation paused. Resume tomorrow.");break;}
+        const ch=toTranslate[i];
+        const chIdx=chapters.findIndex(c=>c.number===ch.number);
+        setProgress(`Translating chapter ${i+1}/${toTranslate.length}…`);
+        const translated=await callGemini(
+          `You are a professional literary translator. Translate this chapter into ${targetLang}.\n\n`+
+          `Rules:\n• Preserve the author's voice, sentence rhythm, and style\n• Keep character names as-is\n• Keep all emotional beats intact\n• Natural ${targetLang} — not word-for-word literal translation\n• Return ONLY the translated text — no preamble\n\n`+
+          `CHAPTER:\n${ch.content}`,
+          0.4
+        );
+        bump();
+        chapters[chIdx]={...chapters[chIdx],content:translated};
+      }
+      // Update title & subtitle
+      setProgress("Translating title…");
+      const titleRaw=await callGemini(`Translate this book title and subtitle to ${targetLang}. Return ONLY JSON: {"title":"","subtitle":""}.\nTitle: ${book.title}\nSubtitle: ${book.subtitle||""}`,0.3);
+      bump();
+      const tm=titleRaw.match(/\{[\s\S]*\}/);
+      const titles=tm?JSON.parse(tm[0]):{title:book.title,subtitle:book.subtitle};
+      const wc=chapters.reduce((a,c)=>a+(c.content?c.content.split(/\s+/).length:0),0);
+      upd({chapters,word_count:wc,title:titles.title||book.title,subtitle:titles.subtitle||book.subtitle,writing_language:targetLang});
+      setDone(true);setProgress("");
+      flash(`Book translated to ${targetLang}! 🌍`);
+    }catch(e){setError(errMsg(e));}finally{setTranslating(false);}
+  };
+
+  return(
+    <div className="max-w-2xl mx-auto">
+      <Card>
+        <div className="text-center mb-6">
+          <div className="text-4xl mb-3">🌍</div>
+          <h2 className="text-white text-xl font-bold mb-1">Book Translation</h2>
+          <p className="text-white/40 text-sm">Translate your entire book into 30+ languages. Reach new KDP markets.</p>
+        </div>
+        {done&&<div className="bg-green-500/15 border border-green-500/30 rounded-xl p-4 mb-5 text-center"><p className="text-green-300 font-semibold">✅ Translation complete! All chapters now in {targetLang}.</p><p className="text-green-300/60 text-xs mt-1">Re-run the Writing Quality Agent to verify quality in the new language.</p></div>}
+        {error&&<p className="text-red-400 text-sm mb-4 bg-red-500/10 rounded-xl p-3">{error}</p>}
+        <div className="space-y-4">
+          <div>
+            <label className="text-white/50 text-xs uppercase tracking-wider block mb-2">Target Language</label>
+            <select value={targetLang} onChange={e=>setTargetLang(e.target.value)} className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white text-sm focus:outline-none focus:border-purple-500/50">
+              {LANGS.map(l=><option key={l} value={l}>{l}</option>)}
+            </select>
+          </div>
+          <div className="bg-amber-500/10 border border-amber-500/30 rounded-xl p-4">
+            <p className="text-amber-300 text-sm font-semibold mb-1">⚠️ This modifies your book in-place</p>
+            <p className="text-amber-200/60 text-xs">Export a backup copy first if you want to keep the original language. Translation uses one API call per chapter.</p>
+          </div>
+          <div className="flex items-center justify-between p-4 bg-white/5 rounded-xl">
+            <div><p className="text-white/70 text-sm">Chapters to translate</p><p className="text-white/30 text-xs">API calls: {(book.chapters||[]).filter(c=>c.content).length + 1}</p></div>
+            <span className="text-white text-2xl font-bold">{(book.chapters||[]).filter(c=>c.content).length}</span>
+          </div>
+          {translating&&<div className="text-center py-4"><Spin/><p className="text-purple-300 text-sm mt-2">{progress}</p></div>}
+          <button onClick={translate} disabled={translating||quotaHit} className="w-full bg-gradient-to-r from-blue-500 to-cyan-500 text-white py-3 rounded-xl font-semibold hover:opacity-90 disabled:opacity-50 flex items-center justify-center gap-2">
+            {translating?<><Spin size="h-4 w-4"/>Translating…</>:`🌍 Translate to ${targetLang}`}
+          </button>
+        </div>
+      </Card>
+    </div>
+  );
+}
 
 // ── Error Boundary ────────────────────────────────────────────────────────────
 class ErrorBoundary extends React.Component{
