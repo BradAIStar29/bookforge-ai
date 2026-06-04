@@ -16,9 +16,9 @@ const setKey=k=>localStorage.setItem("gemini_api_key",k.trim());
 const getBooks=()=>ls.get("bfai_books",[]);
 const setBooks=b=>ls.set("bfai_books",b);
 const getBook=id=>getBooks().find(b=>b.id===id)||null;
+function getSeriesById(id){return getSeries().find(s=>s.id===id)||null;}
 const getSeries=()=>ls.get("bfai_series",[]);
 const setSeries=s=>ls.set("bfai_series",s);
-const getSeriesById=id=>getSeries().find(s=>s.id===id)||null;
 const getQueue=()=>ls.get("bfai_queue",[]);
 const setQueue=q=>ls.set("bfai_queue",q);
 const updateBook=(id,upd)=>{const books=getBooks();const i=books.findIndex(b=>b.id===id);if(i===-1)return null;books[i]={...books[i],...upd};setBooks(books);return books[i];};
@@ -123,22 +123,45 @@ const errMsg=e=>{const c=e?.code||"ERROR";if(c==="NO_KEY"||c==="BAD_KEY")return"
 function buildSeriesContext(series){
   if(!series)return"";
   const p=series.plan||{};
+  // Gather completed books for richer context
+  const allBooks=getBooks();
+  const seriesBooks=allBooks.filter(b=>b.series_id===series.id&&b.chapters?.some(c=>c.content)).sort((a,b)=>(a.series_number||0)-(b.series_number||0));
   let ctx=`=== SERIES BIBLE: "${series.name}" ===\n`;
-  ctx+=`Genre: ${series.genre} | Audience: ${series.audience}\nConcept: ${series.concept}\n\n`;
-  if(p.world_setting)ctx+=`WORLD/SETTING:\n${p.world_setting}\n\n`;
+  ctx+=`Genre: ${series.genre} | Audience: ${series.audience}\nConcept: ${series.concept}\n`;
+  if(p.series_themes?.length)ctx+=`Core Themes: ${p.series_themes.join(", ")}\n`;
+  ctx+=`\n`;
+  if(p.world_setting)ctx+=`WORLD & SETTING:\n${p.world_setting}\n\n`;
   if(p.world_rules?.length)ctx+=`WORLD RULES & LORE:\n${p.world_rules.map(r=>`• ${r}`).join("\n")}\n\n`;
   if(p.tone_style)ctx+=`TONE & STYLE: ${p.tone_style}\n\n`;
+  if(p.series_arc)ctx+=`OVERARCHING SERIES ARC: ${p.series_arc}\n\n`;
   if(series.character_roster?.length){
     ctx+=`ESTABLISHED CHARACTERS (maintain consistency exactly):\n`;
-    series.character_roster.forEach(c=>{ctx+=`• ${c.name} [${c.role||""}]: ${c.description||""} — First appears: ${c.first_appears||""}\n`;});ctx+="\n";
+    series.character_roster.forEach(c=>{
+      ctx+=`• ${c.name}`;
+      if(c.role)ctx+=` [${c.role}]`;
+      if(c.description)ctx+=`: ${c.description}`;
+      if(c.arc)ctx+=` | Character arc: ${c.arc}`;
+      ctx+=`\n`;
+    });ctx+="\n";
   }
   if(series.world_locations?.length){
     ctx+=`ESTABLISHED LOCATIONS:\n`;
     series.world_locations.forEach(l=>{ctx+=`• ${l.name}: ${l.description||""}\n`;});ctx+="\n";
   }
-  if(series.plot_events?.length){
-    ctx+=`KEY SERIES EVENTS (do not contradict):\n`;
-    series.plot_events.forEach(e=>{ctx+=`• [${e.book}] ${e.event}\n`;});ctx+="\n";
+  // Include actual content from written books as story context
+  if(seriesBooks.length>0){
+    ctx+=`PREVIOUSLY WRITTEN BOOKS (maintain full continuity):\n`;
+    seriesBooks.forEach(b=>{
+      const lastChapter=b.chapters.filter(c=>c.content).slice(-1)[0];
+      ctx+=`• Book ${b.series_number||"?"}: "${b.title}" — ${(b.word_count||0).toLocaleString()}w written`;
+      if(b.status==="published")ctx+=` [PUBLISHED]`;
+      if(lastChapter)ctx+=`. Ends: ${lastChapter.content.slice(-300).replace(/\n/g," ")}…`;
+      ctx+=`\n`;
+    });ctx+="\n";
+  }
+  if(series.plot_events?.length>0){
+    ctx+=`KEY SERIES EVENTS — DO NOT CONTRADICT:\n`;
+    series.plot_events.slice(-20).forEach(e=>{ctx+=`• [${e.book}] ${e.event}\n`;});ctx+="\n";
   }
   ctx+=`=== END SERIES BIBLE ===\n`;
   return ctx;
@@ -1314,7 +1337,7 @@ function SeriesPage({navigate,onSettings}){
         </div>
       )}
 
-      {seriesList.length===0&&!showCreate?(
+      {seriesList.length>0&&!showCreate&&(()=>{const allBooks=getBooks();const seriesBooks=allBooks.filter(b=>b.series_id);const totalWords=seriesBooks.reduce((a,b)=>a+(b.word_count||0),0);const donePct=seriesList.length?Math.round(seriesBooks.filter(b=>b.status==="published"||b.status==="ready").length/Math.max(1,seriesList.reduce((a,s)=>a+(s.book_count||0),0))*100):0;return <div className="grid grid-cols-3 gap-3 mb-6"><div className="bg-cyan-500/10 border border-cyan-500/20 rounded-xl p-3 text-center"><p className="text-white text-xl font-bold">{seriesList.length}</p><p className="text-cyan-300/60 text-xs">Series</p></div><div className="bg-purple-500/10 border border-purple-500/20 rounded-xl p-3 text-center"><p className="text-white text-xl font-bold">{(totalWords/1000).toFixed(0)}k</p><p className="text-purple-300/60 text-xs">Total Words</p></div><div className="bg-green-500/10 border border-green-500/20 rounded-xl p-3 text-center"><p className="text-white text-xl font-bold">{donePct}%</p><p className="text-green-300/60 text-xs">Published</p></div></div>;})()}{seriesList.length===0&&!showCreate?(
         <div className="text-center py-20"><div className="text-7xl mb-4">📗</div><h2 className="text-white text-xl font-bold mb-2">No series yet</h2><p className="text-white/40 mb-6">Build a multi-book world with shared characters, locations, and lore</p><button onClick={()=>setShowCreate(true)} className="bg-gradient-to-r from-cyan-500 to-blue-500 text-white px-8 py-3.5 rounded-xl font-semibold text-lg hover:opacity-90">+ Create Your First Series</button></div>
       ):(
         <div className="space-y-6">
@@ -1352,7 +1375,7 @@ function SeriesPage({navigate,onSettings}){
                         {bp.subtitle&&<p className="text-purple-300/70 text-xs mb-1">{bp.subtitle}</p>}
                         {bp.character_focus&&<p className="text-cyan-300/50 text-xs mb-1">👥 {bp.character_focus}</p>}
                         <p className="text-white/35 text-xs leading-relaxed mb-3 line-clamp-3">{bp.description}</p>
-                        {existingBook?<button onClick={()=>navigate("editor",existingBook.id)} className="w-full text-xs border border-white/20 text-white/50 py-2 rounded-lg hover:bg-white/5">Open Editor →</button>:<button onClick={()=>buildBook(series,bp)} className="w-full text-xs bg-gradient-to-r from-purple-500 to-pink-500 text-white py-2 rounded-lg hover:opacity-90">✨ Build This Book</button>}
+                        {existingBook?(<div className="space-y-2"><div className="flex items-center gap-2 flex-wrap"><span className={`text-xs px-2 py-0.5 rounded-full border ${existingBook.status==="published"?"bg-green-500/20 text-green-300 border-green-500/30":existingBook.status==="ready"?"bg-blue-500/20 text-blue-300 border-blue-500/30":"bg-purple-500/20 text-purple-300 border-purple-500/30"}`}>{existingBook.status}</span>{existingBook.word_count>0&&<span className="text-white/30 text-xs">{(existingBook.word_count||0).toLocaleString()}w</span>}{existingBook.review?.overall_score>=70&&<span className="text-xs text-amber-300/70">⭐ {existingBook.review.overall_score}</span>}</div><button onClick={()=>navigate("editor",existingBook.id)} className="w-full text-xs border border-white/20 text-white/50 py-2 rounded-lg hover:bg-white/5">Open Editor →</button></div>):<button onClick={()=>buildBook(series,bp)} className="w-full text-xs bg-gradient-to-r from-purple-500 to-pink-500 text-white py-2 rounded-lg hover:opacity-90">✨ Build This Book</button>}
                       </div>
                     );
                   })}
@@ -1557,6 +1580,36 @@ function CreatePage({navigate,onSettings}){
 // ══════════════════════════════════════════════════════════════════════════════
 
 
+
+// ── Series Bible Inline (shown in editor outline tab for series books) ────────
+function SeriesBibleInline({bookId}){
+  const book=getBook(bookId);
+  if(!book?.series_id)return null;
+  const series=getSeriesById(book.series_id);
+  if(!series)return null;
+  const [open,setOpen]=useState(false);
+  const p=series.plan||{};
+  return(
+    <div className="bg-cyan-500/10 border border-cyan-500/30 rounded-xl overflow-hidden">
+      <button onClick={()=>setOpen(!open)} className="w-full flex items-center justify-between p-3 hover:bg-cyan-500/10 transition-all">
+        <div className="flex items-center gap-2">
+          <span className="bg-cyan-500/20 text-cyan-300 text-xs px-2.5 py-0.5 rounded-full border border-cyan-500/30">📗 {series.name} — Book {book.series_number}</span>
+          {series.character_roster?.length>0&&<span className="text-cyan-300/50 text-xs">👥 {series.character_roster.length} chars</span>}
+          {(series.plot_events||[]).length>0&&<span className="text-cyan-300/50 text-xs">📌 {series.plot_events.length} events</span>}
+        </div>
+        <span className="text-cyan-300/50 text-xs">{open?"▲ Hide":"▼ Series Bible"}</span>
+      </button>
+      {open&&(
+        <div className="px-4 pb-4 space-y-3 border-t border-cyan-500/20">
+          {p.world_setting&&<div><p className="text-cyan-300/60 text-xs font-semibold uppercase tracking-wider mb-1">World</p><p className="text-white/60 text-xs leading-relaxed">{p.world_setting.slice(0,300)}{p.world_setting.length>300?"…":""}</p></div>}
+          {series.character_roster?.length>0&&<div><p className="text-cyan-300/60 text-xs font-semibold uppercase tracking-wider mb-1">Key Characters</p><div className="space-y-1">{series.character_roster.slice(0,4).map((c,i)=><p key={i} className="text-white/60 text-xs"><span className="text-white/80 font-medium">{c.name}</span>{c.role?` [${c.role}]`:""}: {(c.description||"").slice(0,80)}</p>)}</div></div>}
+          {(series.plot_events||[]).length>0&&<div><p className="text-cyan-300/60 text-xs font-semibold uppercase tracking-wider mb-1">Series Events (tracked)</p><div className="space-y-1">{series.plot_events.slice(-5).map((e,i)=><p key={i} className="text-white/60 text-xs"><span className="text-cyan-400/60">[{e.book}]</span> {e.event}</p>)}</div></div>}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Book Stats Bar ────────────────────────────────────────────────────────────
 function BookStatsBar({book}){
   const wc=book.word_count||0;
@@ -1748,12 +1801,18 @@ function EditorPage({bookId,navigate,onSettings}){
           bump();chapters[i]={...chapters[i],content,generated:true};
           const wc=chapters.reduce((a,c)=>a+(c.content?c.content.split(/\s+/).length:0),0);
           updateBook(bookId,{chapters:[...chapters],word_count:wc});setBook(getBook(bookId));
+          if(b.series_id&&getUsage()<DAILY_LIMIT-2){try{
+            const evRaw=await callGemini(`List 2-3 key plot events from this chapter that matter for the series. ONLY valid JSON: {"events":["short event description"]}\nBook: "${outline.title||b.title}"\nChapter ${chapters[i].number}: "${chapters[i].title}"\nExcerpt: ${content.slice(0,600)}`,0.2);
+            bump();const em=evRaw.match(/\{[\s\S]*\}/);
+            if(em){const evD=JSON.parse(em[0]);const sa=getSeries();const si=sa.findIndex(s=>s.id===b.series_id);
+            if(si>-1){sa[si].plot_events=[...(sa[si].plot_events||[]),...(evD.events||[]).map(ev=>({book:`Book ${b.series_number||"?"}`,event:ev}))];setSeries(sa);}}
+          }catch(evE){/* silent */}}
         }catch(e){if(e?.code==="QUOTA"){setQuotaHit(true);break;}log(`⚠️ Ch.${i+1} error — skipped`);}
       }
       if(getUsage()>=DAILY_LIMIT){upd({auto_build:false,build_step:""});setIsBuilding(false);return;}
       // SEO
       log("🔍 Generating SEO…");setTab(3);
-      try{const raw=await callGemini(`Amazon KDP SEO expert.\nTitle: ${outline.title}\nGenre: ${b.genre}\nDesc: ${outline.description}\nRespond ONLY JSON: {"seo_title":"","seo_description":"","primary_keywords":[""],"bisac_categories":[""],"back_cover_copy":"","author_bio_template":""}`);bump();const match=raw.match(/\{[\s\S]*\}/);if(match){const seo=JSON.parse(match[0]);updateBook(bookId,{seo_title:seo.seo_title||"",seo_description:seo.seo_description||"",seo_keywords:(seo.primary_keywords||[]).join(", "),notes:JSON.stringify(seo)});setBook(getBook(bookId));}}catch(e){if(e?.code==="QUOTA"){setQuotaHit(true);upd({auto_build:false,build_step:""});setIsBuilding(false);return;}}
+      try{const raw=await callGemini(`You are an Amazon KDP bestseller SEO strategist. Generate complete publishing metadata.\nTitle: "${outline.title||b.title}"\nGenre: ${b.genre}\nAudience: ${b.target_audience}\nDescription: ${outline.description||''}\n\nRespond ONLY valid JSON (no markdown): {"seo_title":"","seo_description":"","primary_keywords":["k1","k2","k3","k4","k5","k6","k7"],"bisac_categories":["CAT1","CAT2"],"back_cover_copy":"","author_bio_template":""}`);bump();const match=raw.match(/\{[\s\S]*\}/);if(match){const seo=JSON.parse(match[0]);updateBook(bookId,{seo_title:seo.seo_title||"",seo_description:seo.seo_description||"",seo_keywords:(seo.primary_keywords||[]).join(", "),notes:JSON.stringify(seo)});setBook(getBook(bookId));}}catch(e){if(e?.code==="QUOTA"){setQuotaHit(true);upd({auto_build:false,build_step:""});setIsBuilding(false);return;}}
       if(getUsage()>=DAILY_LIMIT){upd({auto_build:false,build_step:""});setIsBuilding(false);return;}
       // Cover
       log("🎨 Generating cover…");setTab(2);
@@ -1846,7 +1905,7 @@ function EditorPage({bookId,navigate,onSettings}){
     }catch(e){handleErr(e);}finally{setBusy(false);}
   };
 
-  const genSEO=async()=>{if(quotaHit||isBuilding)return;setBusy(true);setError("");try{const outline=JSON.parse(book.outline||"{}");const raw=await callGemini(`Amazon KDP SEO expert.\nTitle: ${outline.title}\nGenre: ${book.genre}\nDesc: ${outline.description}\nRespond ONLY JSON: {"seo_title":"","seo_description":"","primary_keywords":[""],"bisac_categories":[""],"back_cover_copy":"","author_bio_template":""}`);bump();const match=raw.match(/\{[\s\S]*\}/);if(!match)throw{code:"PARSE"};const seo=JSON.parse(match[0]);upd({seo_title:seo.seo_title||"",seo_description:seo.seo_description||"",seo_keywords:(seo.primary_keywords||[]).join(", "),notes:JSON.stringify(seo)});flash("SEO generated! 🔍");}catch(e){handleErr(e);}finally{setBusy(false);}};
+  const genSEO=async()=>{if(quotaHit||isBuilding)return;setBusy(true);setError("");try{const outline=JSON.parse(book.outline||"{}");const raw=await callGemini(`You are an Amazon KDP bestseller SEO strategist. Generate complete publishing metadata.\nTitle: "${outline.title||book.title}"\nGenre: ${book.genre}\nAudience: ${book.target_audience}\nDescription: ${outline.description||''}\n\nRespond ONLY valid JSON (no markdown): {"seo_title":"","seo_description":"","primary_keywords":["k1","k2","k3","k4","k5","k6","k7"],"bisac_categories":["CAT1","CAT2"],"back_cover_copy":"","author_bio_template":""}`);bump();const match=raw.match(/\{[\s\S]*\}/);if(!match)throw{code:"PARSE"};const seo=JSON.parse(match[0]);upd({seo_title:seo.seo_title||"",seo_description:seo.seo_description||"",seo_keywords:(seo.primary_keywords||[]).join(", "),notes:JSON.stringify(seo)});flash("SEO generated! 🔍");}catch(e){handleErr(e);}finally{setBusy(false);}};
 
   const genAltTitles=async()=>{
     if(quotaHit||isBuilding||busy)return;setBusy(true);setError("");
@@ -1885,7 +1944,56 @@ function EditorPage({bookId,navigate,onSettings}){
       const a=Object.assign(document.createElement("a"),{href:URL.createObjectURL(new Blob([rtfContent],{type:"application/rtf"})),download:(book.title||"book").replace(/[^a-z0-9]/gi,"_")+".rtf"});a.click();
     } else if(fmt==="audio"){
       const ap=getAuthorProfile();
-      const script="AUDIOBOOK NARRATION SCRIPT\n"+"=".repeat(50)+"\nTitle: "+(book.title||"")+"\n"+(book.subtitle?"Subtitle: "+book.subtitle+"\n":"")+"Author: "+(ap.name||"Author")+"\n"+"=".repeat(50)+"\n\n[NARRATOR NOTE: "+book.genre+" — "+book.target_audience+". Approx. 150 words/min.]\n\n"+chaps.map(c=>"[CHAPTER "+c.number+"]\n"+c.title.toUpperCase()+"\n\n"+c.content.replace(/[#*_`]/g,"")).join("\n\n[CHAPTER BREAK — 3 second pause]\n\n")+"\n\n[END OF BOOK]";
+      // Build character voice guide from character manager data
+      const chars=getCharacters(bookId)||[];
+      const voiceGuide=chars.length>0?`\n\nCHARACTER VOICES:\n${chars.map(c=>`• ${c.name}: ${c.personality||""} — Voice: ${c.voice_notes||c.appearance||"distinctive"}`).join("\n")}`:"";
+      // Detect chapter tone from content (fast/slow/tense/emotional)
+      const getChTone=(content)=>{
+        const c=content.toLowerCase();
+        if(c.includes("scream")||c.includes("ran")||c.includes("chase")||c.includes("gunshot"))return"FAST-PACED — increase tempo, shorter breaths";
+        if(c.includes("kiss")||c.includes("held")||c.includes("cried")||c.includes("tears"))return"EMOTIONAL — slow down, let pauses breathe";
+        if(c.includes("crept")||c.includes("whisper")||c.includes("shadow")||c.includes("silence"))return"TENSE — hushed, deliberate";
+        return"STANDARD — follow natural prose rhythm";
+      };
+      const outline=book.outline?JSON.parse(book.outline||"{}"):{};      const script=
+        "════════════════════════════════════════════════════════════\n"+
+        "AUDIOBOOK NARRATION SCRIPT\n"+
+        "════════════════════════════════════════════════════════════\n"+
+        "Title:    "+(book.title||"")+"\n"+
+        (book.subtitle?"Subtitle: "+book.subtitle+"\n":"")+
+        "Author:   "+(ap.name||"Author")+"\n"+
+        "Genre:    "+book.genre+"\n"+
+        "Audience: "+book.target_audience+"\n"+
+        "Chapters: "+chaps.length+"\n"+
+        "Est. Time: ~"+Math.round(chaps.reduce((a,c)=>a+(c.content||"").split(/\s+/).length,0)/150)+" minutes\n"+
+        "════════════════════════════════════════════════════════════\n"+
+        "\nNARRATOR DIRECTION\n"+
+        "────────────────────────────────────────\n"+
+        "• Reading pace: 150 words/minute (adjust per tone notes below)\n"+
+        "• Pause after chapter titles: 2 seconds\n"+
+        "• Pause at scene breaks (⁂): 1.5 seconds\n"+
+        "• Dialogue: give each character a distinct, consistent vocal quality\n"+
+        voiceGuide+"\n\n"+
+        "════════════════════════════════════════════════════════════\n\n"+
+        chaps.map(c=>{
+          const tone=getChTone(c.content||"");
+          const cleanContent=c.content
+            .replace(/[#*_`]/g,"")
+            .replace(/---+/g,"\n⁂\n")
+            .replace(/([.!?])\s*"\s*([A-Z])/g,'$1" [brief pause] $2')
+            .replace(/\n{3,}/g,"\n\n");
+          return(
+            "════════════════════════════════════════════════════════════\n"+
+            "CHAPTER "+c.number+": "+c.title.toUpperCase()+"\n"+
+            "[Tone: "+tone+"]\n"+
+            "[Words: ~"+(c.content.split(/\s+/).length)+" | Est. "+Math.round(c.content.split(/\s+/).length/150)+" min]\n"+
+            "────────────────────────────────────────\n\n"+
+            cleanContent
+          );
+        }).join("\n\n[CHAPTER BREAK — 3 second pause]\n\n")+"\n\n"+
+        "════════════════════════════════════════════════════════════\n"+
+        "[END OF BOOK — 5 second pause — End credits music]\n"+
+        "════════════════════════════════════════════════════════════\n";
       const a=Object.assign(document.createElement("a"),{href:URL.createObjectURL(new Blob([script],{type:"text/plain"})),download:(book.title||"book").replace(/[^a-z0-9]/gi,"_")+"_audiobook.txt"});a.click();
     }
   };
@@ -1917,7 +2025,7 @@ function EditorPage({bookId,navigate,onSettings}){
         {success&&<div className="bg-green-500/20 border border-green-500/30 text-green-300 rounded-xl p-4 mb-5 text-sm">{success}</div>}
 
         {/* OUTLINE */}
-        {tab===0&&<div className="max-w-3xl mx-auto"><Card>{book.series_name&&<div className="flex items-center gap-2 mb-3"><span className="bg-cyan-500/20 text-cyan-300 text-xs px-3 py-1 rounded-full border border-cyan-500/30">📗 {book.series_name} — Book {book.series_number}</span></div>}<h2 className="text-white text-xl font-bold">{book.title}</h2>{book.subtitle&&<p className="text-purple-300 mt-1 mb-4 text-sm">{book.subtitle}</p>}<p className="text-white/60 text-sm leading-relaxed mb-6">{book.description}</p>{book.chapters?.length>0&&<><p className="text-white/40 text-xs uppercase tracking-wider mb-3">Chapters ({book.chapters.length})</p><div className="space-y-2">{book.chapters.map((ch,i)=><div key={i} className={`rounded-xl p-3 border flex gap-3 items-start ${ch.generated?"bg-green-500/10 border-green-500/20":"bg-white/5 border-white/10"}`}><span className={`font-bold text-sm min-w-[24px] ${ch.generated?"text-green-400":"text-purple-400"}`}>{ch.generated?"✓":ch.number+"."}</span><div className="flex-1"><p className="text-white text-sm font-medium">{ch.title}</p><p className="text-white/35 text-xs mt-0.5">{ch.description}</p>{ch.content&&<div className="flex items-center gap-3 mt-1.5"><span className="text-green-400/70 text-xs">{ch.content.split(/\s+/).length.toLocaleString()} words</span><span className="text-white/20 text-xs">~{Math.ceil(ch.content.split(/\s+/).length/200)} min read</span></div>}{ch.opening_hook&&!ch.content&&<p className="text-purple-300/50 text-xs mt-1 italic">Hook: {ch.opening_hook.slice(0,80)}…</p>}</div>{ch.generated?<span className="text-green-400/50 text-xs shrink-0">✅ Done</span>:<span className="text-white/20 text-xs shrink-0">Pending</span>}</div>)}</div><div className="mt-5 bg-white/5 rounded-xl p-4"><div className="flex justify-between text-xs text-white/40 mb-2"><span>Progress</span><span>{book.chapters.filter(c=>c.generated).length}/{book.chapters.length} chapters</span></div><div className="h-2 bg-white/10 rounded-full overflow-hidden"><div className="h-full bg-gradient-to-r from-purple-500 to-pink-500 rounded-full" style={{width:`${(book.chapters.filter(c=>c.generated).length/book.chapters.length)*100}%`}}/></div></div></>}{(!book.chapters||book.chapters.length===0)&&isBuilding&&<div className="text-center py-8 text-white/30"><Spin/><p className="mt-3 text-sm">Generating outline…</p></div>}</Card></div>}
+        {tab===0&&<div className="max-w-3xl mx-auto"><Card>{book.series_name&&<div className="mb-3"><SeriesBibleInline bookId={bookId}/></div>}<h2 className="text-white text-xl font-bold">{book.title}</h2>{book.subtitle&&<p className="text-purple-300 mt-1 mb-4 text-sm">{book.subtitle}</p>}<p className="text-white/60 text-sm leading-relaxed mb-6">{book.description}</p>{book.chapters?.length>0&&<><p className="text-white/40 text-xs uppercase tracking-wider mb-3">Chapters ({book.chapters.length})</p><div className="space-y-2">{book.chapters.map((ch,i)=><div key={i} className={`rounded-xl p-3 border flex gap-3 items-start ${ch.generated?"bg-green-500/10 border-green-500/20":"bg-white/5 border-white/10"}`}><span className={`font-bold text-sm min-w-[24px] ${ch.generated?"text-green-400":"text-purple-400"}`}>{ch.generated?"✓":ch.number+"."}</span><div className="flex-1"><p className="text-white text-sm font-medium">{ch.title}</p><p className="text-white/35 text-xs mt-0.5">{ch.description}</p>{ch.content&&<div className="flex items-center gap-3 mt-1.5"><span className="text-green-400/70 text-xs">{ch.content.split(/\s+/).length.toLocaleString()} words</span><span className="text-white/20 text-xs">~{Math.ceil(ch.content.split(/\s+/).length/200)} min read</span></div>}{ch.opening_hook&&!ch.content&&<p className="text-purple-300/50 text-xs mt-1 italic">Hook: {ch.opening_hook.slice(0,80)}…</p>}</div>{ch.generated?<span className="text-green-400/50 text-xs shrink-0">✅ Done</span>:<span className="text-white/20 text-xs shrink-0">Pending</span>}</div>)}</div><div className="mt-5 bg-white/5 rounded-xl p-4"><div className="flex justify-between text-xs text-white/40 mb-2"><span>Progress</span><span>{book.chapters.filter(c=>c.generated).length}/{book.chapters.length} chapters</span></div><div className="h-2 bg-white/10 rounded-full overflow-hidden"><div className="h-full bg-gradient-to-r from-purple-500 to-pink-500 rounded-full" style={{width:`${(book.chapters.filter(c=>c.generated).length/book.chapters.length)*100}%`}}/></div></div></>}{(!book.chapters||book.chapters.length===0)&&isBuilding&&<div className="text-center py-8 text-white/30"><Spin/><p className="mt-3 text-sm">Generating outline…</p></div>}</Card></div>}
 
         {/* CHAPTERS */}
         {tab===1&&<div className="grid grid-cols-1 lg:grid-cols-3 gap-5"><div className="lg:col-span-1"><div className="bg-white/5 border border-white/10 rounded-2xl p-4 sticky top-24"><div className="flex items-center justify-between mb-3"><h3 className="text-white font-semibold text-sm">Chapters</h3>{!isBuilding&&<button onClick={async()=>{for(const i of (book.chapters||[]).map((_,i)=>i).filter(i=>!book.chapters[i].generated)){if(quotaHit)break;await genChapter(i);}}} disabled={busy||busyCh!==null||quotaHit||isBuilding} className="text-xs bg-purple-500/20 text-purple-300 border border-purple-500/30 px-3 py-1.5 rounded-lg hover:bg-purple-500/30 disabled:opacity-40">Write All</button>}</div><div className="space-y-1">{(book.chapters||[]).map((ch,i)=><button key={i} onClick={()=>setSelCh(i)} className={`w-full text-left px-3 py-2 rounded-lg text-sm transition-all ${selCh===i?"bg-purple-500/20 text-white border border-purple-500/30":"text-white/50 hover:bg-white/5"}`}><span className={ch.generated?"text-green-400":""}>{ch.generated?"✓ ":""}</span>{ch.number}. {ch.title}</button>)}</div></div></div><div className="lg:col-span-2">{book.chapters?.[selCh]&&<Card><div className="flex items-start justify-between mb-5 gap-4"><div><h2 className="text-white text-lg font-bold">Ch. {book.chapters[selCh].number}: {book.chapters[selCh].title}</h2><p className="text-white/35 text-sm mt-1">{book.chapters[selCh].description}</p></div>{!isBuilding&&<div className="flex gap-2 shrink-0"><button onClick={()=>genChapterIllustration(selCh)} disabled={busyCh!==null||quotaHit||isBuilding||busy} className="bg-white/5 border border-white/10 text-white/60 px-3 py-2 rounded-xl font-medium text-sm hover:bg-white/10 disabled:opacity-40 flex items-center gap-1.5" title="Generate chapter illustration">🖼️</button><button onClick={()=>genChapter(selCh)} disabled={busyCh!==null||quotaHit||isBuilding} className="bg-gradient-to-r from-purple-500 to-pink-500 text-white px-4 py-2 rounded-xl font-medium text-sm hover:opacity-90 disabled:opacity-50 flex items-center gap-2">{busyCh===selCh?<><Spin size="h-4 w-4"/>Writing…</>:book.chapters[selCh].generated?"✍️ Rewrite":"✍️ Write"}</button></div>}</div>{book.chapters?.[selCh]?.illustration_url&&<div className="mb-4"><img src={book.chapters[selCh].illustration_url} alt={`Chapter ${book.chapters[selCh].number} illustration`} className="w-full rounded-xl max-h-48 object-cover border border-white/10"/><p className="text-white/20 text-xs mt-1 text-center italic">{book.chapters[selCh].illustration_prompt?.slice(0,80)}…</p></div>}{book.chapters[selCh].content?<ChapterEditor book={book} chIdx={selCh} upd={upd}/>:<div className="text-center py-16 text-white/25"><div className="text-4xl mb-3">✍️</div><p>{isBuilding?"Generating…":"Click Write to generate"}</p></div>}</Card>}</div></div>}
@@ -1966,6 +2074,7 @@ function EditorPage({bookId,navigate,onSettings}){
               <button onClick={()=>download("txt")} className="bg-white/10 border border-white/20 text-white py-3 rounded-xl font-semibold hover:bg-white/15 flex items-center justify-center gap-2 text-sm">📄 Plain Text (.txt)</button>
               <button onClick={()=>download("rtf")} className="bg-gradient-to-r from-orange-500 to-amber-500 text-white py-3 rounded-xl font-semibold hover:opacity-90 flex items-center justify-center gap-2 text-sm">📋 Word Doc (.rtf)</button>
               <button onClick={()=>download("audio")} className="bg-gradient-to-r from-green-500 to-emerald-500 text-white py-3 rounded-xl font-semibold hover:opacity-90 flex items-center justify-center gap-2 text-sm">🎙️ Audiobook Script</button>
+              <button onClick={()=>{const ch=book.chapters?.find(c=>c.content);if(!ch){alert("Write a chapter first.");return;}const u=window.speechSynthesis;if(u.speaking){u.cancel();flash("⏹ Stopped");return;}const utt=new SpeechSynthesisUtterance(ch.content.replace(/[#*_`]/g,"").slice(0,2000));utt.rate=0.92;utt.pitch=1.0;const voices=u.getVoices();const eng=voices.find(v=>v.lang.startsWith("en")&&!v.name.includes("Google"));if(eng)utt.voice=eng;u.speak(utt);flash("🔊 Reading Ch.1 preview — click again to stop");}} className="bg-white/5 border border-white/10 text-white/60 py-3 rounded-xl font-semibold hover:bg-white/10 flex items-center justify-center gap-2 text-sm">🔊 Listen Preview</button>
             </div>
             <p className="text-white/20 text-xs text-center mt-3">EPUB: open the .html file in Calibre → File → Add to Library → Convert to EPUB. Series read-order page included.</p>
           </Card>}
