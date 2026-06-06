@@ -3223,7 +3223,7 @@ function MangaEditorPage({projectId, navigate, onSettings}){
     flash("Script downloaded!");
   };
 
-  const MANGA_TABS = ["📖 Series Bible","📋 Chapters","✍️ Write","🖼️ Gallery"];
+  const MANGA_TABS = ["📖 Series Bible","📋 Chapters","✍️ Write","🖼️ Gallery","📤 Export"];
 
   return(
     <div className="min-h-screen">
@@ -3518,8 +3518,483 @@ function MangaEditorPage({projectId, navigate, onSettings}){
           </div>
         )}
 
-        {/* ── TAB 4 (index 3 = Gallery label = actually index 3) ── */}
+        {/* ── TAB 3: Gallery ── */}
+        {tab===3&&<MangaGalleryTab chapters={project.chapters||[]} project={project} onGenerate={(chIdx,sIdx,desc)=>generatePanelArt(chIdx,sIdx,desc)} generatingPanels={generatingPanels}/>}
+
+        {/* ── TAB 4: Export ── */}
+        {tab===4&&<MangaExportTab project={project} flash={flash}/>}
       </div>
+    </div>
+  );
+}
+
+
+// ══════════════════════════════════════════════════════════════════════════════
+// 🖼️ MANGA GALLERY TAB
+// ══════════════════════════════════════════════════════════════════════════════
+function MangaGalleryTab({chapters, project, onGenerate, generatingPanels}){
+  const allPanels = [];
+  chapters.forEach((ch, chIdx) => {
+    (ch.scenes||[]).forEach((scene, sIdx) => {
+      const artUrl = ch.panel_art?.[`${chIdx}-${sIdx}`];
+      allPanels.push({ ch, chIdx, scene, sIdx, artUrl });
+    });
+  });
+  const withArt = allPanels.filter(p => p.artUrl);
+  const withoutArt = allPanels.filter(p => !p.artUrl);
+
+  return(
+    <div className="max-w-5xl mx-auto">
+      <div className="flex items-center justify-between mb-6">
+        <div>
+          <h2 className="text-white font-bold text-lg">🖼️ Panel Art Gallery</h2>
+          <p className="text-white/40 text-sm">{withArt.length} of {allPanels.length} scenes have art</p>
+        </div>
+        {withoutArt.length > 0 && (
+          <p className="text-white/30 text-xs">{withoutArt.length} scenes need art — open a chapter to generate</p>
+        )}
+      </div>
+
+      {withArt.length === 0 && (
+        <div className="text-center py-20">
+          <div className="text-5xl mb-4">🎨</div>
+          <h3 className="text-white font-semibold mb-2">No panel art yet</h3>
+          <p className="text-white/40 text-sm">Open a chapter in the Chapters tab and click "Generate Panel Art" on each scene.</p>
+        </div>
+      )}
+
+      {withArt.length > 0 && (
+        <div className="columns-2 sm:columns-3 md:columns-4 gap-3 space-y-3">
+          {withArt.map((item, i) => (
+            <div key={i} className="break-inside-avoid bg-white/5 border border-white/10 rounded-xl overflow-hidden">
+              <img src={item.artUrl} alt="" className="w-full"/>
+              <div className="p-2">
+                <p className="text-white/50 text-xs font-medium">Ch.{item.ch.number} · Sc.{item.scene.scene_number}</p>
+                <p className="text-white/25 text-xs truncate">{item.scene.location}</p>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// 📤 MANGA EXPORT TAB — Webtoon/Tapas/Print ready
+// ══════════════════════════════════════════════════════════════════════════════
+function MangaExportTab({project, flash}){
+  const [platform, setPlatform] = useState("webtoon");
+  const [exporting, setExporting] = useState(false);
+  const [exportLog, setExportLog] = useState([]);
+  const [progress, setProgress] = useState(0);
+  const [done, setDone] = useState(false);
+
+  const chapters = project.chapters || [];
+  const concept = project.concept || {};
+
+  const PLATFORMS = [
+    {
+      id: "webtoon",
+      label: "📱 Webtoon Canvas",
+      color: "from-green-500 to-emerald-600",
+      width: 800,
+      maxChunkHeight: 1280,
+      format: "JPEG",
+      desc: "800px wide · JPEG · Sliced into ≤1280px strips",
+      notes: ["Upload each strip as a separate image per episode", "Max 100 images per episode on Webtoon", "Cover: 436×436px square"],
+      tip: "Webtoon readers scroll vertically — stack all your panels top-to-bottom with no gaps."
+    },
+    {
+      id: "tapas",
+      label: "📖 Tapas",
+      color: "from-orange-500 to-amber-500",
+      width: 940,
+      maxChunkHeight: 99999,
+      format: "PNG",
+      desc: "940px wide · PNG · Full strip per scene",
+      notes: ["Upload full tall strips (no height limit)", "Max 60 images per episode", "Cover: 960×1440px"],
+      tip: "Tapas readers prefer longer strips — you can combine multiple scenes into one tall image."
+    },
+    {
+      id: "globalcomix",
+      label: "🌐 GlobalComix",
+      color: "from-blue-500 to-indigo-600",
+      width: 900,
+      maxChunkHeight: 99999,
+      format: "PNG",
+      desc: "900px wide · PNG · CBZ bundle",
+      notes: ["Accepts CBZ, PDF, PNG", "No strict height limit", "Good for traditional page format too"],
+      tip: "GlobalComix accepts CBZ files — a ZIP renamed to .cbz with numbered images inside."
+    },
+    {
+      id: "script",
+      label: "📄 Production Script",
+      color: "from-purple-500 to-pink-500",
+      width: null,
+      format: "TXT",
+      desc: "Full script with panel specs for a human artist",
+      notes: ["Panel descriptions numbered and formatted", "Dialogue with character attribution", "SFX and inner monologue marked", "Artist direction notes included"],
+      tip: "Share this with a Fiverr/Upwork manga artist. They'll know exactly what to draw for each panel."
+    },
+  ];
+
+  const sel = PLATFORMS.find(p => p.id === platform);
+  const chaptersWithArt = chapters.filter(ch =>
+    (ch.scenes||[]).some((_, si) => {
+      const chIdx = chapters.indexOf(ch);
+      return !!ch.panel_art?.[`${chIdx}-${si}`];
+    })
+  );
+  const totalScenes = chapters.reduce((a,c) => a + (c.scenes?.length||0), 0);
+  const totalWithArt = chapters.reduce((a,c,chIdx) =>
+    a + (c.scenes||[]).filter((_,si) => !!c.panel_art?.[`${chIdx}-${si}`]).length, 0);
+
+  const addLog = msg => setExportLog(prev => [{msg, t: new Date().toLocaleTimeString()}, ...prev.slice(0,49)]);
+
+  // ── Core canvas stitcher ──────────────────────────────────────────────────
+  const stitchSceneToCanvas = (artUrl, panelDescs, dialogue, sfx, monoLog, targetWidth) => {
+    return new Promise((resolve) => {
+      const img = new Image();
+      img.crossOrigin = "anonymous";
+      img.onload = () => {
+        // Panel art: scale to targetWidth
+        const artH = Math.round(img.height * (targetWidth / img.width));
+        // Text section height: estimate
+        const textLines = [
+          ...(panelDescs||[]).map((p,i) => `[${i+1}] ${p}`),
+          ...(dialogue||[]).map(d => `${d.character}: "${d.line}"`),
+          monoLog ? `[Monologue] ${monoLog}` : null,
+          (sfx||[]).length > 0 ? `SFX: ${sfx.join(" · ")}` : null,
+        ].filter(Boolean);
+
+        const lineH = 18;
+        const padding = 16;
+        const textH = textLines.length > 0 ? padding * 2 + textLines.length * lineH + 8 : 0;
+        const totalH = artH + textH;
+
+        const canvas = document.createElement("canvas");
+        canvas.width = targetWidth;
+        canvas.height = totalH;
+        const ctx = canvas.getContext("2d");
+
+        // Background
+        ctx.fillStyle = "#0f0a1e";
+        ctx.fillRect(0, 0, targetWidth, totalH);
+
+        // Draw art
+        ctx.drawImage(img, 0, 0, targetWidth, artH);
+
+        // Text overlay at bottom
+        if(textH > 0){
+          ctx.fillStyle = "rgba(0,0,0,0.85)";
+          ctx.fillRect(0, artH, targetWidth, textH);
+          ctx.fillStyle = "#ffffff";
+          ctx.font = "13px monospace";
+          textLines.forEach((line, i) => {
+            const y = artH + padding + i * lineH + lineH;
+            const maxW = targetWidth - padding * 2;
+            // Word-wrap long lines
+            const words = line.split(" ");
+            let cur = "";
+            let ly = y;
+            for(const w of words){
+              const test = cur ? cur + " " + w : w;
+              if(ctx.measureText(test).width > maxW && cur){
+                ctx.fillText(cur, padding, ly);
+                cur = w; ly += lineH;
+              } else { cur = test; }
+            }
+            if(cur) ctx.fillText(cur, padding, ly);
+          });
+        }
+
+        resolve(canvas);
+      };
+      img.onerror = () => {
+        // No art — create text-only card
+        const textLines = [
+          ...(panelDescs||[]).map((p,i) => `[${i+1}] ${p}`),
+          ...(dialogue||[]).map(d => `${d.character}: "${d.line}"`),
+          monoLog ? `↳ ${monoLog}` : null,
+          (sfx||[]).length > 0 ? `SFX: ${sfx.join(" · ")}` : null,
+        ].filter(Boolean);
+        const lineH = 20, padding = 20;
+        const h = Math.max(200, padding * 2 + textLines.length * lineH + 40);
+        const canvas = document.createElement("canvas");
+        canvas.width = targetWidth; canvas.height = h;
+        const ctx = canvas.getContext("2d");
+        ctx.fillStyle = "#1a1030"; ctx.fillRect(0,0,targetWidth,h);
+        ctx.strokeStyle = "rgba(139,92,246,0.3)"; ctx.strokeRect(2,2,targetWidth-4,h-4);
+        ctx.fillStyle = "#9b8fcf"; ctx.font = "bold 14px monospace";
+        textLines.forEach((line,i) => ctx.fillText(line.slice(0,60), padding, padding + 20 + i*lineH));
+        resolve(canvas);
+      };
+      img.src = artUrl || "broken";
+    });
+  };
+
+  // ── Stitch full chapter into one tall canvas ──────────────────────────────
+  const stitchChapter = async (ch, chIdx, targetWidth) => {
+    const scenes = ch.scenes || [];
+    const canvases = [];
+    for(let si = 0; si < scenes.length; si++){
+      const scene = scenes[si];
+      const artUrl = ch.panel_art?.[`${chIdx}-${si}`] || null;
+      const c = await stitchSceneToCanvas(
+        artUrl,
+        scene.panel_descriptions || [],
+        scene.dialogue || [],
+        scene.sfx || [],
+        scene.internal_monologue || "",
+        targetWidth
+      );
+      canvases.push(c);
+    }
+    if(canvases.length === 0) return null;
+    const totalH = canvases.reduce((a,c) => a + c.height + 4, 0);
+    const master = document.createElement("canvas");
+    master.width = targetWidth; master.height = totalH;
+    const ctx = master.getContext("2d");
+    ctx.fillStyle = "#0f0a1e"; ctx.fillRect(0,0,targetWidth,totalH);
+    let y = 0;
+    for(const c of canvases){ ctx.drawImage(c, 0, y); y += c.height + 4; }
+    return master;
+  };
+
+  // ── Slice a tall canvas into chunks ──────────────────────────────────────
+  const sliceCanvas = (master, maxH) => {
+    if(maxH >= 99999) return [master];
+    const slices = [];
+    let y = 0;
+    while(y < master.height){
+      const h = Math.min(maxH, master.height - y);
+      const slice = document.createElement("canvas");
+      slice.width = master.width; slice.height = h;
+      slice.getContext("2d").drawImage(master, 0, y, master.width, h, 0, 0, master.width, h);
+      slices.push(slice);
+      y += h;
+    }
+    return slices;
+  };
+
+  // ── Canvas → blob ─────────────────────────────────────────────────────────
+  const canvasToBlob = (canvas, fmt) => new Promise(res =>
+    canvas.toBlob(res, fmt === "JPEG" ? "image/jpeg" : "image/png", 0.92)
+  );
+
+  // ── Download a blob ──────────────────────────────────────────────────────
+  const dlBlob = (blob, filename) => {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a"); a.href = url; a.download = filename; a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 2000);
+  };
+
+  // ── Export Production Script ──────────────────────────────────────────────
+  const exportProductionScript = () => {
+    const lines = [];
+    const slug = (project.title||"manga").replace(/[^a-z0-9]/gi,"_");
+    lines.push("═".repeat(70));
+    lines.push(`PRODUCTION SCRIPT: ${project.title?.toUpperCase()}`);
+    lines.push(`Format: ${project.format?.toUpperCase()} | Genre: ${project.genre} | Art Style: ${project.art_style}`);
+    lines.push(`Target Audience: ${project.target_audience}`);
+    lines.push("═".repeat(70));
+    lines.push("");
+    lines.push("SERIES BIBLE");
+    lines.push("─".repeat(40));
+    if(concept.logline) lines.push(`LOGLINE: ${concept.logline}`);
+    if(concept.synopsis) lines.push(`\nSYNOPSIS:\n${concept.synopsis}`);
+    if(concept.protagonist) lines.push(`\nPROTAGONIST: ${concept.protagonist.name}, ${concept.protagonist.age}\n  Appearance: ${concept.protagonist.appearance}\n  Personality: ${concept.protagonist.personality}\n  Goal: ${concept.protagonist.goal}\n  Flaw: ${concept.protagonist.flaw}\n  Power/Skill: ${concept.protagonist.power_or_skill}`);
+    if(concept.antagonist) lines.push(`\nANTAGONIST: ${concept.antagonist.name} (${concept.antagonist.role})\n  Motivation: ${concept.antagonist.motivation}\n  Appearance: ${concept.antagonist.appearance}`);
+    if(concept.supporting_cast?.length > 0) lines.push(`\nSUPPORTING CAST:\n${concept.supporting_cast.map(c=>`  • ${c.name} (${c.role}): ${c.brief}`).join("\n")}`);
+    if(concept.setting) lines.push(`\nSETTING:\n${concept.setting}`);
+    if(concept.power_system && concept.power_system !== "None") lines.push(`\nPOWER SYSTEM:\n${concept.power_system}`);
+    if(concept.series_arc) lines.push(`\nSERIES ARC:\n${concept.series_arc}`);
+    lines.push("\n");
+    chapters.forEach(ch => {
+      lines.push("═".repeat(70));
+      lines.push(`${ch.title || "Chapter " + ch.number}  [Mood: ${ch.mood||"?"} | Ending: ${ch.chapter_end_type||"?"}]`);
+      lines.push(`SUMMARY: ${ch.summary||""}`);
+      lines.push("");
+      (ch.scenes||[]).forEach(scene => {
+        lines.push(`  SCENE ${scene.scene_number}  —  ${scene.location}  [${scene.time_of_day}]  [${scene.panel_count} panels]`);
+        lines.push("  " + "─".repeat(50));
+        if(scene.panel_descriptions?.length > 0){
+          lines.push("  PANELS:");
+          scene.panel_descriptions.forEach((p,i) => lines.push(`    Panel ${i+1}: ${p}`));
+        }
+        if(scene.dialogue?.length > 0){
+          lines.push("  DIALOGUE:");
+          scene.dialogue.forEach(d => lines.push(`    ${d.character} [${d.tone}]: "${d.line}"`));
+        }
+        if(scene.internal_monologue) lines.push(`  INNER MONOLOGUE: ${scene.internal_monologue}`);
+        if(scene.sfx?.length > 0) lines.push(`  SFX: ${scene.sfx.join(" / ")}`);
+        lines.push(`  TENSION LEVEL: ${scene.tension_level||"?"}/5`);
+        lines.push("");
+      });
+      if(ch.next_chapter_setup) lines.push(`  → NEXT CHAPTER SETUP: ${ch.next_chapter_setup}\n`);
+    });
+    lines.push("═".repeat(70));
+    lines.push("END OF SCRIPT");
+    const blob = new Blob([lines.join("\n")], {type:"text/plain"});
+    dlBlob(blob, `${slug}_production_script.txt`);
+    flash("Production script downloaded!");
+  };
+
+  // ── Main export handler ────────────────────────────────────────────────────
+  const runExport = async () => {
+    if(platform === "script"){ exportProductionScript(); return; }
+    if(chapters.length === 0){ flash("No chapters to export — write some chapters first."); return; }
+    setExporting(true); setExportLog([]); setDone(false); setProgress(0);
+    try{
+      const targetWidth = sel.width;
+      const maxH = sel.maxChunkHeight;
+      const fmt = sel.format;
+      const slug = (project.title||"manga").replace(/[^a-z0-9]/gi,"_");
+      addLog(`🚀 Exporting for ${sel.label} — ${targetWidth}px wide, ${fmt}`);
+
+      for(let ci = 0; ci < chapters.length; ci++){
+        const ch = chapters[ci];
+        addLog(`📖 Processing Chapter ${ch.number}: "${ch.title||""}"…`);
+        setProgress(Math.round((ci / chapters.length) * 100));
+
+        const master = await stitchChapter(ch, ci, targetWidth);
+        if(!master){ addLog(`  ⚠️ Ch.${ch.number} has no scenes — skipping.`); continue; }
+
+        const slices = sliceCanvas(master, maxH);
+        addLog(`  ↳ ${slices.length} image${slices.length!==1?"s":""} for this chapter`);
+
+        for(let si = 0; si < slices.length; si++){
+          const blob = await canvasToBlob(slices[si], fmt);
+          const ext = fmt === "JPEG" ? "jpg" : "png";
+          const filename = `${slug}_ch${String(ch.number).padStart(2,"0")}_p${String(si+1).padStart(3,"0")}.${ext}`;
+          dlBlob(blob, filename);
+          await new Promise(r => setTimeout(r, 250));
+        }
+        addLog(`  ✅ Ch.${ch.number} done`);
+      }
+
+      setProgress(100);
+      setDone(true);
+      addLog(`🎉 All chapters exported! Check your Downloads folder.`);
+      flash("Export complete! 🎉");
+    } catch(e){
+      addLog("❌ Error: " + (e.message||String(e)));
+      flash("Export failed: " + (e.message||"unknown error"), true);
+    } finally { setExporting(false); }
+  };
+
+  return(
+    <div className="max-w-3xl mx-auto space-y-5">
+
+      {/* Header */}
+      <Card>
+        <h2 className="text-white text-xl font-bold mb-1">📤 Export for Publishing</h2>
+        <p className="text-white/40 text-sm">Generates publication-ready image files sized and formatted for each platform — download and upload directly.</p>
+      </Card>
+
+      {/* Stats */}
+      <div className="grid grid-cols-3 gap-3">
+        <div className="bg-white/5 border border-white/10 rounded-xl p-3 text-center">
+          <p className="text-white text-xl font-bold">{chapters.length}</p>
+          <p className="text-white/30 text-xs">Chapters</p>
+        </div>
+        <div className="bg-white/5 border border-white/10 rounded-xl p-3 text-center">
+          <p className="text-white text-xl font-bold">{totalScenes}</p>
+          <p className="text-white/30 text-xs">Scenes</p>
+        </div>
+        <div className={`border rounded-xl p-3 text-center ${totalWithArt > 0 ? "bg-green-500/10 border-green-500/20" : "bg-white/5 border-white/10"}`}>
+          <p className={`text-xl font-bold ${totalWithArt > 0 ? "text-green-300" : "text-white"}`}>{totalWithArt}/{totalScenes}</p>
+          <p className="text-white/30 text-xs">Have Panel Art</p>
+        </div>
+      </div>
+
+      {totalWithArt === 0 && (
+        <div className="bg-amber-500/15 border border-amber-500/30 rounded-xl p-4 text-sm text-amber-300">
+          ⚠️ No panel art generated yet. You can still export the production script, or generate panel art in the Chapters tab first for illustrated exports.
+        </div>
+      )}
+
+      {/* Platform picker */}
+      <Card>
+        <h3 className="text-white font-semibold mb-4">Choose Platform</h3>
+        <div className="space-y-3">
+          {PLATFORMS.map(p => (
+            <button key={p.id} onClick={() => setPlatform(p.id)} className={`w-full p-4 rounded-2xl border-2 text-left transition-all ${platform===p.id?"border-purple-500 bg-purple-500/15":"border-white/10 bg-white/5 hover:border-white/25"}`}>
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <p className="text-white font-semibold text-sm">{p.label}</p>
+                  <p className="text-white/40 text-xs mt-0.5">{p.desc}</p>
+                </div>
+                {platform===p.id && <span className="text-purple-400 text-xs mt-1 shrink-0">✓ Selected</span>}
+              </div>
+              {platform===p.id && (
+                <div className="mt-3 pt-3 border-t border-white/10 space-y-1">
+                  {p.notes.map((n,i) => <p key={i} className="text-white/30 text-xs">• {n}</p>)}
+                  <div className="bg-cyan-500/10 border border-cyan-500/20 rounded-lg p-2.5 mt-2">
+                    <p className="text-cyan-300/70 text-xs leading-relaxed">💡 {p.tip}</p>
+                  </div>
+                </div>
+              )}
+            </button>
+          ))}
+        </div>
+      </Card>
+
+      {/* Export button */}
+      <Card>
+        {!exporting ? (
+          <button onClick={runExport} className="w-full bg-gradient-to-r from-pink-500 to-purple-500 text-white py-4 rounded-xl font-semibold hover:opacity-90 text-base flex items-center justify-center gap-2">
+            {platform === "script" ? "📄 Download Production Script" : `📤 Export for ${sel?.label}`}
+          </button>
+        ) : (
+          <div className="space-y-3">
+            <div className="w-full bg-white/10 rounded-full h-2">
+              <div className="bg-gradient-to-r from-pink-500 to-purple-500 h-2 rounded-full transition-all" style={{width: progress+"%"}}/>
+            </div>
+            <p className="text-white/40 text-sm text-center">Generating… {progress}%</p>
+          </div>
+        )}
+
+        {done && !exporting && (
+          <div className="mt-4 bg-green-500/15 border border-green-500/30 rounded-xl p-4 text-sm text-green-300">
+            ✅ <strong>Export complete!</strong> Files are in your Downloads folder. Upload them directly to {sel?.label?.split(" ").slice(1).join(" ")} as a new episode.
+          </div>
+        )}
+
+        {exportLog.length > 0 && (
+          <div className="mt-4 bg-black/30 rounded-xl p-4 max-h-48 overflow-y-auto space-y-1">
+            {exportLog.map((e,i) => (
+              <div key={i} className="flex gap-2 text-xs">
+                <span className="text-white/20 shrink-0">{e.t}</span>
+                <span className="text-white/60">{e.msg}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </Card>
+
+      {/* Upload guide */}
+      {platform !== "script" && (
+        <div className="bg-white/3 border border-white/8 rounded-xl p-4 text-xs text-white/30 leading-relaxed space-y-2">
+          <p className="text-white/50 font-semibold">How to upload to {sel?.label}:</p>
+          {platform === "webtoon" && <>
+            <p>1. Go to <span className="text-purple-400">canvas.webtoons.com</span> → My Canvas → + New Episode</p>
+            <p>2. Drag in all the exported .jpg strips in order (p001, p002…)</p>
+            <p>3. Set your episode title, thumbnail, and schedule or publish</p>
+          </>}
+          {platform === "tapas" && <>
+            <p>1. Go to <span className="text-purple-400">creators.tapas.io</span> → your series → + Add Episode</p>
+            <p>2. Upload the exported .png files — Tapas accepts full-height strips</p>
+            <p>3. Add title, tags, and publish (or schedule)</p>
+          </>}
+          {platform === "globalcomix" && <>
+            <p>1. Go to <span className="text-purple-400">globalcomix.com</span> → Creator Dashboard → Upload</p>
+            <p>2. Upload the .png files — or ZIP them and rename to .cbz for a single upload</p>
+            <p>3. Set chapter metadata and publish</p>
+          </>}
+        </div>
+      )}
     </div>
   );
 }
