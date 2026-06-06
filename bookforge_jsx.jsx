@@ -249,7 +249,7 @@ function Header({onBack,title,subtitle,onSettings,activeTab,setActiveTab}){
       </div>
       {setActiveTab&&(
         <div className="max-w-7xl mx-auto px-4 sm:px-6 flex gap-1">
-          {[["📚 Library","library"],["📗 Series","series"],["⏳ Queue","queue"]].map(([label,id])=>(
+          {[["📚 Library","library"],["📗 Series","series"],["⏳ Queue","queue"],["🎌 Manga","manga"]].map(([label,id])=>(
             <button key={id} onClick={()=>setActiveTab(id)} className={`px-4 py-2.5 text-sm font-medium whitespace-nowrap rounded-t-lg transition-all ${activeTab===id?"bg-white/10 text-white border-b-2 border-purple-500":"text-white/35 hover:text-white/70"}`}>{label}</button>
           ))}
         </div>
@@ -2526,6 +2526,17 @@ class ErrorBoundary extends React.Component{
   }
 }
 
+
+// ══════════════════════════════════════════════════════════════════════════════
+// MANGA / MANHWA STORAGE HELPERS
+// ══════════════════════════════════════════════════════════════════════════════
+const MANGA_KEY="bf_manga_projects";
+const getMangaProjects=()=>{try{return JSON.parse(localStorage.getItem(MANGA_KEY)||"[]");}catch{return[];}};
+const setMangaProjects=v=>{try{localStorage.setItem(MANGA_KEY,JSON.stringify(v));}catch(e){if(e.name==="QuotaExceededError")alert("Storage full — export or delete some manga projects.");}};
+const getMangaProject=id=>getMangaProjects().find(p=>p.id===id)||null;
+const saveMangaProject=p=>{const all=getMangaProjects();const i=all.findIndex(x=>x.id===p.id);if(i>-1)all[i]=p;else all.unshift(p);setMangaProjects(all);};
+const deleteMangaProject=id=>setMangaProjects(getMangaProjects().filter(p=>p.id!==id));
+
 function App(){
   const [page,setPage]=useState("home");
   const [bookId,setBookId]=useState(null);
@@ -2544,8 +2555,8 @@ function App(){
       {showSettings&&<SettingsModal onClose={()=>setShowSettings(false)}/>}
       <Header
         onBack={!isHome?()=>navigate("home"):null}
-        title={isEditor&&currentBook?currentBook.title:"BookForge AI"}
-        subtitle={isEditor&&currentBook?`${currentBook.genre} · ${currentBook.target_audience}`:"AI-Powered Book Generator"}
+        title={isEditor&&currentBook?currentBook.title:page==="manga-editor"&&bookId?getMangaProject(bookId)?.title||"Manga Editor":"BookForge AI"}
+        subtitle={isEditor&&currentBook?`${currentBook.genre} · ${currentBook.target_audience}`:page==="manga-editor"?"Manga · Manhwa Creator":"AI-Powered Book Generator"}
         onSettings={()=>setShowSettings(true)}
         activeTab={isHome?homeTab:null}
         setActiveTab={isHome?t=>setHomeTab(t):null}
@@ -2553,9 +2564,963 @@ function App(){
       {isHome&&homeTab==="library"&&<HomePage navigate={navigate} onSettings={()=>setShowSettings(true)}/>}
       {isHome&&homeTab==="series"&&<SeriesPage navigate={navigate} onSettings={()=>setShowSettings(true)}/>}
       {isHome&&homeTab==="queue"&&<QueuePage navigate={navigate} onSettings={()=>setShowSettings(true)}/>}
+      {isHome&&homeTab==="manga"&&<MangaHomePage navigate={navigate} onSettings={()=>setShowSettings(true)}/>}
+      {page==="manga-editor"&&<MangaEditorPage projectId={bookId} navigate={navigate} onSettings={()=>setShowSettings(true)}/>}
       {isCreate&&<CreatePage navigate={navigate} onSettings={()=>setShowSettings(true)}/>}
       {isEditor&&<EditorPage bookId={bookId} navigate={navigate} onSettings={()=>setShowSettings(true)}/>}
     </div>
   );
 }
 ReactDOM.createRoot(document.getElementById("root")).render(<ErrorBoundary><App/></ErrorBoundary>);
+
+// ══════════════════════════════════════════════════════════════════════════════
+// 🎌 MANGA / MANHWA CREATOR — FULL SYSTEM
+// ══════════════════════════════════════════════════════════════════════════════
+
+// ─── Data ──────────────────────────────────────────────────────────────────
+const MANGA_GENRES = [
+  {id:"action-shonen",label:"⚔️ Action Shonen",desc:"Power systems, rivals, training arcs. Demon Slayer / JJK energy.",color:"from-orange-500 to-red-500"},
+  {id:"romance-manhwa",label:"💕 Romance Manhwa",desc:"CEO × commoner, enemies-to-lovers, second chances. #1 global genre.",color:"from-pink-500 to-rose-500"},
+  {id:"isekai-fantasy",label:"🌀 Isekai / Fantasy",desc:"Reincarnation, cheat skills, dungeon crawling, overpowered MC.",color:"from-violet-500 to-purple-500"},
+  {id:"thriller-horror",label:"🩸 Thriller / Horror",desc:"Psychological horror, survival games, dark atmosphere.",color:"from-gray-700 to-red-900"},
+  {id:"slice-of-life",label:"☕ Slice of Life",desc:"Everyday warmth, cozy relationships, school or workplace settings.",color:"from-sky-400 to-teal-500"},
+  {id:"mecha-scifi",label:"🤖 Mecha / Sci-Fi",desc:"Giant robots, space opera, cyberpunk, tech dystopia.",color:"from-cyan-500 to-blue-600"},
+  {id:"martial-arts",label:"🥋 Martial Arts",desc:"Cultivation, tournaments, ancient clans, qi systems.",color:"from-amber-500 to-orange-600"},
+  {id:"dark-fantasy",label:"🧙 Dark Fantasy",desc:"Grimdark worlds, anti-heroes, morally complex, Berserk vibes.",color:"from-indigo-700 to-slate-800"},
+  {id:"comedy-gag",label:"😂 Comedy / Gag",desc:"4-koma style, absurdist humor, chibi moments, situational comedy.",color:"from-yellow-400 to-orange-400"},
+  {id:"sports",label:"🏃 Sports",desc:"Underdog journeys, team dynamics, tournament arcs.",color:"from-green-500 to-emerald-600"},
+  {id:"villainess",label:"👑 Villainess",desc:"Otome game reincarnation, reverse harem, palace intrigue.",color:"from-purple-400 to-pink-600"},
+  {id:"survival-game",label:"🎮 Survival Game",desc:"Battle royale, death games, strategic horror.",color:"from-slate-600 to-red-700"},
+];
+
+const MANGA_FORMATS = [
+  {id:"manga",label:"📖 Manga",desc:"Right-to-left, black & white, Japanese style panels"},
+  {id:"manhwa",label:"📱 Manhwa",desc:"Vertical scroll, full color, Korean webtoon style"},
+  {id:"manhua",label:"🏮 Manhua",desc:"Vertical scroll, color, Chinese cultivation/action heavy"},
+];
+
+const ART_STYLES = [
+  {id:"shonen-bold",label:"Shonen Bold","prompt":"bold sharp manga linework, heavy contrast, speed lines, dramatic angles, Jujutsu Kaisen art style, screentone shadows, intense expressions, black and white manga panel"},
+  {id:"shoujo-delicate",label:"Shoujo Delicate","prompt":"delicate thin linework shoujo manga, flower sparkle decorations, large starry eyes, flowing hair, soft pastel tones, CLAMP art style influence, romantic atmosphere"},
+  {id:"manhwa-color",label:"Manhwa Color","prompt":"vertical manhwa webtoon style, full color illustration, Korean webtoon art, clean linework, soft gradient shadows, Solo Leveling aesthetic, detailed character designs"},
+  {id:"dark-ink",label:"Dark Ink (Berserk)","prompt":"black and white manga panel, high contrast ink illustration, cross-hatching shadows, screentone texture, intense dramatic composition, Berserk meets Vagabond art quality"},
+  {id:"chibi-cute",label:"Chibi Cute","prompt":"chibi character illustration, super-deformed 3:1 head ratio, kawaii aesthetic, pastel candy colors, sparkle effects, extremely clean linework, cute sticker quality"},
+  {id:"cyberpunk-neo",label:"Cyberpunk Neo-Tokyo","prompt":"cyberpunk anime illustration, neon-lit dark cityscape, teal and magenta palette, Production I.G. quality, holographic backgrounds, rain reflections, Ghost in the Shell aesthetic"},
+  {id:"fantasy-epic",label:"Fantasy Epic","prompt":"detailed fantasy manga illustration, epic battle scene composition, intricate armor and magic effects, Mushishi meets Berserk art quality, dynamic perspective, rich environmental detail"},
+  {id:"romance-soft",label:"Romance Soft","prompt":"soft watercolor manga style, warm romantic lighting, cherry blossom atmosphere, gentle pastel palette, expressive emotional character faces, shoujo manga romance scene"},
+];
+
+// ─── Manga Research Agent ────────────────────────────────────────────────────
+async function runMangaResearch(bump,genre){
+  const prompt = `You are a manga/manhwa industry analyst with deep knowledge of Webtoon, Tapas, MangaDex, and Amazon Kindle charts.
+
+Analyze the "${genre}" genre and identify the most profitable, underserved niches right now (2025).
+
+Respond ONLY with valid JSON:
+{
+  "market_summary": "2-3 sentence overview of this genre's current popularity and growth",
+  "top_niches": [
+    {"name":"Niche name","why":"Why this sub-niche is hot right now","example_titles":["title1","title2"],"reader_craving":"What readers desperately want but rarely get","competition":"low|medium|high"}
+  ],
+  "trending_tropes": ["trope 1","trope 2","trope 3","trope 4","trope 5"],
+  "avoid_tropes": ["overused trope readers are sick of"],
+  "hook_formula": "The proven story hook formula for this genre",
+  "mc_archetypes": ["archetype 1","archetype 2","archetype 3"],
+  "recommended_chapter_length": "average panel count / word count per chapter",
+  "monetization_tip": "Best platform and pricing strategy for this genre"
+}`;
+  const raw = await callGemini(prompt, 0.5);
+  bump();
+  const m = raw.match(/\{[\s\S]*\}/);
+  if(!m) throw {code:"PARSE"};
+  return JSON.parse(m[0]);
+}
+
+// ─── Manga Project Creator ───────────────────────────────────────────────────
+async function generateMangaConcept(bump, data){
+  const {genre, format, artStyle, userIdea, targetAudience} = data;
+  const prompt = `You are a professional manga/manhwa story architect. Create a complete series concept.
+
+Format: ${format} | Genre: ${genre} | Art Style: ${artStyle}
+Target Audience: ${targetAudience}
+User's idea/premise: ${userIdea||"(none — generate a compelling original concept)"}
+
+Create a professional manga series concept. Respond ONLY with valid JSON:
+{
+  "title": "Compelling manga title",
+  "subtitle": "Tagline (optional)",
+  "logline": "One punchy sentence that sells the series",
+  "synopsis": "3-4 paragraph story overview covering setup, conflict, and stakes",
+  "genre_tags": ["tag1","tag2","tag3"],
+  "setting": "World/setting description (2-3 sentences)",
+  "tone": "Dark and gritty | Lighthearted | Romantic | etc.",
+  "protagonist": {"name":"","age":"","appearance":"brief description for consistent art generation","personality":"","goal":"","flaw":"","power_or_skill":""},
+  "antagonist": {"name":"","role":"","motivation":"","appearance":""},
+  "supporting_cast": [{"name":"","role":"","brief":""}],
+  "power_system": "Description of magic/powers/abilities (or 'None' if slice of life)",
+  "series_arc": "The overarching story across the full run (3-5 sentences)",
+  "chapter_one_hook": "Exact first chapter opening scenario — the hook that makes readers subscribe immediately",
+  "estimated_chapters": "Realistic chapter count for a complete story",
+  "chapter_structure": "How each chapter is structured (setup, escalation, cliffhanger format)",
+  "recurring_themes": ["theme1","theme2","theme3"]
+}`;
+  const raw = await callGemini(prompt, 0.8);
+  bump();
+  const m = raw.match(/\{[\s\S]*\}/);
+  if(!m) throw {code:"PARSE"};
+  return JSON.parse(m[0]);
+}
+
+// ─── Chapter Generator ───────────────────────────────────────────────────────
+async function generateMangaChapters(bump, project, startChapter, count, onProgress){
+  const concept = project.concept || {};
+  const existingChapters = project.chapters || [];
+  const chapters = [];
+
+  // Build story memory — last 3 chapters for context
+  const recentChapters = existingChapters.slice(-3).map(ch =>
+    `Ch.${ch.number} "${ch.title}": ${ch.summary}`
+  ).join("\n");
+
+  const overarchingArc = `
+SERIES BIBLE:
+Title: ${project.title}
+Genre: ${project.genre} | Format: ${project.format}
+Setting: ${concept.setting||""}
+Series Arc: ${concept.series_arc||""}
+Power System: ${concept.power_system||"None"}
+Protagonist: ${concept.protagonist?.name||""} — ${concept.protagonist?.personality||""} — Goal: ${concept.protagonist?.goal||""}
+Antagonist: ${concept.antagonist?.name||""} — ${concept.antagonist?.motivation||""}
+Tone: ${concept.tone||""}
+Themes: ${(concept.recurring_themes||[]).join(", ")}
+Chapter Structure Formula: ${concept.chapter_structure||"Setup → Escalation → Cliffhanger"}`;
+
+  for(let i = 0; i < count; i++){
+    const chNum = startChapter + i;
+    if(onProgress) onProgress(i+1, count, chNum);
+
+    const prevSummaries = [...existingChapters, ...chapters].slice(-3).map(ch =>
+      `Ch.${ch.number} "${ch.title}": ${ch.summary}`
+    ).join("\n");
+
+    const prompt = `You are a professional manga script writer. Write Chapter ${chNum} for this ${project.genre} ${project.format}.
+
+${overarchingArc}
+
+RECENT CHAPTERS (maintain continuity — do NOT contradict these):
+${prevSummaries || "(This is the first chapter)"}
+
+CHAPTER ${chNum} TASK:
+Write a full, gripping chapter. Include:
+- A punchy chapter title
+- Scene-by-scene breakdown with panel descriptions (each scene = one or more panels)
+- Character dialogue (realistic, genre-appropriate, NOT generic)
+- Internal monologue for the MC when emotionally impactful
+- At least one moment of tension, surprise, or emotional resonance
+- End on a satisfying beat OR a cliffhanger (alternate every 2-3 chapters)
+- Maintain strict character voice consistency
+
+FORMAT your response as ONLY valid JSON:
+{
+  "title": "Chapter ${chNum}: [title]",
+  "summary": "2-3 sentence plot summary for continuity tracking",
+  "mood": "tense|action|romance|comedy|horror|emotional|mystery",
+  "scenes": [
+    {
+      "scene_number": 1,
+      "location": "Where this scene takes place",
+      "time_of_day": "day/night/dusk/etc",
+      "panel_count": 4,
+      "panel_descriptions": ["Panel 1: ...", "Panel 2: ...", "Panel 3: ...", "Panel 4: ..."],
+      "dialogue": [{"character":"Name","line":"dialogue text","tone":"aggressive|soft|shocked|etc"}],
+      "internal_monologue": "MC's thoughts if applicable (or empty string)",
+      "sfx": ["CRASH","SLAM"],
+      "tension_level": 1
+    }
+  ],
+  "chapter_end_type": "cliffhanger|resolution|twist|emotional",
+  "next_chapter_setup": "What seeds are planted for Ch.${chNum+1}"
+}`;
+
+    const raw = await callGemini(prompt, 0.85);
+    bump();
+    const m = raw.match(/\{[\s\S]*\}/);
+    if(!m) throw {code:"PARSE", chapter: chNum};
+    const ch = JSON.parse(m[0]);
+    ch.number = chNum;
+    ch.generated_at = new Date().toISOString();
+    ch.art_style = project.art_style;
+    chapters.push(ch);
+  }
+  return chapters;
+}
+
+// ─── Panel Image Generator ───────────────────────────────────────────────────
+async function generatePanelImage(project, scene, panelDesc){
+  const artStyle = ART_STYLES.find(a => a.id === (project.art_style || "manhwa-color"));
+  const stylePrompt = artStyle?.prompt || "manhwa webtoon style, full color";
+  const concept = project.concept || {};
+  const protagonist = concept.protagonist || {};
+
+  const fullPrompt = [
+    stylePrompt,
+    panelDesc,
+    `scene at ${scene.location}, ${scene.time_of_day}`,
+    protagonist.appearance ? `protagonist: ${protagonist.appearance}` : "",
+    "manga panel composition, high quality, no text, no speech bubbles",
+    "professional manga illustration"
+  ].filter(Boolean).join(", ");
+
+  const url = `https://image.pollinations.ai/prompt/${encodeURIComponent(fullPrompt)}?width=512&height=512&model=flux&nologo=true&seed=${Math.floor(Math.random()*99999)}`;
+  return url;
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// MANGA HOME PAGE
+// ══════════════════════════════════════════════════════════════════════════════
+function MangaHomePage({navigate, onSettings}){
+  const [projects, setProjects] = useState(getMangaProjects());
+  const [view, setView] = useState("library"); // library | create | research
+  const [researchGenre, setResearchGenre] = useState(null);
+  const [researchData, setResearchData] = useState(null);
+  const [researchLoading, setResearchLoading] = useState(false);
+  const [search, setSearch] = useState("");
+
+  const reload = () => setProjects(getMangaProjects());
+
+  const deleteProject = (id) => {
+    if(!confirm("Delete this manga project? This cannot be undone.")) return;
+    deleteMangaProject(id);
+    reload();
+  };
+
+  const filtered = projects.filter(p =>
+    !search || p.title?.toLowerCase().includes(search.toLowerCase()) || p.genre?.toLowerCase().includes(search.toLowerCase())
+  );
+
+  if(view === "create") return <MangaCreateWizard navigate={navigate} onSettings={onSettings} onBack={() => setView("library")} onCreated={() => { reload(); setView("library"); }}/>;
+
+  return(
+    <div className="max-w-6xl mx-auto px-4 sm:px-6 py-8">
+      {/* Header bar */}
+      <div className="flex items-center justify-between mb-6 gap-4 flex-wrap">
+        <div>
+          <h1 className="text-white text-2xl font-bold">🎌 Manga Studio</h1>
+          <p className="text-white/40 text-sm mt-1">AI-powered manga & manhwa creator — from concept to chapters with AI art</p>
+        </div>
+        <button onClick={() => setView("create")} className="bg-gradient-to-r from-pink-500 to-purple-500 text-white px-5 py-2.5 rounded-xl font-semibold hover:opacity-90 flex items-center gap-2 text-sm shrink-0">
+          + New Project
+        </button>
+      </div>
+
+      {/* Stats */}
+      {projects.length > 0 && (
+        <div className="grid grid-cols-3 gap-3 mb-6">
+          <div className="bg-white/5 border border-white/10 rounded-xl p-3 text-center"><p className="text-white text-xl font-bold">{projects.length}</p><p className="text-white/30 text-xs">Projects</p></div>
+          <div className="bg-white/5 border border-white/10 rounded-xl p-3 text-center"><p className="text-white text-xl font-bold">{projects.reduce((a,p)=>(a+(p.chapters?.length||0)),0)}</p><p className="text-white/30 text-xs">Chapters</p></div>
+          <div className="bg-white/5 border border-white/10 rounded-xl p-3 text-center"><p className="text-white text-xl font-bold">{projects.reduce((a,p)=>(a+(p.chapters?.reduce((b,c)=>b+(c.scenes?.length||0),0)||0)),0)}</p><p className="text-white/30 text-xs">Scenes</p></div>
+        </div>
+      )}
+
+      {/* Search */}
+      {projects.length > 2 && (
+        <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search projects…" className="w-full bg-white/10 border border-white/20 rounded-xl px-4 py-2.5 text-white placeholder-white/30 focus:outline-none focus:border-purple-500 text-sm mb-4"/>
+      )}
+
+      {/* Empty state */}
+      {projects.length === 0 && (
+        <div className="text-center py-20">
+          <div className="text-6xl mb-4">🎌</div>
+          <h2 className="text-white text-xl font-bold mb-2">Start Your Manga</h2>
+          <p className="text-white/40 text-sm mb-6 max-w-md mx-auto">Generate a full series concept, draft chapters with AI, and get panel art — all in one place.</p>
+          <button onClick={() => setView("create")} className="bg-gradient-to-r from-pink-500 to-purple-500 text-white px-8 py-3 rounded-xl font-semibold hover:opacity-90">✨ Create First Project</button>
+        </div>
+      )}
+
+      {/* Project Grid */}
+      {filtered.length > 0 && (
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+          {filtered.map(p => {
+            const genre = MANGA_GENRES.find(g => g.id === p.genre);
+            const chCount = p.chapters?.length || 0;
+            const lastCh = p.chapters?.slice(-1)[0];
+            return(
+              <div key={p.id} className="bg-white/5 border border-white/10 rounded-2xl overflow-hidden hover:border-white/25 transition-all group">
+                {/* Cover */}
+                <div className={`h-32 bg-gradient-to-br ${genre?.color||"from-purple-500 to-pink-500"} relative flex items-center justify-center`}>
+                  {p.cover_url ? (
+                    <img src={p.cover_url} alt="" className="w-full h-full object-cover"/>
+                  ) : (
+                    <span className="text-5xl opacity-60">🎌</span>
+                  )}
+                  <div className="absolute inset-0 bg-gradient-to-t from-black/60 to-transparent"/>
+                  <div className="absolute bottom-2 left-3 right-3">
+                    <span className="text-white/70 text-xs">{p.format?.toUpperCase()} · {p.art_style}</span>
+                  </div>
+                </div>
+                {/* Info */}
+                <div className="p-4">
+                  <h3 className="text-white font-bold text-sm leading-tight mb-1 line-clamp-2">{p.title}</h3>
+                  <p className="text-white/40 text-xs mb-1">{genre?.label}</p>
+                  <p className="text-white/30 text-xs line-clamp-2 mb-3">{p.concept?.logline||p.concept?.synopsis?.slice(0,80)||""}</p>
+                  <div className="flex items-center justify-between">
+                    <span className="text-purple-300/70 text-xs">{chCount} chapter{chCount!==1?"s":""}</span>
+                    {lastCh && <span className="text-white/20 text-xs">Last: Ch.{lastCh.number}</span>}
+                  </div>
+                  <div className="flex gap-2 mt-3">
+                    <button onClick={() => navigate("manga-editor", p.id)} className="flex-1 bg-gradient-to-r from-pink-500 to-purple-500 text-white py-2 rounded-lg text-xs font-semibold hover:opacity-90">Open Studio →</button>
+                    <button onClick={() => deleteProject(p.id)} className="w-8 h-8 rounded-lg bg-red-500/10 text-red-400/60 hover:bg-red-500/20 text-xs flex items-center justify-center">🗑</button>
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// MANGA CREATE WIZARD
+// ══════════════════════════════════════════════════════════════════════════════
+function MangaCreateWizard({navigate, onSettings, onBack, onCreated}){
+  const [step, setStep] = useState(1); // 1=format, 2=genre+niche, 3=details, 4=generating
+  const [format, setFormat] = useState("manhwa");
+  const [genre, setGenre] = useState("");
+  const [artStyle, setArtStyle] = useState("manhwa-color");
+  const [userIdea, setUserIdea] = useState("");
+  const [targetAudience, setTargetAudience] = useState("Young Adults (18-25)");
+  const [useResearch, setUseResearch] = useState(false);
+  const [researchData, setResearchData] = useState(null);
+  const [researchLoading, setResearchLoading] = useState(false);
+  const [generating, setGenerating] = useState(false);
+  const [genStatus, setGenStatus] = useState("");
+  const [error, setError] = useState("");
+  const [usage, setUsage] = useState(getUsage());
+
+  const key = getKey();
+
+  const runResearch = async () => {
+    if(!key){ onSettings(); return; }
+    if(getUsage() >= DAILY_LIMIT){ setError("Daily quota reached."); return; }
+    setResearchLoading(true); setError("");
+    try{
+      const data = await runMangaResearch(() => { trackUsage(); setUsage(getUsage()); }, MANGA_GENRES.find(g=>g.id===genre)?.label || genre);
+      setResearchData(data);
+    } catch(e){ setError(errMsg(e)); }
+    finally{ setResearchLoading(false); }
+  };
+
+  const create = async () => {
+    if(!key){ onSettings(); return; }
+    if(getUsage() >= DAILY_LIMIT){ setError("Daily quota reached."); return; }
+    setStep(4); setGenerating(true); setGenStatus("🧠 Crafting series concept…"); setError("");
+    try{
+      const concept = await generateMangaConcept(
+        () => { trackUsage(); setUsage(getUsage()); },
+        { genre: MANGA_GENRES.find(g=>g.id===genre)?.label || genre, format, artStyle: ART_STYLES.find(a=>a.id===artStyle)?.label || artStyle, userIdea, targetAudience }
+      );
+
+      setGenStatus("🎨 Generating cover image…");
+      const coverPrompt = ART_STYLES.find(a=>a.id===artStyle)?.prompt || "manhwa style";
+      const cover_url = `https://image.pollinations.ai/prompt/${encodeURIComponent(coverPrompt+", "+concept.title+", manga cover art, dramatic composition, professional, no text")}?width=400&height=600&model=flux&nologo=true&seed=${Date.now()%99999}`;
+
+      const project = {
+        id: "manga_" + Date.now(),
+        title: concept.title,
+        subtitle: concept.subtitle || "",
+        genre,
+        format,
+        art_style: artStyle,
+        target_audience: targetAudience,
+        concept,
+        cover_url,
+        chapters: [],
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+        research: researchData || null,
+      };
+      saveMangaProject(project);
+      setGenStatus("✅ Project created!");
+      setTimeout(() => { onCreated(); navigate("manga-editor", project.id); }, 800);
+    } catch(e){
+      setError(errMsg(e));
+      setGenerating(false);
+      setStep(3);
+    }
+  };
+
+  return(
+    <div className="max-w-3xl mx-auto px-4 sm:px-6 py-8">
+      <button onClick={onBack} className="text-white/40 hover:text-white text-sm mb-6">← Back to Manga Studio</button>
+
+      {/* Step indicator */}
+      <div className="flex items-center gap-2 mb-8">
+        {[1,2,3].map(s => (
+          <div key={s} className="flex items-center gap-2">
+            <div className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold border-2 transition-all ${step>=s?"bg-purple-500 border-purple-500 text-white":"border-white/20 text-white/30"}`}>{s}</div>
+            {s<3&&<div className={`h-0.5 w-12 sm:w-24 rounded ${step>s?"bg-purple-500":"bg-white/10"}`}/>}
+          </div>
+        ))}
+        <span className="text-white/40 text-xs ml-2">{step===1?"Format":step===2?"Genre":step===3?"Details":"Creating…"}</span>
+      </div>
+
+      {/* STEP 1: Format */}
+      {step===1&&(
+        <div>
+          <h2 className="text-white text-xl font-bold mb-2">Choose your format</h2>
+          <p className="text-white/40 text-sm mb-6">This affects layout style, reading direction, and art generation prompts.</p>
+          <div className="space-y-3 mb-8">
+            {MANGA_FORMATS.map(f => (
+              <button key={f.id} onClick={() => setFormat(f.id)} className={`w-full p-4 rounded-2xl border-2 text-left transition-all ${format===f.id?"border-purple-500 bg-purple-500/15":"border-white/10 bg-white/5 hover:border-white/25"}`}>
+                <p className="text-white font-semibold">{f.label}</p>
+                <p className="text-white/50 text-sm mt-0.5">{f.desc}</p>
+              </button>
+            ))}
+          </div>
+          <button onClick={() => setStep(2)} className="w-full bg-gradient-to-r from-pink-500 to-purple-500 text-white py-3.5 rounded-xl font-semibold hover:opacity-90">Next: Choose Genre →</button>
+        </div>
+      )}
+
+      {/* STEP 2: Genre */}
+      {step===2&&(
+        <div>
+          <h2 className="text-white text-xl font-bold mb-2">Pick your genre</h2>
+          <p className="text-white/40 text-sm mb-6">Select the genre that fits your story. You can refine it with your own idea in the next step.</p>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-6">
+            {MANGA_GENRES.map(g => (
+              <button key={g.id} onClick={() => setGenre(g.id)} className={`p-4 rounded-2xl border-2 text-left transition-all ${genre===g.id?"border-purple-500 bg-purple-500/15":"border-white/10 bg-white/5 hover:border-white/25"}`}>
+                <p className="text-white font-semibold text-sm">{g.label}</p>
+                <p className="text-white/40 text-xs mt-1 leading-relaxed">{g.desc}</p>
+              </button>
+            ))}
+          </div>
+          <div className="flex gap-3">
+            <button onClick={() => setStep(1)} className="border border-white/20 text-white/50 px-6 py-3 rounded-xl hover:bg-white/5">← Back</button>
+            <button onClick={() => setStep(3)} disabled={!genre} className="flex-1 bg-gradient-to-r from-pink-500 to-purple-500 text-white py-3 rounded-xl font-semibold hover:opacity-90 disabled:opacity-40">Next: Details →</button>
+          </div>
+        </div>
+      )}
+
+      {/* STEP 3: Details + Research */}
+      {step===3&&(
+        <div className="space-y-5">
+          <h2 className="text-white text-xl font-bold">Story details</h2>
+
+          {/* Research agent toggle */}
+          <div className="bg-gradient-to-r from-cyan-900/40 to-blue-900/40 border border-cyan-500/30 rounded-2xl p-4">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <p className="text-white font-semibold text-sm">🔬 Market Research Agent</p>
+                <p className="text-white/50 text-xs mt-1">Analyzes top-performing niches in {MANGA_GENRES.find(g=>g.id===genre)?.label} — shows what's trending, what readers want, and what to avoid.</p>
+              </div>
+              {!researchData ? (
+                <button onClick={runResearch} disabled={researchLoading} className="bg-cyan-500/20 border border-cyan-500/30 text-cyan-300 px-3 py-1.5 rounded-lg text-xs font-semibold hover:bg-cyan-500/30 disabled:opacity-50 whitespace-nowrap shrink-0">
+                  {researchLoading ? <><Spin/> Analyzing…</> : "🔬 Run Research"}
+                </button>
+              ) : (
+                <span className="text-green-400 text-xs shrink-0">✅ Done</span>
+              )}
+            </div>
+            {researchData && (
+              <div className="mt-4 space-y-3">
+                <p className="text-white/60 text-xs leading-relaxed">{researchData.market_summary}</p>
+                <div>
+                  <p className="text-cyan-300/70 text-xs font-semibold mb-2 uppercase tracking-wider">Top Niches Right Now</p>
+                  <div className="space-y-2">
+                    {(researchData.top_niches||[]).slice(0,3).map((n,i) => (
+                      <div key={i} className="bg-white/5 rounded-xl p-3">
+                        <div className="flex items-center gap-2 mb-1">
+                          <span className="text-white text-xs font-semibold">{n.name}</span>
+                          <span className={`text-xs px-1.5 py-0.5 rounded-full ${n.competition==="low"?"bg-green-500/20 text-green-300":n.competition==="medium"?"bg-amber-500/20 text-amber-300":"bg-red-500/20 text-red-300"}`}>{n.competition} competition</span>
+                        </div>
+                        <p className="text-white/40 text-xs">{n.why}</p>
+                        <p className="text-purple-300/60 text-xs mt-1">Readers want: {n.reader_craving}</p>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+                {researchData.trending_tropes?.length > 0 && (
+                  <div>
+                    <p className="text-cyan-300/70 text-xs font-semibold mb-1 uppercase tracking-wider">Trending Tropes ✅</p>
+                    <div className="flex flex-wrap gap-1.5">{researchData.trending_tropes.map((t,i)=><span key={i} className="bg-purple-500/20 text-purple-300 text-xs px-2 py-0.5 rounded-full">{t}</span>)}</div>
+                  </div>
+                )}
+                {researchData.avoid_tropes?.length > 0 && (
+                  <div>
+                    <p className="text-red-300/70 text-xs font-semibold mb-1 uppercase tracking-wider">Avoid These ❌</p>
+                    <div className="flex flex-wrap gap-1.5">{researchData.avoid_tropes.map((t,i)=><span key={i} className="bg-red-500/10 text-red-400/60 text-xs px-2 py-0.5 rounded-full">{t}</span>)}</div>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+
+          {/* Your idea */}
+          <div>
+            <label className="text-white/60 text-xs uppercase tracking-wider block mb-2">Your Story Idea (optional)</label>
+            <textarea value={userIdea} onChange={e=>setUserIdea(e.target.value)} rows={4} placeholder="Describe your concept, characters, setting, or specific plot ideas. Leave blank and the AI will create a fresh concept based on your genre and research." className="w-full bg-white/10 border border-white/20 rounded-xl px-4 py-3 text-white placeholder-white/25 focus:outline-none focus:border-purple-500 text-sm resize-none leading-relaxed"/>
+          </div>
+
+          {/* Art style */}
+          <div>
+            <label className="text-white/60 text-xs uppercase tracking-wider block mb-2">Art Style</label>
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+              {ART_STYLES.map(a => (
+                <button key={a.id} onClick={() => setArtStyle(a.id)} className={`p-3 rounded-xl border text-center text-xs transition-all ${artStyle===a.id?"border-purple-500 bg-purple-500/20 text-white":"border-white/10 bg-white/5 text-white/50 hover:border-white/25"}`}>
+                  {a.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Target audience */}
+          <div>
+            <label className="text-white/60 text-xs uppercase tracking-wider block mb-2">Target Audience</label>
+            <select value={targetAudience} onChange={e=>setTargetAudience(e.target.value)} className="w-full bg-white/10 border border-white/20 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-purple-500 text-sm">
+              {["Teens (13-17)","Young Adults (18-25)","Adults (25-35)","General (All Ages)","Mature (18+)"].map(a=><option key={a} value={a}>{a}</option>)}
+            </select>
+          </div>
+
+          {error && <div className="bg-red-500/20 border border-red-500/30 text-red-300 rounded-xl p-3 text-sm">{error}</div>}
+
+          <div className="flex gap-3">
+            <button onClick={() => setStep(2)} className="border border-white/20 text-white/50 px-6 py-3 rounded-xl hover:bg-white/5">← Back</button>
+            <button onClick={create} disabled={!genre} className="flex-1 bg-gradient-to-r from-pink-500 to-purple-500 text-white py-3 rounded-xl font-semibold hover:opacity-90 disabled:opacity-40 flex items-center justify-center gap-2">
+              ✨ Generate Series Concept
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* STEP 4: Generating */}
+      {step===4&&(
+        <div className="text-center py-20">
+          <div className="text-6xl mb-4 animate-bounce">🎌</div>
+          <h2 className="text-white text-xl font-bold mb-3">{genStatus}</h2>
+          <p className="text-white/40 text-sm">Building your series concept, characters, and arc…</p>
+          {error && <div className="mt-6 bg-red-500/20 border border-red-500/30 text-red-300 rounded-xl p-3 text-sm max-w-md mx-auto">{error}</div>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// MANGA EDITOR PAGE
+// ══════════════════════════════════════════════════════════════════════════════
+function MangaEditorPage({projectId, navigate, onSettings}){
+  const [project, setProject] = useState(getMangaProject(projectId));
+  const [tab, setTab] = useState(0); // 0=bible, 1=chapters, 2=chapter-view, 3=write
+  const [viewingChapter, setViewingChapter] = useState(null);
+  const [writing, setWriting] = useState(false);
+  const [writeLog, setWriteLog] = useState([]);
+  const [chapterCount, setChapterCount] = useState(1);
+  const [error, setError] = useState("");
+  const [success, setSuccess] = useState("");
+  const [generatingPanels, setGeneratingPanels] = useState({});
+  const [usage, setUsage] = useState(getUsage());
+  const cancelRef = useRef(false);
+
+  if(!project) return <div className="text-center py-20 text-white/40">Project not found.</div>;
+
+  const reload = () => { const p = getMangaProject(projectId); if(p) setProject(p); };
+  const save = (updates) => { const p = {...getMangaProject(projectId)||project, ...updates, updated_at: new Date().toISOString()}; saveMangaProject(p); setProject(p); };
+  const addLog = msg => setWriteLog(prev => [{msg, time: new Date().toLocaleTimeString()}, ...prev.slice(0,99)]);
+  const flash = (msg, isErr=false) => { if(isErr) setError(msg); else setSuccess(msg); setTimeout(()=>{ setError(""); setSuccess(""); }, 4000); };
+
+  const concept = project.concept || {};
+  const chapters = project.chapters || [];
+  const lastChNum = chapters.length > 0 ? Math.max(...chapters.map(c => c.number||0)) : 0;
+
+  const writeChapters = async () => {
+    if(!getKey()){ onSettings(); return; }
+    if(getUsage() >= DAILY_LIMIT){ flash("Daily quota reached.", true); return; }
+    cancelRef.current = false;
+    setWriting(true); setWriteLog([]); setError("");
+    try{
+      const startCh = lastChNum + 1;
+      addLog(`🚀 Writing ${chapterCount} chapter(s) starting from Ch.${startCh}…`);
+      const newChapters = await generateMangaChapters(
+        () => { trackUsage(); setUsage(getUsage()); },
+        project,
+        startCh,
+        chapterCount,
+        (i, total, num) => addLog(`📝 Writing Chapter ${num} (${i}/${total})…`)
+      );
+      const allChapters = [...(project.chapters||[]), ...newChapters];
+      save({ chapters: allChapters });
+      addLog(`✅ Done! ${newChapters.length} chapter(s) added.`);
+      flash(`✅ ${newChapters.length} chapter${newChapters.length!==1?"s":""} written!`);
+      setTab(1);
+    } catch(e){
+      flash(errMsg(e), true);
+      addLog("❌ Error: " + errMsg(e));
+    } finally { setWriting(false); }
+  };
+
+  const generatePanelArt = async (chapterIdx, sceneIdx, panelDesc) => {
+    const key = `${chapterIdx}-${sceneIdx}`;
+    setGeneratingPanels(prev => ({...prev, [key]: true}));
+    try{
+      const ch = chapters[chapterIdx];
+      const scene = ch.scenes[sceneIdx];
+      const url = await generatePanelImage(project, scene, panelDesc);
+      // Store art url in project
+      const newChapters = [...chapters];
+      if(!newChapters[chapterIdx].panel_art) newChapters[chapterIdx].panel_art = {};
+      newChapters[chapterIdx].panel_art[`${sceneIdx}`] = url;
+      save({ chapters: newChapters });
+    } catch(e){ flash("Panel art failed: " + e.message, true); }
+    finally { setGeneratingPanels(prev => ({...prev, [key]: false})); }
+  };
+
+  const deleteChapter = (num) => {
+    if(!confirm(`Delete Chapter ${num}?`)) return;
+    save({ chapters: chapters.filter(c => c.number !== num) });
+    if(viewingChapter?.number === num){ setViewingChapter(null); setTab(1); }
+  };
+
+  const exportScript = () => {
+    const lines = [];
+    lines.push(`MANGA SCRIPT: ${project.title}`);
+    lines.push(`Format: ${project.format?.toUpperCase()} | Genre: ${project.genre} | Art: ${project.art_style}`);
+    lines.push("=".repeat(60));
+    lines.push("");
+    lines.push("SERIES BIBLE");
+    lines.push("-".repeat(40));
+    lines.push(`Logline: ${concept.logline||""}`);
+    lines.push(`Synopsis: ${concept.synopsis||""}`);
+    lines.push(`Protagonist: ${concept.protagonist?.name||""} — ${concept.protagonist?.personality||""}`);
+    lines.push(`Series Arc: ${concept.series_arc||""}`);
+    lines.push("");
+    chapters.forEach(ch => {
+      lines.push("=".repeat(60));
+      lines.push(ch.title || `Chapter ${ch.number}`);
+      lines.push(`Summary: ${ch.summary||""}`);
+      lines.push(`Mood: ${ch.mood||""} | Ending: ${ch.chapter_end_type||""}`);
+      lines.push("");
+      (ch.scenes||[]).forEach(scene => {
+        lines.push(`SCENE ${scene.scene_number} — ${scene.location} [${scene.time_of_day}] — ${scene.panel_count} panels`);
+        (scene.panel_descriptions||[]).forEach((p,i) => lines.push(`  Panel ${i+1}: ${p}`));
+        if(scene.dialogue?.length > 0){
+          lines.push("  DIALOGUE:");
+          scene.dialogue.forEach(d => lines.push(`    ${d.character}: "${d.line}" [${d.tone}]`));
+        }
+        if(scene.internal_monologue) lines.push(`  MONOLOGUE: ${scene.internal_monologue}`);
+        if(scene.sfx?.length > 0) lines.push(`  SFX: ${scene.sfx.join(", ")}`);
+        lines.push("");
+      });
+      if(ch.next_chapter_setup) lines.push(`→ Seeds for Ch.${ch.number+1}: ${ch.next_chapter_setup}`);
+      lines.push("");
+    });
+    const blob = new Blob([lines.join("\n")], {type:"text/plain"});
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `${(project.title||"manga").replace(/[^a-z0-9]/gi,"_")}_script.txt`;
+    a.click();
+    flash("Script downloaded!");
+  };
+
+  const MANGA_TABS = ["📖 Series Bible","📋 Chapters","✍️ Write","🖼️ Gallery"];
+
+  return(
+    <div className="min-h-screen">
+      {/* Tab bar */}
+      <div className="border-b border-white/10 bg-black/20 sticky top-[57px] z-10">
+        <div className="max-w-6xl mx-auto px-4 sm:px-6 flex gap-1 overflow-x-auto">
+          {MANGA_TABS.map((t,i) => (
+            <button key={i} onClick={() => { setTab(i); if(i!==2) setViewingChapter(null); }} className={`px-4 py-2.5 text-sm font-medium whitespace-nowrap rounded-t-lg transition-all ${tab===i?"bg-white/10 text-white border-b-2 border-pink-500":"text-white/35 hover:text-white/70"}`}>{t}</button>
+          ))}
+          <div className="flex-1"/>
+          <button onClick={exportScript} className="text-xs border border-white/20 text-white/40 px-3 py-2 my-1 rounded-lg hover:bg-white/5 whitespace-nowrap">⬇ Export Script</button>
+        </div>
+      </div>
+
+      <div className="max-w-6xl mx-auto px-4 sm:px-6 py-6">
+        {error&&<div className="bg-red-500/20 border border-red-500/30 text-red-300 rounded-xl p-3 mb-4 text-sm">{error}</div>}
+        {success&&<div className="bg-green-500/20 border border-green-500/30 text-green-300 rounded-xl p-3 mb-4 text-sm">{success}</div>}
+
+        {/* ── TAB 0: Series Bible ── */}
+        {tab===0&&(
+          <div className="max-w-3xl mx-auto space-y-5">
+            <div className="flex items-center gap-4">
+              {project.cover_url&&<img src={project.cover_url} alt="" className="w-24 h-36 object-cover rounded-xl border border-white/10"/>}
+              <div>
+                <h2 className="text-white text-2xl font-bold">{project.title}</h2>
+                {concept.subtitle&&<p className="text-purple-300 text-sm mt-0.5">{concept.subtitle}</p>}
+                {concept.logline&&<p className="text-white/50 text-sm mt-2 italic">"{concept.logline}"</p>}
+                <div className="flex flex-wrap gap-2 mt-3">
+                  {(concept.genre_tags||[]).map((t,i)=><span key={i} className="bg-pink-500/20 text-pink-300 text-xs px-2 py-0.5 rounded-full border border-pink-500/20">{t}</span>)}
+                  <span className="bg-white/10 text-white/40 text-xs px-2 py-0.5 rounded-full">{project.format}</span>
+                </div>
+              </div>
+            </div>
+
+            {concept.synopsis&&<Card><h3 className="text-white font-semibold mb-2">📖 Synopsis</h3><p className="text-white/60 text-sm leading-relaxed whitespace-pre-line">{concept.synopsis}</p></Card>}
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              {concept.protagonist&&<Card>
+                <h3 className="text-white font-semibold mb-3">🦸 Protagonist</h3>
+                <div className="space-y-2">
+                  <div className="flex justify-between"><span className="text-white/40 text-xs">Name</span><span className="text-white text-sm font-medium">{concept.protagonist.name}</span></div>
+                  <div className="flex justify-between"><span className="text-white/40 text-xs">Age</span><span className="text-white text-sm">{concept.protagonist.age}</span></div>
+                  <p className="text-white/50 text-xs leading-relaxed border-t border-white/10 pt-2 mt-2">{concept.protagonist.personality}</p>
+                  {concept.protagonist.goal&&<p className="text-purple-300/70 text-xs"><strong>Goal:</strong> {concept.protagonist.goal}</p>}
+                  {concept.protagonist.flaw&&<p className="text-red-300/60 text-xs"><strong>Flaw:</strong> {concept.protagonist.flaw}</p>}
+                  {concept.protagonist.power_or_skill&&<p className="text-cyan-300/70 text-xs"><strong>Power:</strong> {concept.protagonist.power_or_skill}</p>}
+                </div>
+              </Card>}
+
+              {concept.antagonist&&<Card>
+                <h3 className="text-white font-semibold mb-3">🦹 Antagonist</h3>
+                <div className="space-y-2">
+                  <div className="flex justify-between"><span className="text-white/40 text-xs">Name</span><span className="text-white text-sm font-medium">{concept.antagonist.name}</span></div>
+                  <div className="flex justify-between"><span className="text-white/40 text-xs">Role</span><span className="text-white text-sm">{concept.antagonist.role}</span></div>
+                  {concept.antagonist.motivation&&<p className="text-amber-300/70 text-xs border-t border-white/10 pt-2 mt-2"><strong>Motivation:</strong> {concept.antagonist.motivation}</p>}
+                </div>
+              </Card>}
+            </div>
+
+            {concept.supporting_cast?.length>0&&<Card>
+              <h3 className="text-white font-semibold mb-3">👥 Supporting Cast</h3>
+              <div className="space-y-2">
+                {concept.supporting_cast.map((c,i)=>(
+                  <div key={i} className="flex gap-3 items-start">
+                    <div className="w-6 h-6 bg-white/10 rounded-full flex items-center justify-center text-xs text-white/40 shrink-0">{i+1}</div>
+                    <div><p className="text-white text-sm font-medium">{c.name} <span className="text-white/30 font-normal">({c.role})</span></p><p className="text-white/40 text-xs">{c.brief}</p></div>
+                  </div>
+                ))}
+              </div>
+            </Card>}
+
+            {concept.setting&&<Card><h3 className="text-white font-semibold mb-2">🌍 World & Setting</h3><p className="text-white/60 text-sm leading-relaxed">{concept.setting}</p></Card>}
+            {concept.power_system&&concept.power_system!=="None"&&<Card><h3 className="text-white font-semibold mb-2">⚡ Power System</h3><p className="text-white/60 text-sm leading-relaxed">{concept.power_system}</p></Card>}
+            {concept.series_arc&&<Card><h3 className="text-white font-semibold mb-2">🗺️ Series Arc</h3><p className="text-white/60 text-sm leading-relaxed">{concept.series_arc}</p><p className="text-purple-300/60 text-xs mt-2">Est. chapters: {concept.estimated_chapters}</p></Card>}
+
+            {concept.chapter_one_hook&&<div className="bg-gradient-to-r from-pink-900/50 to-purple-900/40 border border-pink-500/30 rounded-2xl p-5">
+              <p className="text-white/40 text-xs uppercase tracking-wider mb-2">Chapter 1 Hook</p>
+              <p className="text-white text-sm leading-relaxed italic">"{concept.chapter_one_hook}"</p>
+            </div>}
+
+            {project.research&&<Card>
+              <h3 className="text-white font-semibold mb-2">🔬 Market Research Snapshot</h3>
+              <p className="text-white/50 text-xs leading-relaxed mb-2">{project.research.market_summary}</p>
+              {project.research.hook_formula&&<p className="text-cyan-300/70 text-xs"><strong>Hook formula:</strong> {project.research.hook_formula}</p>}
+              {project.research.monetization_tip&&<p className="text-amber-300/70 text-xs mt-1"><strong>Monetization:</strong> {project.research.monetization_tip}</p>}
+            </Card>}
+          </div>
+        )}
+
+        {/* ── TAB 1: Chapters ── */}
+        {tab===1&&(
+          <div className="max-w-4xl mx-auto">
+            {chapters.length===0?(
+              <div className="text-center py-16">
+                <div className="text-5xl mb-4">✍️</div>
+                <h3 className="text-white font-semibold mb-2">No chapters yet</h3>
+                <p className="text-white/40 text-sm mb-6">Head to the Write tab to generate your first chapter.</p>
+                <button onClick={()=>setTab(2)} className="bg-gradient-to-r from-pink-500 to-purple-500 text-white px-6 py-2.5 rounded-xl font-semibold hover:opacity-90 text-sm">✍️ Write Chapters →</button>
+              </div>
+            ):(
+              <div className="space-y-3">
+                <div className="flex items-center justify-between mb-4">
+                  <h2 className="text-white font-bold text-lg">{chapters.length} Chapter{chapters.length!==1?"s":""}</h2>
+                  <button onClick={()=>setTab(2)} className="bg-gradient-to-r from-pink-500 to-purple-500 text-white px-4 py-2 rounded-xl font-semibold hover:opacity-90 text-sm">+ Write More</button>
+                </div>
+                {chapters.map((ch,idx) => (
+                  <div key={idx} className="bg-white/5 border border-white/10 rounded-2xl p-4 hover:border-white/20 transition-all">
+                    <div className="flex items-start gap-4">
+                      <div className="w-10 h-10 bg-gradient-to-br from-pink-500 to-purple-500 rounded-xl flex items-center justify-center text-white font-bold text-sm shrink-0">{ch.number}</div>
+                      <div className="flex-1 min-w-0">
+                        <h3 className="text-white font-semibold text-sm">{ch.title||`Chapter ${ch.number}`}</h3>
+                        <p className="text-white/40 text-xs mt-1 line-clamp-2">{ch.summary}</p>
+                        <div className="flex items-center gap-3 mt-2">
+                          <span className="text-white/25 text-xs">{ch.scenes?.length||0} scenes</span>
+                          <span className="text-white/25 text-xs">·</span>
+                          <span className={`text-xs px-2 py-0.5 rounded-full ${ch.mood==="action"?"bg-orange-500/20 text-orange-300":ch.mood==="romance"?"bg-pink-500/20 text-pink-300":ch.mood==="tense"?"bg-red-500/20 text-red-300":"bg-white/10 text-white/40"}`}>{ch.mood}</span>
+                          <span className="text-white/25 text-xs">·</span>
+                          <span className="text-white/30 text-xs">{ch.chapter_end_type}</span>
+                        </div>
+                      </div>
+                      <div className="flex gap-2 shrink-0">
+                        <button onClick={() => { setViewingChapter(ch); setTab(3); }} className="text-xs border border-white/20 text-white/50 px-3 py-1.5 rounded-lg hover:bg-white/5">View →</button>
+                        <button onClick={() => deleteChapter(ch.number)} className="w-7 h-7 rounded-lg bg-red-500/10 text-red-400/50 hover:bg-red-500/20 text-xs flex items-center justify-center">×</button>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ── TAB 2: Write ── */}
+        {tab===2&&(
+          <div className="max-w-3xl mx-auto space-y-5">
+            <Card>
+              <h2 className="text-white text-xl font-bold mb-1">✍️ Write Chapters</h2>
+              <p className="text-white/40 text-sm mb-5">AI writes full manga chapters with scene breakdowns, panel descriptions, and dialogue — maintaining the full story arc and character voices.</p>
+
+              <div className="bg-white/5 border border-white/10 rounded-xl p-4 mb-5">
+                <div className="flex items-center justify-between mb-2">
+                  <p className="text-white/60 text-sm">Next chapter: <span className="text-white font-bold">Ch.{lastChNum+1}</span></p>
+                  <span className="text-white/30 text-xs">{chapters.length} written so far</span>
+                </div>
+                {chapters.length > 0 && (
+                  <p className="text-white/30 text-xs">Last chapter: "{chapters.slice(-1)[0]?.title}" — {chapters.slice(-1)[0]?.chapter_end_type}</p>
+                )}
+              </div>
+
+              {/* Chapter count selector */}
+              <div className="mb-5">
+                <label className="text-white/60 text-xs uppercase tracking-wider block mb-3">How many chapters to write at once?</label>
+                <div className="grid grid-cols-5 gap-2">
+                  {[1,2,3,5,10].map(n => (
+                    <button key={n} onClick={() => setChapterCount(n)} className={`py-3 rounded-xl border text-center font-bold text-sm transition-all ${chapterCount===n?"border-pink-500 bg-pink-500/20 text-white":"border-white/10 bg-white/5 text-white/40 hover:border-white/25"}`}>
+                      {n}
+                    </button>
+                  ))}
+                </div>
+                <p className="text-white/25 text-xs mt-2 text-center">Writing {chapterCount} chapter{chapterCount!==1?"s":""} = ~{chapterCount} Gemini requests</p>
+              </div>
+
+              {/* Story context badge */}
+              <div className="bg-cyan-500/10 border border-cyan-500/20 rounded-xl p-3 mb-4 text-xs text-cyan-300/70">
+                <strong className="text-cyan-300">AI Memory:</strong> Full series bible + last {Math.min(3,chapters.length)} chapter summaries are injected into every generation. Characters, power systems, and arc stay consistent automatically.
+              </div>
+
+              {getUsage() >= DAILY_LIMIT && (
+                <div className="bg-amber-500/20 border border-amber-500/30 text-amber-300 rounded-xl p-3 mb-4 text-sm">⏳ Daily quota reached — come back tomorrow to continue writing.</div>
+              )}
+
+              {!writing ? (
+                <button onClick={writeChapters} disabled={getUsage()>=DAILY_LIMIT} className="w-full bg-gradient-to-r from-pink-500 to-purple-500 text-white py-4 rounded-xl font-semibold hover:opacity-90 disabled:opacity-40 text-base flex items-center justify-center gap-2">
+                  ✨ Write {chapterCount} Chapter{chapterCount!==1?"s":""}
+                </button>
+              ) : (
+                <button onClick={() => { cancelRef.current = true; }} className="w-full bg-red-500/20 border border-red-500/30 text-red-300 py-4 rounded-xl font-semibold hover:bg-red-500/30 flex items-center justify-center gap-2">
+                  <Spin/> Writing… (click to cancel)
+                </button>
+              )}
+            </Card>
+
+            {/* Write log */}
+            {writeLog.length > 0 && (
+              <Card>
+                <h3 className="text-white font-semibold mb-3 text-sm">Generation Log</h3>
+                <div className="space-y-1 max-h-48 overflow-y-auto">
+                  {writeLog.map((e,i) => (
+                    <div key={i} className="flex gap-2 text-xs">
+                      <span className="text-white/20 shrink-0">{e.time}</span>
+                      <span className="text-white/60">{e.msg}</span>
+                    </div>
+                  ))}
+                </div>
+              </Card>
+            )}
+          </div>
+        )}
+
+        {/* ── TAB 3: Chapter Viewer ── */}
+        {tab===3&&(
+          <div className="max-w-3xl mx-auto">
+            {!viewingChapter ? (
+              <div className="text-center py-16">
+                <p className="text-white/40">Select a chapter from the Chapters tab to view it here.</p>
+                <button onClick={()=>setTab(1)} className="mt-4 text-purple-400 hover:text-purple-300 text-sm">← Back to chapters</button>
+              </div>
+            ) : (
+              <div className="space-y-6">
+                <div className="flex items-start justify-between gap-4">
+                  <div>
+                    <button onClick={()=>setTab(1)} className="text-white/40 hover:text-white text-xs mb-2">← All Chapters</button>
+                    <h2 className="text-white text-xl font-bold">{viewingChapter.title}</h2>
+                    <div className="flex gap-2 mt-1">
+                      <span className={`text-xs px-2 py-0.5 rounded-full bg-white/10 text-white/40`}>{viewingChapter.mood}</span>
+                      <span className="text-xs px-2 py-0.5 rounded-full bg-white/10 text-white/40">{viewingChapter.chapter_end_type}</span>
+                    </div>
+                  </div>
+                </div>
+
+                {viewingChapter.summary&&<div className="bg-white/5 border border-white/10 rounded-xl p-4"><p className="text-white/60 text-sm italic">"{viewingChapter.summary}"</p></div>}
+
+                {(viewingChapter.scenes||[]).map((scene,si) => {
+                  const panelArtUrl = viewingChapter.panel_art?.[`${chapters.findIndex(c=>c.number===viewingChapter.number)}-${si}`];
+                  const chIdx = chapters.findIndex(c=>c.number===viewingChapter.number);
+                  const genKey = `${chIdx}-${si}`;
+                  const isGenning = generatingPanels[genKey];
+                  return(
+                    <div key={si} className="bg-white/5 border border-white/10 rounded-2xl p-5">
+                      <div className="flex items-center justify-between mb-4">
+                        <h3 className="text-white font-semibold text-sm">Scene {scene.scene_number} — {scene.location}</h3>
+                        <span className="text-white/30 text-xs">{scene.time_of_day} · {scene.panel_count} panels</span>
+                      </div>
+
+                      {/* Panel Art */}
+                      <div className="mb-4">
+                        {panelArtUrl ? (
+                          <div className="relative">
+                            <img src={panelArtUrl} alt="" className="w-full max-w-sm mx-auto rounded-xl border border-white/10"/>
+                            <button onClick={() => generatePanelArt(chIdx, si, scene.panel_descriptions?.[0]||scene.location)} disabled={isGenning} className="mt-2 text-xs border border-white/20 text-white/30 px-3 py-1 rounded-lg hover:bg-white/5 block mx-auto">
+                              {isGenning ? <><Spin/> Regenerating…</> : "🔄 Regenerate Art"}
+                            </button>
+                          </div>
+                        ) : (
+                          <button onClick={() => generatePanelArt(chIdx, si, scene.panel_descriptions?.[0]||scene.location)} disabled={isGenning} className="w-full border-2 border-dashed border-white/10 rounded-xl py-8 text-center hover:border-white/25 transition-all">
+                            {isGenning ? <><Spin className="mx-auto"/> <p className="text-white/30 text-xs mt-2">Generating panel art…</p></> : <><p className="text-2xl mb-2">🎨</p><p className="text-white/40 text-sm">Generate Panel Art</p><p className="text-white/20 text-xs mt-1">Uses Pollinations.ai · Free</p></>}
+                          </button>
+                        )}
+                      </div>
+
+                      {/* Panels */}
+                      {scene.panel_descriptions?.length > 0 && (
+                        <div className="space-y-2 mb-4">
+                          <p className="text-white/40 text-xs uppercase tracking-wider">Panel Breakdowns</p>
+                          {scene.panel_descriptions.map((p,pi) => (
+                            <div key={pi} className="flex gap-2 text-sm">
+                              <span className="text-pink-400/60 font-mono text-xs shrink-0 mt-0.5">[{pi+1}]</span>
+                              <p className="text-white/60 text-xs leading-relaxed">{p}</p>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+
+                      {/* Dialogue */}
+                      {scene.dialogue?.length > 0 && (
+                        <div className="space-y-2 mb-3">
+                          <p className="text-white/40 text-xs uppercase tracking-wider">Dialogue</p>
+                          {scene.dialogue.map((d,di) => (
+                            <div key={di} className="bg-white/5 rounded-lg p-3">
+                              <p className="text-purple-300 text-xs font-semibold mb-0.5">{d.character} <span className="text-white/20 font-normal">[{d.tone}]</span></p>
+                              <p className="text-white/70 text-sm">"{d.line}"</p>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+
+                      {/* Monologue + SFX */}
+                      {scene.internal_monologue && <div className="bg-indigo-500/10 border border-indigo-500/20 rounded-lg p-3 mb-3"><p className="text-white/30 text-xs mb-1">Inner Monologue</p><p className="text-indigo-200/70 text-sm italic">{scene.internal_monologue}</p></div>}
+                      {scene.sfx?.length > 0 && <div className="flex gap-2 flex-wrap">{scene.sfx.map((fx,fi)=><span key={fi} className="bg-amber-500/20 text-amber-300 text-xs px-2 py-0.5 rounded font-bold font-mono">{fx}</span>)}</div>}
+                    </div>
+                  );
+                })}
+
+                {viewingChapter.next_chapter_setup && (
+                  <div className="bg-gradient-to-r from-purple-900/40 to-pink-900/30 border border-purple-500/20 rounded-xl p-4">
+                    <p className="text-white/30 text-xs uppercase tracking-wider mb-1">Seeds for Next Chapter</p>
+                    <p className="text-white/60 text-sm">{viewingChapter.next_chapter_setup}</p>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ── TAB 4 (index 3 = Gallery label = actually index 3) ── */}
+      </div>
+    </div>
+  );
+}
+
