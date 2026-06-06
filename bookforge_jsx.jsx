@@ -225,7 +225,7 @@ function SettingsModal({onClose}){
 }
 
 // ── Header ────────────────────────────────────────────────────────────────────
-function Header({onBack,title,subtitle,onSettings,activeTab,setActiveTab}){
+function Header({onBack,title,subtitle,onSettings,onTour,activeTab,setActiveTab}){
   const [usage,setUsage]=useState(getUsage());
   useEffect(()=>{const t=setInterval(()=>setUsage(getUsage()),3000);return()=>clearInterval(t);},[]);
   const pct=Math.min(Math.round((usage/DAILY_LIMIT)*100),100);
@@ -245,10 +245,11 @@ function Header({onBack,title,subtitle,onSettings,activeTab,setActiveTab}){
           </div>
           {qLen>0&&<div className="bg-cyan-500/20 border border-cyan-500/30 text-cyan-300 text-xs px-2.5 py-1.5 rounded-lg">⏳ Queue: {qLen}</div>}
           <button onClick={onSettings} className={`text-xs px-3 py-1.5 rounded-lg border transition-all ${getKey()?"border-white/20 text-white/50 hover:border-white/40":"border-red-500/50 text-red-400 bg-red-500/10 pulse-a"}`}>{getKey()?"⚙️ Settings":"⚠️ Set API Key"}</button>
+          {onTour&&<button onClick={onTour} title="Page tour — learn how to use this page" className="text-xs px-3 py-1.5 rounded-lg border border-purple-500/40 text-purple-300/70 hover:bg-purple-500/20 transition-all" id="tour-btn">❓ Tour</button>}
         </div>
       </div>
       {setActiveTab&&(
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 flex gap-1">
+        <div id="bf-home-tabs" className="max-w-7xl mx-auto px-4 sm:px-6 flex gap-1">
           {[["📚 Library","library"],["📗 Series","series"],["⏳ Queue","queue"],["🎌 Manga","manga"]].map(([label,id])=>(
             <button key={id} onClick={()=>setActiveTab(id)} className={`px-4 py-2.5 text-sm font-medium whitespace-nowrap rounded-t-lg transition-all ${activeTab===id?"bg-white/10 text-white border-b-2 border-purple-500":"text-white/35 hover:text-white/70"}`}>{label}</button>
           ))}
@@ -262,7 +263,7 @@ function Header({onBack,title,subtitle,onSettings,activeTab,setActiveTab}){
 // REVIEW AGENT
 // ══════════════════════════════════════════════════════════════════════════════
 async function runReviewAgent(book){
-  const outline=JSON.parse(book.outline||"{}");
+  const outline=(()=>{try{return JSON.parse(book.outline||"{}");}catch{return {};}})();
   const raw=await callGemini(
     `You are a professional book publishing strategist and Amazon KDP expert with deep knowledge of what makes books bestsellers.\n\n`+
     `Review this book for market-readiness and discoverability. Be critical, specific, and commercially minded.\n\n`+
@@ -285,7 +286,7 @@ async function runReviewAgent(book){
   trackUsage();
   const match=raw.match(/\{[\s\S]*\}/);
   if(!match)throw{code:"PARSE",msg:"Could not parse review."};
-  return JSON.parse(match[0]);
+  try{return JSON.parse(match[0]);}catch(pe){throw{code:"PARSE",msg:"AI returned malformed JSON — please retry."};}
 }
 
 function ReviewPanel({book,onApply,onSettings}){
@@ -415,7 +416,7 @@ function HookPanel({book,onSettings}){
     if(!getKey()){onSettings();return;}
     setLoading(true);setError("");
     try{
-      const outline=JSON.parse(book.outline||"{}");
+      const outline=(()=>{try{return JSON.parse(book.outline||"{}");}catch{return {};}})();
       const raw=await callGemini(
         `You are a bestselling author and master of book marketing copy. Generate high-converting hooks for this book.\n\n`+
         `Title: ${book.title}\nSubtitle: ${book.subtitle||""}\nGenre: ${book.genre}\nAudience: ${book.target_audience}\n`+
@@ -613,7 +614,7 @@ async function runManuscriptHumanCheck(book){
   trackUsage();
   const match = raw.match(/\{[\s\S]*\}/);
   if(!match) throw{code:"PARSE"};
-  return JSON.parse(match[0]);
+  try{return JSON.parse(match[0]);}catch(pe){throw{code:"PARSE",msg:"AI returned malformed JSON — please retry."};}
 }
 
 function WritingQualityPanel({book,onSettings}){
@@ -1861,7 +1862,7 @@ function EditorPage({bookId,navigate,onSettings}){
   const genChapter=async(idx)=>{
     if(quotaHit||isBuilding)return;setBusyCh(idx);setError("");
     try{
-      const outline=JSON.parse(book.outline||"{}");const ch=outline.chapters?.[idx];if(!ch){setError("Chapter outline missing — regenerate the outline.");setBusyCh(null);return;}
+      const outline=(()=>{try{return JSON.parse(book.outline||"{}");}catch{return {};}})();const ch=outline.chapters?.[idx];if(!ch){setError("Chapter outline missing — regenerate the outline.");setBusyCh(null);return;}
       const prevChaps=(book.chapters||[]).slice(0,idx).filter(c=>c.generated);
       const prev=prevChaps.length===0?"None":
         prevChaps.length<=2?prevChaps.map(c=>c.title).join(", "):
@@ -1897,7 +1898,7 @@ function EditorPage({bookId,navigate,onSettings}){
       );
       bump();
       const seed=Date.now();
-      const illustrationUrl=`https://image.pollinations.ai/prompt/${encodeURIComponent(imgPrompt.trim()+". Book illustration, painterly, cinematic, no text.")}?width=768&height=512&model=flux&nologo=true&enhance=true&seed=${seed}`;
+      const illustrationUrl=`https://image.pollinations.ai/prompt/${encodeURIComponent(imgPrompt.trim()+". Book illustration, painterly, cinematic, no text.")}?width=1216&height=832&model=flux&nologo=true&enhance=true&seed=${seed}`;
       const chapters=[...(book.chapters||[])];
       chapters[idx]={...chapters[idx],illustration_url:illustrationUrl,illustration_prompt:imgPrompt.trim()};
       upd({chapters});
@@ -1905,12 +1906,12 @@ function EditorPage({bookId,navigate,onSettings}){
     }catch(e){handleErr(e);}finally{setBusy(false);}
   };
 
-  const genSEO=async()=>{if(quotaHit||isBuilding)return;setBusy(true);setError("");try{const outline=JSON.parse(book.outline||"{}");const raw=await callGemini(`You are an Amazon KDP bestseller SEO strategist. Generate complete publishing metadata.\nTitle: "${outline.title||book.title}"\nGenre: ${book.genre}\nAudience: ${book.target_audience}\nDescription: ${outline.description||''}\n\nRespond ONLY valid JSON (no markdown): {"seo_title":"","seo_description":"","primary_keywords":["k1","k2","k3","k4","k5","k6","k7"],"bisac_categories":["CAT1","CAT2"],"back_cover_copy":"","author_bio_template":""}`);bump();const match=raw.match(/\{[\s\S]*\}/);if(!match)throw{code:"PARSE"};const seo=JSON.parse(match[0]);upd({seo_title:seo.seo_title||"",seo_description:seo.seo_description||"",seo_keywords:(seo.primary_keywords||[]).join(", "),notes:JSON.stringify(seo)});flash("SEO generated! 🔍");}catch(e){handleErr(e);}finally{setBusy(false);}};
+  const genSEO=async()=>{if(quotaHit||isBuilding)return;setBusy(true);setError("");try{const outline=(()=>{try{return JSON.parse(book.outline||"{}");}catch{return {};}})();const raw=await callGemini(`You are an Amazon KDP bestseller SEO strategist. Generate complete publishing metadata.\nTitle: "${outline.title||book.title}"\nGenre: ${book.genre}\nAudience: ${book.target_audience}\nDescription: ${outline.description||''}\n\nRespond ONLY valid JSON (no markdown): {"seo_title":"","seo_description":"","primary_keywords":["k1","k2","k3","k4","k5","k6","k7"],"bisac_categories":["CAT1","CAT2"],"back_cover_copy":"","author_bio_template":""}`);bump();const match=raw.match(/\{[\s\S]*\}/);if(!match)throw{code:"PARSE"};const seo=JSON.parse(match[0]);upd({seo_title:seo.seo_title||"",seo_description:seo.seo_description||"",seo_keywords:(seo.primary_keywords||[]).join(", "),notes:JSON.stringify(seo)});flash("SEO generated! 🔍");}catch(e){handleErr(e);}finally{setBusy(false);}};
 
   const genAltTitles=async()=>{
     if(quotaHit||isBuilding||busy)return;setBusy(true);setError("");
     try{
-      const outline=JSON.parse(book.outline||"{}");
+      const outline=(()=>{try{return JSON.parse(book.outline||"{}");}catch{return {};}})();
       const raw=await callGemini(`You are an Amazon KDP bestseller expert. Generate 5 KILLER alternative titles for this book.\nBook: "${book.title}"\nGenre: ${book.genre}\nAudience: ${book.target_audience}\nDescription: ${outline.description||book.description}\n\nRules:\n• Each title must be unique in approach (curiosity, benefit, transformation, emotional, bold claim)\n• For fiction: evocative, genre-appropriate, memorable\n• For nonfiction: benefit-driven, searchable on Amazon\n\nRespond ONLY with valid JSON: {"alternatives":[{"title":"","subtitle":"","rationale":"why this works on KDP"}]}`);
       bump();const m=raw.match(/\{[\s\S]*\}/);if(!m)throw{code:"PARSE"};
       const d=JSON.parse(m[0]);setAltTitles(d.alternatives||[]);
@@ -1918,7 +1919,7 @@ function EditorPage({bookId,navigate,onSettings}){
     }catch(e){handleErr(e);}finally{setBusy(false);}
   };
 
-  const genCover=async()=>{if(quotaHit||isBuilding)return;setBusy(true);setError("");try{let finalPrompt="";if(coverMode==="custom"&&customPrompt.trim()){finalPrompt=customPrompt.trim()+". Professional book cover, no text, no letters.";}else{const outline=JSON.parse(book.outline||"{}");const aiPrompt=await callGemini(`Professional book cover image prompt.\nBook: "${outline.title}"\nGenre: ${book.genre}\nDesc: ${outline.description}\n\n- Describe characters (gender, age, look)\n- For gay/LGBT+ romance: two male characters, emotional interaction\n- Setting, mood, lighting, palette, art style\n- NO text\nReturn ONLY the prompt.`);bump();finalPrompt=aiPrompt.trim()+". No text, no words, no letters.";setLastAiPrompt(finalPrompt);}const url=`https://image.pollinations.ai/prompt/${encodeURIComponent(finalPrompt)}?width=832&height=1216&model=flux&nologo=true&enhance=true&seed=${Date.now()}`;upd({cover_image_url:url});flash("Cover generated! 🎨");}catch(e){handleErr(e);}finally{setBusy(false);}};
+  const genCover=async()=>{if(quotaHit||isBuilding)return;setBusy(true);setError("");try{let finalPrompt="";if(coverMode==="custom"&&customPrompt.trim()){finalPrompt=customPrompt.trim()+". Professional book cover, no text, no letters.";}else{const outline=(()=>{try{return JSON.parse(book.outline||"{}");}catch{return {};}})();const aiPrompt=await callGemini(`Professional book cover image prompt.\nBook: "${outline.title}"\nGenre: ${book.genre}\nDesc: ${outline.description}\n\n- Describe characters (gender, age, look)\n- For gay/LGBT+ romance: two male characters, emotional interaction\n- Setting, mood, lighting, palette, art style\n- NO text\nReturn ONLY the prompt.`);bump();finalPrompt=aiPrompt.trim()+". No text, no words, no letters.";setLastAiPrompt(finalPrompt);}const url=`https://image.pollinations.ai/prompt/${encodeURIComponent(finalPrompt)}?width=832&height=1216&model=flux&nologo=true&enhance=true&seed=${Date.now()}`;upd({cover_image_url:url});flash("Cover generated! 🎨");}catch(e){handleErr(e);}finally{setBusy(false);}};
 
   const newVariation=()=>{if(!book?.cover_image_url)return;try{const u=new URL(book.cover_image_url);u.searchParams.set("seed",Date.now().toString());upd({cover_image_url:u.toString()});flash("New variation! 🎨");}catch{}};
 
@@ -2527,6 +2528,132 @@ class ErrorBoundary extends React.Component{
 }
 
 
+
+// ══════════════════════════════════════════════════════════════════════════════
+// ❓ TOUR GUIDE SYSTEM — powered by Driver.js (MIT, 25k stars, zero deps)
+// Loaded from CDN. Each page/tab has its own step-by-step walkthrough.
+// ══════════════════════════════════════════════════════════════════════════════
+
+let _driverLoaded = false;
+let _driverLoading = false;
+let _driverCallbacks = [];
+
+async function loadDriver(){
+  if(window.driver && window.driver.js) return window.driver.js;
+  if(_driverLoaded && window.driver?.js) return window.driver.js;
+  if(_driverLoading) return new Promise(res => _driverCallbacks.push(res));
+  _driverLoading = true;
+  return new Promise((resolve, reject) => {
+    // Load CSS
+    const link = document.createElement("link");
+    link.rel = "stylesheet";
+    link.href = "https://cdn.jsdelivr.net/npm/driver.js@1.3.5/dist/driver.css";
+    document.head.appendChild(link);
+    // Load JS
+    const script = document.createElement("script");
+    script.src = "https://cdn.jsdelivr.net/npm/driver.js@1.3.5/dist/driver.js.iife.js";
+    script.onload = () => {
+      _driverLoaded = true;
+      _driverLoading = false;
+      const dj = window.driver.js;
+      _driverCallbacks.forEach(cb => cb(dj));
+      _driverCallbacks = [];
+      resolve(dj);
+    };
+    script.onerror = reject;
+    document.head.appendChild(script);
+  });
+}
+
+const TOUR_STEPS = {
+  home_library: [
+    { element: "#tour-btn", popover: { title: "❓ Tour Button", description: "This button is on every page! Click it anytime to get a guided walkthrough of what you can do here.", side: "bottom" }},
+    { element: ".bf-home-new-btn", popover: { title: "📝 Create a Book", description: "Click here to start generating a new book. You'll enter your genre, audience, and topic — then AI builds a full outline, chapters, SEO, and cover.", side: "bottom" }},
+    { element: ".bf-search-bar", popover: { title: "🔍 Search", description: "Search your existing books by title or genre. Works across your whole library.", side: "bottom" }},
+    { element: ".bf-home-tabs", popover: { title: "🗂️ Navigation Tabs", description: "Switch between your Library (books), Series (multi-book projects), Queue (batch generation), and Manga Studio.", side: "bottom" }},
+    { popover: { title: "💡 Pro Tip: Daily Quota", description: "See the number in the top-right header (e.g. 45/1500)? That's your daily Gemini API usage. It resets at midnight Pacific. Each book generation uses about 5-10 requests.", side: "bottom" }},
+  ],
+  home_series: [
+    { element: "#tour-btn", popover: { title: "📗 Series Manager", description: "Build multi-book series where every book shares the same world, characters, and arc — and the AI remembers everything.", side: "bottom" }},
+    { popover: { title: "🗺️ Series Arc", description: "When you create a series, you define the overarching story arc. Each book you generate inside it picks up from where the last one left off.", side: "bottom" }},
+    { popover: { title: "🔁 Series Bible", description: "Every chapter you write automatically extracts key plot events and adds them to the Series Bible. This prevents contradictions across books.", side: "bottom" }},
+  ],
+  home_queue: [
+    { element: "#tour-btn", popover: { title: "⏳ Generation Queue", description: "Queue up multiple books to generate in order. This is how you batch-produce a full catalog — queue 10 books, walk away.", side: "bottom" }},
+    { popover: { title: "⚡ How it works", description: "Add books to queue from the Create page. They generate one at a time using your Gemini API key. Each book takes ~5-15 minutes depending on chapter count.", side: "bottom" }},
+    { popover: { title: "💾 Auto-save", description: "If you hit your daily quota mid-queue, progress is saved automatically. Come back tomorrow and it resumes from where it stopped.", side: "bottom" }},
+  ],
+  home_manga: [
+    { element: "#tour-btn", popover: { title: "🎌 Manga Studio", description: "A complete manga/manhwa creation system — concept, chapters, panel art, and publication-ready exports. All free.", side: "bottom" }},
+    { popover: { title: "Step 1: New Project", description: "Click '+ New Project' to start the 3-step wizard. Choose format (Manga/Manhwa/Manhua), genre, and optionally run the Market Research Agent to find the best niches.", side: "bottom" }},
+    { popover: { title: "Step 2: Research Agent", description: "The Research Agent analyzes trending niches in your genre — what readers want, what tropes to use/avoid, and which platforms pay best. Powered by Gemini, free.", side: "bottom" }},
+    { popover: { title: "Step 3: Series Concept", description: "AI generates a full series bible: protagonist, antagonist, supporting cast, power system, world setting, series arc, and a Chapter 1 hook. Takes ~30 seconds.", side: "bottom" }},
+  ],
+  editor: [
+    { element: "#tour-btn", popover: { title: "📖 Book Editor", description: "This is your book's workspace. Every tab here handles a different part of your book's creation pipeline.", side: "bottom" }},
+    { popover: { title: "📋 Outline Tab", description: "AI generates a chapter-by-chapter outline first. You review and approve it before writing begins. You can edit any chapter title or description directly.", side: "bottom" }},
+    { popover: { title: "✍️ Chapters Tab", description: "Once your outline is approved, write chapters one at a time or use 'Write All'. Each chapter is ~2,000-3,000 words with anti-AI patterns built in for natural prose.", side: "bottom" }},
+    { popover: { title: "🎨 Cover Tab", description: "Generate a professional book cover using Pollinations.ai (free, no API key needed). Describe your cover or let it auto-generate from your book's details.", side: "bottom" }},
+    { popover: { title: "🔍 SEO Tab", description: "Generates Amazon KDP-optimized title, subtitle, description, and 7 exact-match keywords. This is what makes your book discoverable.", side: "bottom" }},
+    { popover: { title: "🤖 Review Agent", description: "Your book must score 70+ on marketability before downloads unlock. The agent checks title appeal, keyword strength, SEO quality, and market differentiation.", side: "bottom" }},
+    { popover: { title: "📊 Quality Agent", description: "Your book must also score 78+ on writing quality. This agent specifically hunts AI writing patterns: em-dash overuse, filler openers, unstated emotions, passive voice.", side: "bottom" }},
+    { popover: { title: "📤 Publish Tab", description: "Download your book as EPUB (for Amazon KDP), TXT, Audiobook script, or RTF. The dual gate (Review 70+ AND Quality 78+) must pass first.", side: "bottom" }},
+    { popover: { title: "🎙️ Audio Studio Tab", description: "Generate a real narrated audiobook using Kokoro TTS — 82M parameter AI model running free in your browser. 15 voices, WAV export. First load downloads ~82MB (cached after).", side: "bottom" }},
+  ],
+  manga_editor: [
+    { element: "#tour-btn", popover: { title: "🎌 Manga Editor", description: "Your manga series workspace. The AI maintains your full series bible across every chapter it writes.", side: "bottom" }},
+    { popover: { title: "📖 Series Bible Tab", description: "Your auto-generated series foundation: protagonist (appearance, personality, goal, flaw, power), antagonist, supporting cast, world setting, power system, and full series arc.", side: "bottom" }},
+    { popover: { title: "✍️ Write Tab", description: "Choose how many chapters to write at once: 1, 2, 3, 5, or 10. The AI reads the full series bible + last 3 chapter summaries before writing each chapter — memory is maintained automatically.", side: "bottom" }},
+    { popover: { title: "📋 Chapters Tab", description: "Every written chapter is listed here with its mood, scene count, and ending type. Click 'View →' on any chapter to see the full scene breakdown with panel descriptions and dialogue.", side: "bottom" }},
+    { popover: { title: "🎨 Panel Art (in Chapter View)", description: "Inside each chapter, click 'Generate Panel Art' on any scene. Pollinations.ai generates scene art tuned to your chosen art style (Shonen Bold, Manhwa Color, Dark Ink, etc.).", side: "bottom" }},
+    { popover: { title: "📤 Export Tab", description: "Exports publication-ready image files: Webtoon Canvas (800px JPEG strips), Tapas (940px PNG), or GlobalComix (900px PNG). Files go straight to your Downloads — upload directly to the platform.", side: "bottom" }},
+    { popover: { title: "📄 Production Script", description: "Downloads a fully formatted .txt script for a human artist — every panel description, dialogue line, SFX, and inner monologue. Ready to send to a Fiverr/Upwork artist.", side: "bottom" }},
+  ],
+  create: [
+    { element: "#tour-btn", popover: { title: "📝 Create New Book", description: "This page generates a brand-new book. Fill in as much or as little as you want — AI fills in the rest.", side: "bottom" }},
+    { popover: { title: "📚 Genre & Topic", description: "Pick your genre and enter your book topic. The more specific your topic (e.g. 'intermittent fasting for women over 40'), the better the outline and SEO.", side: "bottom" }},
+    { popover: { title: "🎯 Target Audience", description: "Be specific here. 'People who want to lose weight' is weak. 'Busy working mothers aged 30-45' is strong — it directly shapes the tone, examples, and Amazon keyword targeting.", side: "bottom" }},
+    { popover: { title: "📖 Nonfiction Mode", description: "Toggle this for how-to books, guides, memoirs. Nonfiction mode uses a different chapter structure with actionable steps, case studies, and a practical tone.", side: "bottom" }},
+    { popover: { title: "🚀 Generate", description: "Hit Generate and AI builds a full outline in ~20 seconds. You'll be taken to the editor where you review the outline before any chapters are written.", side: "bottom" }},
+  ],
+};
+
+async function startTour(page, homeTab, isEditor){
+  try{
+    const dj = await loadDriver();
+    const { driver } = dj;
+
+    let steps;
+    if(page === "manga-editor") steps = TOUR_STEPS.manga_editor;
+    else if(page === "editor") steps = TOUR_STEPS.editor;
+    else if(page === "create") steps = TOUR_STEPS.create;
+    else if(homeTab === "series") steps = TOUR_STEPS.home_series;
+    else if(homeTab === "queue") steps = TOUR_STEPS.home_queue;
+    else if(homeTab === "manga") steps = TOUR_STEPS.home_manga;
+    else steps = TOUR_STEPS.home_library;
+
+    // Filter out steps that reference elements that don't exist in the DOM
+    const validSteps = steps.filter(s => {
+      if(!s.element) return true; // popover-only steps always valid
+      return !!document.querySelector(s.element);
+    });
+
+    const driverObj = driver({
+      showProgress: true,
+      showButtons: ["next","previous","close"],
+      nextBtnText: "Next →",
+      prevBtnText: "← Back",
+      doneBtnText: "Done ✓",
+      popoverClass: "bf-tour-popover",
+      steps: validSteps,
+    });
+    driverObj.drive();
+  } catch(err){
+    console.warn("Tour failed to load:", err);
+    alert("Tour guide couldn't load. Check your internet connection and try again.");
+  }
+}
+
 // ══════════════════════════════════════════════════════════════════════════════
 // MANGA / MANHWA STORAGE HELPERS
 // ══════════════════════════════════════════════════════════════════════════════
@@ -2558,6 +2685,7 @@ function App(){
         title={isEditor&&currentBook?currentBook.title:page==="manga-editor"&&bookId?getMangaProject(bookId)?.title||"Manga Editor":"BookForge AI"}
         subtitle={isEditor&&currentBook?`${currentBook.genre} · ${currentBook.target_audience}`:page==="manga-editor"?"Manga · Manhwa Creator":"AI-Powered Book Generator"}
         onSettings={()=>setShowSettings(true)}
+        onTour={()=>startTour(page,homeTab,isEditor)}
         activeTab={isHome?homeTab:null}
         setActiveTab={isHome?t=>setHomeTab(t):null}
       />
@@ -2631,9 +2759,13 @@ Respond ONLY with valid JSON:
 }`;
   const raw = await callGemini(prompt, 0.5);
   bump();
-  const m = raw.match(/\{[\s\S]*\}/);
-  if(!m) throw {code:"PARSE"};
-  return JSON.parse(m[0]);
+  try{
+    const m = raw.match(/\{[\s\S]*\}/);
+    if(!m) throw {code:"PARSE", msg:"Research agent returned no JSON."};
+    try{return JSON.parse(m[0]);}catch(pe){throw{code:"PARSE",msg:"AI returned malformed JSON — please retry."};}
+  } catch(e){
+    throw {code:"PARSE", msg:"Research agent response was malformed. Try again."};
+  }
 }
 
 // ─── Manga Project Creator ───────────────────────────────────────────────────
@@ -2666,9 +2798,14 @@ Create a professional manga series concept. Respond ONLY with valid JSON:
 }`;
   const raw = await callGemini(prompt, 0.8);
   bump();
-  const m = raw.match(/\{[\s\S]*\}/);
-  if(!m) throw {code:"PARSE"};
-  return JSON.parse(m[0]);
+  try{
+    const m = raw.match(/\{[\s\S]*\}/);
+    if(!m) throw {code:"PARSE", msg:"Concept generation returned no JSON."};
+    try{return JSON.parse(m[0]);}catch(pe){throw{code:"PARSE",msg:"AI returned malformed JSON — please retry."};}
+  } catch(e){
+    if(e.code==="PARSE") throw e;
+    throw {code:"PARSE", msg:"Concept JSON was malformed — regenerate to try again."};
+  }
 }
 
 // ─── Chapter Generator ───────────────────────────────────────────────────────
@@ -2771,7 +2908,7 @@ async function generatePanelImage(project, scene, panelDesc){
     "professional manga illustration"
   ].filter(Boolean).join(", ");
 
-  const url = `https://image.pollinations.ai/prompt/${encodeURIComponent(fullPrompt)}?width=512&height=512&model=flux&nologo=true&seed=${Math.floor(Math.random()*99999)}`;
+  const url = `https://image.pollinations.ai/prompt/${encodeURIComponent(fullPrompt)}?width=1024&height=1024&model=flux&nologo=true&seed=${Math.floor(Math.random()*99999)}`;
   return url;
 }
 
@@ -2924,7 +3061,7 @@ function MangaCreateWizard({navigate, onSettings, onBack, onCreated}){
 
       setGenStatus("🎨 Generating cover image…");
       const coverPrompt = ART_STYLES.find(a=>a.id===artStyle)?.prompt || "manhwa style";
-      const cover_url = `https://image.pollinations.ai/prompt/${encodeURIComponent(coverPrompt+", "+concept.title+", manga cover art, dramatic composition, professional, no text")}?width=400&height=600&model=flux&nologo=true&seed=${Date.now()%99999}`;
+      const cover_url = `https://image.pollinations.ai/prompt/${encodeURIComponent(coverPrompt+", "+concept.title+", manga cover art, dramatic composition, professional, no text")}?width=800&height=1200&model=flux&nologo=true&seed=${Date.now()%99999}`;
 
       const project = {
         id: "manga_" + Date.now(),
