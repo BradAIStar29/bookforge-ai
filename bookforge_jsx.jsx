@@ -60,66 +60,207 @@ function buildRTF(book){
 }
 
 function buildEPUB(book){
-  // Returns a data-URI blob — basic but valid EPUB3
-  const title=book.title||"Book";
-  const safe=s=>(s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
-  const slug=title.replace(/[^a-z0-9]/gi,"_").toLowerCase();
-  const chapters=(book.chapters||[]).filter(c=>c.content);
+  // RETURNS A PROMISE → resolves to a .epub Blob (real EPUB3 ZIP format)
+  // Uses JSZip (MIT, loaded on demand). Zero cost, works in all browsers.
+  const title = book.title || "Book";
+  const safe = s => (s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
+  const slug = title.replace(/[^a-z0-9]/gi,"_").toLowerCase();
+  const chapters = (book.chapters||[]).filter(c=>c.content);
+  const author = book.author_name || "Author";
+  const uid = "bookforge-" + (book.id || Date.now());
 
-  // Build XHTML for each chapter
-  const chFiles=chapters.map((ch,i)=>{
-    const chSlug="ch_"+(i+1);
-    const illustrationHtml=ch.illustration_url?`<figure style="text-align:center;margin:1.5em 0 2em"><img src="${ch.illustration_url}" alt="Chapter ${ch.number} illustration" style="max-width:90%;border-radius:6px"/></figure>`:"";
-    const paras=ch.content.split(/\n+/).filter(p=>p.trim()).map(p=>`<p>${safe(p)}</p>`).join("\n");
-    return{name:chSlug+".xhtml",content:`<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html><html xmlns="http://www.w3.org/1999/xhtml"><head><title>${safe(ch.title)}</title><link rel="stylesheet" type="text/css" href="../styles/main.css"/></head><body><h1>${safe(ch.title)}</h1>${illustrationHtml}${paras}</body></html>`};
+  return new Promise((resolve, reject) => {
+    // Lazy-load JSZip from CDN (MIT license, ~100KB)
+    const loadJSZip = () => {
+      if(window.JSZip) return Promise.resolve(window.JSZip);
+      return new Promise((res, rej) => {
+        const s = document.createElement("script");
+        s.src = "https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js";
+        s.onload = () => res(window.JSZip);
+        s.onerror = rej;
+        document.head.appendChild(s);
+      });
+    };
+
+    loadJSZip().then(JSZip => {
+      const zip = new JSZip();
+
+      // ── mimetype (must be first, uncompressed) ──
+      zip.file("mimetype", "application/epub+zip", {compression:"STORE"});
+
+      // ── META-INF/container.xml ──
+      zip.folder("META-INF").file("container.xml",
+        `<?xml version="1.0" encoding="UTF-8"?>\n`+
+        `<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">\n`+
+        `  <rootfiles>\n`+
+        `    <rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/>\n`+
+        `  </rootfiles>\n`+
+        `</container>`
+      );
+
+      const oebps = zip.folder("OEBPS");
+      const text  = oebps.folder("Text");
+      const styles = oebps.folder("Styles");
+
+      // ── Stylesheet ──
+      const css =
+        `body{font-family:Georgia,"Times New Roman",serif;font-size:1.05em;line-height:1.75;`+
+        `margin:0;padding:0;color:#1a1a1a;background:#fff}\n`+
+        `h1{font-size:1.8em;text-align:left;margin:2em 0 0.4em;padding-bottom:0.3em;`+
+        `border-bottom:1px solid #ccc;page-break-before:always}\n`+
+        `h1.first-chapter{page-break-before:auto}\n`+
+        `h2{font-size:1.3em;margin:1.5em 0 0.5em;color:#333}\n`+
+        `p{margin:0;text-indent:1.6em;orphans:2;widows:2}\n`+
+        `p.no-indent{text-indent:0;margin-top:0.8em}\n`+
+        `p.first-para{text-indent:0}\n`+
+        `hr{border:none;border-top:1px solid #ddd;margin:2em 0}\n`+
+        `.title-page{text-align:center;padding:4em 2em}\n`+
+        `.title-page h1{font-size:2.4em;border:none;page-break-before:auto;margin-bottom:0.2em}\n`+
+        `.title-page .subtitle{font-size:1.3em;color:#555;font-style:italic;margin:.4em 0 2em}\n`+
+        `.title-page .author{font-size:1.1em;margin:1em 0}\n`+
+        `.title-page .genre{font-size:.9em;color:#888;margin:.5em 0}\n`+
+        `.description{font-style:italic;color:#444;border-left:3px solid #ddd;padding-left:1.2em;`+
+        `margin:1.5em 0;page-break-before:always}\n`+
+        `figure{text-align:center;margin:1.5em 0}\n`+
+        `figure img{max-width:90%}\n`;
+      styles.file("main.css", css);
+
+      // ── Title page ──
+      const titlePageXhtml =
+        `<?xml version="1.0" encoding="UTF-8"?>\n`+
+        `<!DOCTYPE html>\n`+
+        `<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en">\n`+
+        `<head><title>${safe(title)}</title>`+
+        `<link rel="stylesheet" type="text/css" href="../Styles/main.css"/></head>\n`+
+        `<body><div class="title-page">\n`+
+        `  <h1>${safe(title)}</h1>\n`+
+        (book.subtitle ? `  <p class="subtitle">${safe(book.subtitle)}</p>\n` : "")+
+        `  <p class="author">${safe(author)}</p>\n`+
+        `  <p class="genre">${safe(book.genre||"")}</p>\n`+
+        `</div></body></html>`;
+      text.file("title_page.xhtml", titlePageXhtml);
+
+      // ── Description page ──
+      let descPageXhtml = "";
+      if(book.description){
+        descPageXhtml =
+          `<?xml version="1.0" encoding="UTF-8"?>\n`+
+          `<!DOCTYPE html>\n`+
+          `<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en">\n`+
+          `<head><title>About This Book</title>`+
+          `<link rel="stylesheet" type="text/css" href="../Styles/main.css"/></head>\n`+
+          `<body><div class="description">\n`+
+          `<h2>About This Book</h2>\n`+
+          `<p class="no-indent">${safe(book.description)}</p>\n`+
+          `</div></body></html>`;
+        text.file("description.xhtml", descPageXhtml);
+      }
+
+      // ── Chapter XHTML files ──
+      const chapterFiles = chapters.map((ch, i) => {
+        const chSlug = `ch_${i+1}`;
+        const isFirst = i === 0;
+        const illustrationHtml = ch.illustration_url
+          ? `<figure><img src="${ch.illustration_url}" alt="Chapter ${ch.number}"/></figure>\n`
+          : "";
+        const paras = ch.content
+          .split(/\n+/).filter(p=>p.trim())
+          .map((p, pi) => `<p class="${pi===0?"first-para":""}">${safe(p)}</p>`)
+          .join("\n");
+        const xhtml =
+          `<?xml version="1.0" encoding="UTF-8"?>\n`+
+          `<!DOCTYPE html>\n`+
+          `<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en">\n`+
+          `<head><title>Chapter ${ch.number}: ${safe(ch.title)}</title>`+
+          `<link rel="stylesheet" type="text/css" href="../Styles/main.css"/></head>\n`+
+          `<body>\n`+
+          `<h1 class="${isFirst?"first-chapter":""}">`+
+          `Chapter ${ch.number}: ${safe(ch.title)}</h1>\n`+
+          illustrationHtml + paras +
+          `</body></html>`;
+        text.file(`${chSlug}.xhtml`, xhtml);
+        return { id: `ch${i+1}`, href: `Text/${chSlug}.xhtml`, title: `Chapter ${ch.number}: ${ch.title}` };
+      });
+
+      // ── TOC: toc.xhtml (EPUB3 nav) ──
+      const navXhtml =
+        `<?xml version="1.0" encoding="UTF-8"?>\n`+
+        `<!DOCTYPE html>\n`+
+        `<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" xml:lang="en">\n`+
+        `<head><title>Table of Contents</title>`+
+        `<link rel="stylesheet" type="text/css" href="Styles/main.css"/></head>\n`+
+        `<body>\n<nav epub:type="toc" id="toc">\n`+
+        `<h2>Table of Contents</h2>\n<ol>\n`+
+        `  <li><a href="Text/title_page.xhtml">Title Page</a></li>\n`+
+        (book.description ? `  <li><a href="Text/description.xhtml">About This Book</a></li>\n` : "")+
+        chapterFiles.map(cf => `  <li><a href="${cf.href}">${safe(cf.title)}</a></li>`).join("\n")+
+        `\n</ol>\n</nav>\n</body></html>`;
+      oebps.file("toc.xhtml", navXhtml);
+
+      // ── toc.ncx (EPUB2 fallback for older Kindles) ──
+      const ncx =
+        `<?xml version="1.0" encoding="UTF-8"?>\n`+
+        `<ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1">\n`+
+        `<head><meta name="dtb:uid" content="${uid}"/></head>\n`+
+        `<docTitle><text>${safe(title)}</text></docTitle>\n`+
+        `<navMap>\n`+
+        chapterFiles.map((cf, i) =>
+          `<navPoint id="nav${i+1}" playOrder="${i+1}">`+
+          `<navLabel><text>${safe(cf.title)}</text></navLabel>`+
+          `<content src="${cf.href}"/></navPoint>`
+        ).join("\n")+
+        `\n</navMap></ncx>`;
+      oebps.file("toc.ncx", ncx);
+
+      // ── content.opf (Package Document) ──
+      const now = new Date().toISOString().split("T")[0];
+      const manifestItems = [
+        `<item id="nav" href="toc.xhtml" media-type="application/xhtml+xml" properties="nav"/>`,
+        `<item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>`,
+        `<item id="css" href="Styles/main.css" media-type="text/css"/>`,
+        `<item id="title_page" href="Text/title_page.xhtml" media-type="application/xhtml+xml"/>`,
+        ...(book.description ? [`<item id="desc_page" href="Text/description.xhtml" media-type="application/xhtml+xml"/>`] : []),
+        ...chapterFiles.map(cf => `<item id="${cf.id}" href="${cf.href}" media-type="application/xhtml+xml"/>`)
+      ].join("\n    ");
+      const spineItems = [
+        `<itemref idref="title_page"/>`,
+        ...(book.description ? [`<itemref idref="desc_page"/>`] : []),
+        ...chapterFiles.map(cf => `<itemref idref="${cf.id}"/>`)
+      ].join("\n    ");
+      const keywords = (book.seo_keywords||[]).join(", ");
+      const opf =
+        `<?xml version="1.0" encoding="UTF-8"?>\n`+
+        `<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="uid" xml:lang="en">\n`+
+        `  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">\n`+
+        `    <dc:identifier id="uid">${uid}</dc:identifier>\n`+
+        `    <dc:title>${safe(title)}</dc:title>\n`+
+        (book.subtitle ? `    <dc:description>${safe(book.subtitle)}</dc:description>\n` : "")+
+        `    <dc:creator id="creator">${safe(author)}</dc:creator>\n`+
+        `    <meta refines="#creator" property="role" scheme="marc:relators">aut</meta>\n`+
+        `    <dc:language>en</dc:language>\n`+
+        `    <dc:subject>${safe(book.genre||"")}</dc:subject>\n`+
+        (keywords ? `    <dc:subject>${safe(keywords)}</dc:subject>\n` : "")+
+        `    <dc:description>${safe(book.description||"")}</dc:description>\n`+
+        `    <meta property="dcterms:modified">${new Date().toISOString().replace(/\.\d+Z/,"Z")}</meta>\n`+
+        `    <meta name="cover" content="cover-image"/>\n`+
+        `  </metadata>\n`+
+        `  <manifest>\n    ${manifestItems}\n  </manifest>\n`+
+        `  <spine toc="ncx">\n    ${spineItems}\n  </spine>\n`+
+        `</package>`;
+      oebps.file("content.opf", opf);
+
+      // ── Generate the ZIP blob ──
+      zip.generateAsync({
+        type: "blob",
+        mimeType: "application/epub+zip",
+        compression: "DEFLATE",
+        compressionOptions: { level: 6 }
+      }).then(resolve).catch(reject);
+
+    }).catch(err => reject(new Error("Failed to load JSZip: " + err.message)));
   });
-
-  const manifest=chFiles.map((f,i)=>`<item id="ch${i+1}" href="Text/${f.name}" media-type="application/xhtml+xml"/>`).join("\n    ");
-  const spine=chFiles.map((_,i)=>`<itemref idref="ch${i+1}"/>`).join("\n    ");
-  const toc=chapters.map((ch,i)=>`<navPoint id="ch${i+1}"><navLabel><text>${safe(ch.title)}</text></navLabel><content src="Text/ch_${i+1}.xhtml"/></navPoint>`).join("\n");
-
-  const opf=`<?xml version="1.0" encoding="UTF-8"?><package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="uid"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>${safe(title)}</dc:title><dc:creator>${safe(book.author_name||"Author")}</dc:creator><dc:language>en</dc:language><dc:identifier id="uid">bookforge-${book.id}</dc:identifier><dc:description>${safe(book.description||"")}</dc:description></metadata><manifest><item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/><item id="css" href="styles/main.css" media-type="text/css"/>${manifest}</manifest><spine toc="ncx">${spine}</spine></package>`;
-
-  const ncx=`<?xml version="1.0" encoding="UTF-8"?><ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1"><head><meta name="dtb:uid" content="bookforge-${book.id}"/></head><docTitle><text>${safe(title)}</text></docTitle><navMap>${toc}</navMap></ncx>`;
-
-  const css=`body{font-family:Georgia,serif;font-size:1.1em;line-height:1.7;margin:2em;color:#1a1a1a}h1{font-size:1.6em;margin-bottom:1.2em;border-bottom:1px solid #ddd;padding-bottom:.4em}p{margin:.7em 0;text-indent:1.5em}p:first-of-type{text-indent:0}`;
-
-  // We can't build a real zip in vanilla JS without a lib, so output a structured HTML instead
-  // that can be copy-pasted or converted — but we CAN do a clean structured download
-  // Build a well-formatted HTML that Calibre/Sigil can import as EPUB
-  const fullHtml=`<!DOCTYPE html><html><head><meta charset="UTF-8"/><title>${safe(title)}</title><style>body{max-width:700px;margin:2em auto;font-family:Georgia,serif;font-size:1.1em;line-height:1.7;color:#1a1a1a}h1{font-size:2em;text-align:center;margin-bottom:.3em}h2{font-size:1.6em;margin-top:3em;border-bottom:1px solid #ddd;padding-bottom:.3em}h3{color:#555;font-style:italic;font-weight:normal;text-align:center;margin-top:0}p{margin:.8em 0;text-indent:1.5em}p:first-of-type{text-indent:0}hr{border:none;border-top:1px solid #ddd;margin:3em 0}.meta{color:#777;font-size:.9em;text-align:center;margin-bottom:3em}</style></head><body>`+
-    `<h1>${safe(title)}</h1>${book.subtitle?`<h3>${safe(book.subtitle)}</h3>`:""}`+
-    `<div class="meta">${safe(book.genre||"")}${book.author_name?" · "+safe(book.author_name):""}</div>`+
-    (book.description?`<p><em>${safe(book.description)}</em></p><hr/>`:"") +
-    chapters.map(ch=>`<h2>Chapter ${ch.number}: ${safe(ch.title)}</h2>${ch.content.split(/\n+/).filter(p=>p.trim()).map(p=>`<p>${safe(p)}</p>`).join("")}`).join("<hr/>") +
-    (book.hooks?.series_read_order_page?`<hr/><h2>Also By This Author</h2><p>${safe(book.hooks.series_read_order_page).replace(/\n/g,"</p><p>")}</p>`:"")+
-    `</body></html>`;
-
-  return fullHtml;
 }
 
-
-
-// ── Gemini ────────────────────────────────────────────────────────────────────
-async function callGemini(prompt,temp=0.85){
-  const key=getKey();
-  if(!key)throw{code:"NO_KEY"};
-  if(getUsage()>=DAILY_LIMIT)throw{code:"QUOTA"};
-  const res=await fetch(`${GEMINI_URL}?key=${key}`,{method:"POST",headers:{"Content-Type":"application/json"},
-    body:JSON.stringify({contents:[{parts:[{text:prompt}]}],generationConfig:{temperature:temp,maxOutputTokens:8192}})});
-  const data=await res.json();
-  if(!res.ok){
-    if(res.status===401||res.status===403)throw{code:"BAD_KEY"};
-    if(res.status===429||data?.error?.status==="RESOURCE_EXHAUSTED")throw{code:"QUOTA"};
-    throw{code:"ERROR",msg:data?.error?.message||`HTTP ${res.status}`};
-  }
-  const text=data?.candidates?.[0]?.content?.parts?.[0]?.text;
-  if(!text){if(data?.candidates?.[0]?.finishReason==="SAFETY")throw{code:"SAFETY"};throw{code:"EMPTY"};}
-  return text;
-}
-const errMsg=e=>{const c=e?.code||"ERROR";if(c==="NO_KEY"||c==="BAD_KEY")return"🔑 API key missing or invalid — check Settings.";if(c==="QUOTA")return"⏳ Daily Gemini limit reached. Resets at midnight Pacific Time. Progress saved!";if(c==="SAFETY")return"Content blocked by safety filter. Try rephrasing.";return e?.msg||"Something went wrong. Please try again.";};
-
-// ── Series helpers ────────────────────────────────────────────────────────────
 function buildSeriesContext(series){
   if(!series)return"";
   const p=series.plan||{};
@@ -1935,8 +2076,14 @@ function EditorPage({bookId,navigate,onSettings}){
       const md="# "+book.title+"\n"+(book.subtitle?"## "+book.subtitle+"\n":"")+"\n"+(book.description||"")+"\n\n---\n\n"+chaps.map(c=>"# Chapter "+c.number+": "+c.title+"\n\n"+c.content).join("\n\n---\n\n")+seriesPage;
       const a=Object.assign(document.createElement("a"),{href:URL.createObjectURL(new Blob([md],{type:"text/markdown"})),download:(book.title||"book").replace(/[^a-z0-9]/gi,"_")+".md"});a.click();
     } else if(fmt==="epub"){
-      const epubHtml=buildEPUB({...book,author_name:getAuthorProfile().name||"Author"});
-      const a=Object.assign(document.createElement("a"),{href:URL.createObjectURL(new Blob([epubHtml],{type:"text/html"})),download:(book.title||"book").replace(/[^a-z0-9]/gi,"_")+"_epub.html"});a.click();
+      setBusy(true);
+      buildEPUB({...book,author_name:getAuthorProfile().name||"Author"}).then(epubBlob=>{
+        const a=Object.assign(document.createElement("a"),{href:URL.createObjectURL(epubBlob),download:(book.title||"book").replace(/[^a-z0-9]/gi,"_")+".epub"});a.click();
+        setTimeout(()=>setBusy(false),1000);
+      }).catch(err=>{
+        setError("EPUB generation failed: "+(err.message||"unknown error"));
+        setBusy(false);
+      });
     } else if(fmt==="txt"){
       const txt=(book.title||"")+(book.subtitle?"\n"+book.subtitle:"")+"\n"+"=".repeat(50)+"\n\n"+(book.description||"")+"\n\n"+chaps.map(c=>"CHAPTER "+c.number+": "+c.title.toUpperCase()+"\n\n"+c.content).join("\n\n"+"─".repeat(40)+"\n\n")+seriesPage;
       const a=Object.assign(document.createElement("a"),{href:URL.createObjectURL(new Blob([txt],{type:"text/plain"})),download:(book.title||"book").replace(/[^a-z0-9]/gi,"_")+".txt"});a.click();
@@ -2077,7 +2224,18 @@ function EditorPage({bookId,navigate,onSettings}){
               <button onClick={()=>download("audio")} className="bg-gradient-to-r from-green-500 to-emerald-500 text-white py-3 rounded-xl font-semibold hover:opacity-90 flex items-center justify-center gap-2 text-sm">🎙️ Audiobook Script</button>
               <button onClick={()=>{const ch=book.chapters?.find(c=>c.content);if(!ch){alert("Write a chapter first.");return;}const u=window.speechSynthesis;if(u.speaking){u.cancel();flash("⏹ Stopped");return;}const utt=new SpeechSynthesisUtterance(ch.content.replace(/[#*_`]/g,"").slice(0,2000));utt.rate=0.92;utt.pitch=1.0;const voices=u.getVoices();const eng=voices.find(v=>v.lang.startsWith("en")&&!v.name.includes("Google"));if(eng)utt.voice=eng;u.speak(utt);flash("🔊 Reading Ch.1 preview — click again to stop");}} className="bg-white/5 border border-white/10 text-white/60 py-3 rounded-xl font-semibold hover:bg-white/10 flex items-center justify-center gap-2 text-sm">🔊 Listen Preview</button>
             </div>
-            <p className="text-white/20 text-xs text-center mt-3">EPUB: open the .html file in Calibre → File → Add to Library → Convert to EPUB. Series read-order page included.</p>
+            <div className="mt-4 bg-blue-500/10 border border-blue-500/20 rounded-xl p-4 text-xs text-white/50 space-y-2">
+              <p className="text-white/70 font-semibold text-sm">📖 Where to publish your .epub</p>
+              <div className="grid grid-cols-2 gap-2 mt-2">
+                <div className="bg-white/5 rounded-lg p-2.5"><p className="text-white/60 font-semibold">Amazon KDP</p><p className="text-white/30">Upload .epub directly. Reaches millions. Royalties 35-70%.</p></div>
+                <div className="bg-white/5 rounded-lg p-2.5"><p className="text-white/60 font-semibold">Smashwords</p><p className="text-white/30">Free. Distributes to Apple Books, Barnes &amp; Noble, Kobo, libraries.</p></div>
+                <div className="bg-white/5 rounded-lg p-2.5"><p className="text-white/60 font-semibold">Draft2Digital</p><p className="text-white/30">Free. Uploads to 12+ stores in one click. Best aggregator.</p></div>
+                <div className="bg-white/5 rounded-lg p-2.5"><p className="text-white/60 font-semibold">Payhip / Gumroad</p><p className="text-white/30">Sell directly. Keep ~97% of revenue. No approval needed.</p></div>
+                <div className="bg-white/5 rounded-lg p-2.5"><p className="text-white/60 font-semibold">Leanpub</p><p className="text-white/30">Great for nonfiction &amp; guides. Readers pay what they want.</p></div>
+                <div className="bg-white/5 rounded-lg p-2.5"><p className="text-white/60 font-semibold">Wattpad / Royal Road</p><p className="text-white/30">Upload as chapters for free fiction audiences. Build a following.</p></div>
+              </div>
+              <p className="text-white/25 mt-2">📋 RTF = best for Word/Docs editing before publish · TXT = plain archive · Audiobook script = hand to narrator or use Audio Studio tab</p>
+            </div>
           </Card>}
           <div className="grid grid-cols-3 gap-4">
             {[{name:"Amazon KDP",url:"https://kdp.amazon.com",icon:"📦",color:"border-orange-500/30 bg-orange-500/10"},{name:"Smashwords",url:"https://www.smashwords.com",icon:"📚",color:"border-blue-500/30 bg-blue-500/10"},{name:"Draft2Digital",url:"https://draft2digital.com",icon:"🌐",color:"border-green-500/30 bg-green-500/10"}].map(p=><a key={p.name} href={p.url} target="_blank" rel="noopener noreferrer" className={`border ${p.color} rounded-xl p-4 text-center hover:opacity-80`}><div className="text-2xl mb-2">{p.icon}</div><p className="text-white font-semibold text-sm">{p.name}</p><p className="text-white/30 text-xs mt-1">Open →</p></a>)}
