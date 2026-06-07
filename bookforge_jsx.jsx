@@ -499,7 +499,7 @@ function CompetitorPanel({book,onSettings}){
   const [error,setError]=useState("");
   const run=async()=>{
     if(!getKey()){onSettings();return;}
-    setLoading(true);setError("");
+    setLoading(true);setLoadStep("Building your series world bible…");setError("");
     try{
       const raw=await callGemini(
         `You are an Amazon KDP market research expert. Analyze the competitive landscape for this book.\n\n`+
@@ -1372,6 +1372,7 @@ function SeriesPage({navigate,onSettings}){
   const [viewBible,setViewBible]=useState(null);
   const [form,setForm]=useState({name:"",concept:"",genre:"",audience:"",book_count:3,tone:""});
   const [loading,setLoading]=useState(false);
+  const [loadStep,setLoadStep]=useState("");
   const [error,setError]=useState("");
 
   const reload=()=>{const s=getSeries();setSeriesList(s);};
@@ -1395,7 +1396,8 @@ function SeriesPage({navigate,onSettings}){
       trackUsage();
       const match=raw.match(/\{[\s\S]*\}/);
       if(!match)throw{code:"PARSE",msg:"Couldn't parse series plan."};
-      const plan=JSON.parse(match[0]);
+      setLoadStep("Structuring characters, world & book arcs…");
+      let plan;try{plan=JSON.parse(match[0]);}catch(pe){throw{code:"PARSE",msg:"AI returned malformed JSON — please retry."};}
       const character_roster=(plan.recurring_characters||[]).map(c=>({...c,first_appears:"Series Bible"}));
       const world_locations=(plan.recurring_locations||[]).map(l=>({...l,first_appears:"Series Bible"}));
       const series={
@@ -1407,7 +1409,7 @@ function SeriesPage({navigate,onSettings}){
       const all=[series,...getSeries()];setSeries(all);setSeriesList(all);
       setShowCreate(false);setForm({name:"",concept:"",genre:"",audience:"",book_count:3,tone:""});
     }catch(e){setError(errMsg(e));}
-    finally{setLoading(false);}
+    finally{setLoading(false);setLoadStep("");}
   };
 
   const deleteSeries=(id,e)=>{e.stopPropagation();if(!confirm("Delete this series?"))return;const s=getSeries().filter(x=>x.id!==id);setSeries(s);setSeriesList(s);};
@@ -1481,7 +1483,7 @@ function SeriesPage({navigate,onSettings}){
             </div>
             <div className="flex gap-3">
               <button onClick={()=>{setShowCreate(false);setError("");}} className="flex-1 border border-white/20 text-white/50 py-3 rounded-xl hover:bg-white/5 text-sm">Cancel</button>
-              <button onClick={createSeries} disabled={loading||!form.name||!form.concept||!form.genre||!form.audience} className="flex-[2] bg-gradient-to-r from-cyan-500 to-blue-500 text-white py-3 rounded-xl font-semibold hover:opacity-90 disabled:opacity-40 flex items-center justify-center gap-2">{loading?<><Spin/>Generating series bible…</>:"✨ Generate Series Plan"}</button>
+              <button onClick={createSeries} disabled={loading||!form.name||!form.concept||!form.genre||!form.audience} className="flex-[2] bg-gradient-to-r from-cyan-500 to-blue-500 text-white py-3 rounded-xl font-semibold hover:opacity-90 disabled:opacity-40 flex items-center justify-center gap-2">{loading?<><Spin/>{loadStep||"Generating series bible…"}</>:"✨ Generate Series Plan"}</button>
             </div>
           </div>
         </div>
@@ -2091,13 +2093,16 @@ function EditorPage({bookId,navigate,onSettings}){
       const a=Object.assign(document.createElement("a"),{href:URL.createObjectURL(new Blob([md],{type:"text/markdown"})),download:(book.title||"book").replace(/[^a-z0-9]/gi,"_")+".md"});a.click();
     } else if(fmt==="epub"){
       setBusy(true);
-      buildEPUB({...book,author_name:getAuthorProfile().name||"Author"}).then(epubBlob=>{
-        const a=Object.assign(document.createElement("a"),{href:URL.createObjectURL(epubBlob),download:(book.title||"book").replace(/[^a-z0-9]/gi,"_")+".epub"});a.click();
-        setTimeout(()=>setBusy(false),1000);
-      }).catch(err=>{
-        setError("EPUB generation failed: "+(err.message||"unknown error"));
-        setBusy(false);
-      });
+      (async()=>{
+        try{
+          const epubBlob=await buildEPUB({...book,author_name:getAuthorProfile().name||"Author"});
+          const a=Object.assign(document.createElement("a"),{href:URL.createObjectURL(epubBlob),download:(book.title||"book").replace(/[^a-z0-9]/gi,"_")+".epub"});a.click();
+        }catch(err){
+          setError("EPUB generation failed: "+(err.message||"unknown error"));
+        }finally{
+          setTimeout(()=>setBusy(false),800);
+        }
+      })();
     } else if(fmt==="txt"){
       const txt=(book.title||"")+(book.subtitle?"\n"+book.subtitle:"")+"\n"+"=".repeat(50)+"\n\n"+(book.description||"")+"\n\n"+chaps.map(c=>"CHAPTER "+c.number+": "+c.title.toUpperCase()+"\n\n"+c.content).join("\n\n"+"─".repeat(40)+"\n\n")+seriesPage;
       const a=Object.assign(document.createElement("a"),{href:URL.createObjectURL(new Blob([txt],{type:"text/plain"})),download:(book.title||"book").replace(/[^a-z0-9]/gi,"_")+".txt"});a.click();
@@ -2190,7 +2195,7 @@ function EditorPage({bookId,navigate,onSettings}){
         {tab===0&&<div className="max-w-3xl mx-auto"><Card>{book.series_name&&<div className="mb-3"><SeriesBibleInline bookId={bookId}/></div>}<h2 className="text-white text-xl font-bold">{book.title}</h2>{book.subtitle&&<p className="text-purple-300 mt-1 mb-4 text-sm">{book.subtitle}</p>}<p className="text-white/60 text-sm leading-relaxed mb-6">{book.description}</p>{book.chapters?.length>0&&<><p className="text-white/40 text-xs uppercase tracking-wider mb-3">Chapters ({book.chapters.length})</p><div className="space-y-2">{book.chapters.map((ch,i)=><div key={i} className={`rounded-xl p-3 border flex gap-3 items-start ${ch.generated?"bg-green-500/10 border-green-500/20":"bg-white/5 border-white/10"}`}><span className={`font-bold text-sm min-w-[24px] ${ch.generated?"text-green-400":"text-purple-400"}`}>{ch.generated?"✓":ch.number+"."}</span><div className="flex-1"><p className="text-white text-sm font-medium">{ch.title}</p><p className="text-white/35 text-xs mt-0.5">{ch.description}</p>{ch.content&&<div className="flex items-center gap-3 mt-1.5"><span className="text-green-400/70 text-xs">{ch.content.split(/\s+/).length.toLocaleString()} words</span><span className="text-white/20 text-xs">~{Math.ceil(ch.content.split(/\s+/).length/200)} min read</span></div>}{ch.opening_hook&&!ch.content&&<p className="text-purple-300/50 text-xs mt-1 italic">Hook: {ch.opening_hook.slice(0,80)}…</p>}</div>{ch.generated?<span className="text-green-400/50 text-xs shrink-0">✅ Done</span>:<span className="text-white/20 text-xs shrink-0">Pending</span>}</div>)}</div><div className="mt-5 bg-white/5 rounded-xl p-4"><div className="flex justify-between text-xs text-white/40 mb-2"><span>Progress</span><span>{book.chapters.filter(c=>c.generated).length}/{book.chapters.length} chapters</span></div><div className="h-2 bg-white/10 rounded-full overflow-hidden"><div className="h-full bg-gradient-to-r from-purple-500 to-pink-500 rounded-full" style={{width:`${(book.chapters.filter(c=>c.generated).length/book.chapters.length)*100}%`}}/></div></div></>}{(!book.chapters||book.chapters.length===0)&&isBuilding&&<div className="text-center py-8 text-white/30"><Spin/><p className="mt-3 text-sm">Generating outline…</p></div>}</Card></div>}
 
         {/* CHAPTERS */}
-        {tab===1&&<div className="grid grid-cols-1 lg:grid-cols-3 gap-5"><div className="lg:col-span-1"><div className="bg-white/5 border border-white/10 rounded-2xl p-4 sticky top-24"><div className="flex items-center justify-between mb-3"><h3 className="text-white font-semibold text-sm">Chapters</h3>{!isBuilding&&<button onClick={async()=>{for(const i of (book.chapters||[]).map((_,i)=>i).filter(i=>!book.chapters[i].generated)){if(quotaHit)break;await genChapter(i);}}} disabled={busy||busyCh!==null||quotaHit||isBuilding} className="text-xs bg-purple-500/20 text-purple-300 border border-purple-500/30 px-3 py-1.5 rounded-lg hover:bg-purple-500/30 disabled:opacity-40">Write All</button>}</div><div className="space-y-1">{(book.chapters||[]).map((ch,i)=><button key={i} onClick={()=>setSelCh(i)} className={`w-full text-left px-3 py-2 rounded-lg text-sm transition-all ${selCh===i?"bg-purple-500/20 text-white border border-purple-500/30":"text-white/50 hover:bg-white/5"}`}><span className={ch.generated?"text-green-400":""}>{ch.generated?"✓ ":""}</span>{ch.number}. {ch.title}</button>)}</div></div></div><div className="lg:col-span-2">{book.chapters?.[selCh]&&<Card><div className="flex items-start justify-between mb-5 gap-4"><div><h2 className="text-white text-lg font-bold">Ch. {book.chapters[selCh].number}: {book.chapters[selCh].title}</h2><p className="text-white/35 text-sm mt-1">{book.chapters[selCh].description}</p></div>{!isBuilding&&<div className="flex gap-2 shrink-0"><button onClick={()=>genChapterIllustration(selCh)} disabled={busyCh!==null||quotaHit||isBuilding||busy} className="bg-white/5 border border-white/10 text-white/60 px-3 py-2 rounded-xl font-medium text-sm hover:bg-white/10 disabled:opacity-40 flex items-center gap-1.5" title="Generate chapter illustration">🖼️</button><button onClick={()=>genChapter(selCh)} disabled={busyCh!==null||quotaHit||isBuilding} className="bg-gradient-to-r from-purple-500 to-pink-500 text-white px-4 py-2 rounded-xl font-medium text-sm hover:opacity-90 disabled:opacity-50 flex items-center gap-2">{busyCh===selCh?<><Spin size="h-4 w-4"/>Writing…</>:book.chapters[selCh].generated?"✍️ Rewrite":"✍️ Write"}</button></div>}</div>{book.chapters?.[selCh]?.illustration_url&&<div className="mb-4"><img src={book.chapters[selCh].illustration_url} alt={`Chapter ${book.chapters[selCh].number} illustration`} className="w-full rounded-xl max-h-48 object-cover border border-white/10"/><p className="text-white/20 text-xs mt-1 text-center italic">{book.chapters[selCh].illustration_prompt?.slice(0,80)}…</p></div>}{book.chapters[selCh].content?<ChapterEditor book={book} chIdx={selCh} upd={upd}/>:<div className="text-center py-16 text-white/25"><div className="text-4xl mb-3">✍️</div><p>{isBuilding?"Generating…":"Click Write to generate"}</p></div>}</Card>}</div></div>}
+        {tab===1&&<div className="grid grid-cols-1 lg:grid-cols-3 gap-5"><div className="lg:col-span-1"><div className="bg-white/5 border border-white/10 rounded-2xl p-4 sticky top-24"><div className="flex items-center justify-between mb-3"><h3 className="text-white font-semibold text-sm">Chapters</h3>{!isBuilding&&<button onClick={async()=>{for(const i of (book.chapters||[]).map((_,i)=>i).filter(i=>!(book.chapters?.[i]?.generated))){if(quotaHit)break;await genChapter(i);}}} disabled={busy||busyCh!==null||quotaHit||isBuilding} className="text-xs bg-purple-500/20 text-purple-300 border border-purple-500/30 px-3 py-1.5 rounded-lg hover:bg-purple-500/30 disabled:opacity-40">Write All</button>}</div><div className="space-y-1">{(book.chapters||[]).map((ch,i)=><button key={i} onClick={()=>setSelCh(i)} className={`w-full text-left px-3 py-2 rounded-lg text-sm transition-all ${selCh===i?"bg-purple-500/20 text-white border border-purple-500/30":"text-white/50 hover:bg-white/5"}`}><span className={ch.generated?"text-green-400":""}>{ch.generated?"✓ ":""}</span>{ch.number}. {ch.title}</button>)}</div></div></div><div className="lg:col-span-2">{book.chapters?.[selCh]&&<Card><div className="flex items-start justify-between mb-5 gap-4"><div><h2 className="text-white text-lg font-bold">Ch. {book.chapters?.[selCh].number}: {book.chapters?.[selCh].title}</h2><p className="text-white/35 text-sm mt-1">{book.chapters?.[selCh].description}</p></div>{!isBuilding&&<div className="flex gap-2 shrink-0"><button onClick={()=>genChapterIllustration(selCh)} disabled={busyCh!==null||quotaHit||isBuilding||busy} className="bg-white/5 border border-white/10 text-white/60 px-3 py-2 rounded-xl font-medium text-sm hover:bg-white/10 disabled:opacity-40 flex items-center gap-1.5" title="Generate chapter illustration">🖼️</button><button onClick={()=>genChapter(selCh)} disabled={busyCh!==null||quotaHit||isBuilding} className="bg-gradient-to-r from-purple-500 to-pink-500 text-white px-4 py-2 rounded-xl font-medium text-sm hover:opacity-90 disabled:opacity-50 flex items-center gap-2">{busyCh===selCh?<><Spin size="h-4 w-4"/>Writing…</>:book.chapters?.[selCh].generated?"✍️ Rewrite":"✍️ Write"}</button></div>}</div>{book.chapters?.[selCh]?.illustration_url&&<div className="mb-4"><img src={book.chapters?.[selCh].illustration_url} alt={`Chapter ${book.chapters?.[selCh].number} illustration`} className="w-full rounded-xl max-h-48 object-cover border border-white/10"/><p className="text-white/20 text-xs mt-1 text-center italic">{book.chapters?.[selCh].illustration_prompt?.slice(0,80)}…</p></div>}{book.chapters?.[selCh].content?<ChapterEditor book={book} chIdx={selCh} upd={upd}/>:<div className="text-center py-16 text-white/25"><div className="text-4xl mb-3">✍️</div><p>{isBuilding?"Generating…":"Click Write to generate"}</p></div>}</Card>}</div></div>}
 
         {/* COVER */}
         {tab===2&&<div className="max-w-5xl mx-auto"><div className="grid grid-cols-1 lg:grid-cols-2 gap-8"><div><h2 className="text-white text-xl font-bold mb-4">Cover Preview</h2>{book.cover_image_url?<><img src={book.cover_image_url} alt="Cover" className="w-full max-w-xs rounded-2xl shadow-2xl shadow-purple-900/60 mx-auto block"/><div className="flex gap-2 mt-4 justify-center"><button onClick={newVariation} disabled={busy||isBuilding} className="text-sm border border-white/20 text-white/50 px-4 py-2 rounded-lg hover:bg-white/5 disabled:opacity-40">🎲 Variation</button><a href={book.cover_image_url} target="_blank" rel="noopener noreferrer" className="text-sm border border-white/20 text-white/50 px-4 py-2 rounded-lg hover:bg-white/5">⬇️ Download</a></div></>:<div className="w-full max-w-xs aspect-[2/3] bg-white/5 border-2 border-dashed border-white/15 rounded-2xl flex items-center justify-center mx-auto"><div className="text-center text-white/20">{isBuilding?<><Spin/><p className="text-sm mt-2">Generating…</p></>:<><div className="text-5xl mb-2">🎨</div><p className="text-sm">Cover appears here</p></>}</div></div>}</div><div className="space-y-5"><h2 className="text-white text-xl font-bold">Cover Settings</h2><div className="bg-white/5 border border-white/10 rounded-xl p-1 flex gap-1">{[["auto","✨ AI Auto"],["custom","✏️ Custom"]].map(([m,label])=><button key={m} onClick={()=>setCoverMode(m)} className={`flex-1 py-2 rounded-lg text-sm font-medium transition-all ${coverMode===m?"bg-purple-500 text-white":"text-white/40 hover:text-white"}`}>{label}</button>)}</div>{coverMode==="auto"?<div className="bg-white/5 border border-white/10 rounded-xl p-4 text-sm text-white/50">Gemini analyzes your book and writes a detailed character-specific prompt.{lastAiPrompt&&<p className="text-white/25 text-xs mt-3 italic leading-relaxed">{lastAiPrompt}</p>}</div>:<div><label className="text-white/60 text-sm font-medium block mb-2">Describe your cover</label><div className="flex flex-wrap gap-1.5 mb-2">{[["🌅 Painterly","painterly digital art, warm golden light, cinematic depth"],["🎨 Watercolor","loose expressive watercolor illustration, soft edges, artistic"],["📸 Photorealistic","hyperrealistic photography, studio lighting, cinematic"],["🖤 Dark Ink","dark ink graphic novel style, high contrast, moody shadows"],["✨ Fantasy","epic fantasy concept art, magical atmosphere, dramatic lighting, ArtStation"],["💫 Minimalist","clean minimalist design, bold typography space, subtle gradient background, modern"],["🌃 Neon Noir","cyberpunk neon noir, rain-slicked streets, atmospheric fog"],["🌸 Soft Romance","soft romantic illustration, warm pastels, bokeh background, dreamy"]].map(([label,tag])=><button key={label} onClick={()=>setCustomPrompt(p=>(p?p+", ":"")+tag)} className="text-xs bg-white/5 border border-white/10 text-white/50 hover:text-white/80 hover:border-purple-500/40 px-2.5 py-1.5 rounded-lg transition-all">{label}</button>)}</div><textarea rows={6} value={customPrompt} onChange={e=>setCustomPrompt(e.target.value)} placeholder="E.g. Two men in their 20s, dark curly hair and red hair, standing close on a rainy rooftop at dusk, golden light, painterly cinematic style, no text..." className="w-full bg-white/10 border border-white/20 rounded-xl px-4 py-3 text-white placeholder-white/20 focus:outline-none focus:border-purple-500 resize-none text-sm"/><p className="text-white/20 text-xs mt-1.5">💡 Click style chips to append — or type freely. Always generates no-text portrait covers.</p></div>}<button onClick={genCover} disabled={busy||quotaHit||isBuilding||(coverMode==="custom"&&!customPrompt.trim())} className="w-full bg-gradient-to-r from-purple-500 to-pink-500 text-white py-4 rounded-xl font-semibold text-lg hover:opacity-90 disabled:opacity-40 flex items-center justify-center gap-2">{busy?<><Spin/>Generating…</>:book.cover_image_url?"🔄 Regenerate":"🎨 Generate Cover"}</button></div></div></div>}
@@ -3051,15 +3056,21 @@ FORMAT your response as ONLY valid JSON:
   "next_chapter_setup": "What seeds are planted for Ch.${chNum+1}"
 }`;
 
-    const raw = await callGemini(prompt, 0.85);
-    bump();
-    const m = raw.match(/\{[\s\S]*\}/);
-    if(!m) throw {code:"PARSE", chapter: chNum};
-    const ch = JSON.parse(m[0]);
-    ch.number = chNum;
-    ch.generated_at = new Date().toISOString();
-    ch.art_style = project.art_style;
-    chapters.push(ch);
+    try{
+      const raw = await callGemini(prompt, 0.85);
+      bump();
+      const m = raw.match(/\{[\s\S]*\}/);
+      if(!m) throw {code:"PARSE", chapter: chNum};
+      let ch;try{ch=JSON.parse(m[0]);}catch(pe){throw{code:"PARSE",msg:`Malformed JSON for chapter ${chNum}`};}
+      ch.number = chNum;
+      ch.generated_at = new Date().toISOString();
+      ch.art_style = project.art_style;
+      chapters.push(ch);
+    }catch(chErr){
+      // Skip failed chapter but continue batch — caller sees partial results
+      console.warn(`Chapter ${chNum} generation failed:`, chErr);
+      chapters.push({number:chNum,title:`Chapter ${chNum}`,summary:"(generation failed — retry this chapter)",scenes:[],error:true,generated_at:new Date().toISOString()});
+    }
   }
   return chapters;
 }
