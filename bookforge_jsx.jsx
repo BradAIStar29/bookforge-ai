@@ -1051,7 +1051,7 @@ function CharactersPanel({book,onSettings}){
       trackUsage();
       const match=raw.match(/\{[\s\S]*\}/);
       if(!match)throw{code:"PARSE"};
-      const extracted=JSON.parse(match[0]).characters||[];
+      let extracted;try{extracted=JSON.parse(match[0]).characters||[];}catch(pe){extracted=[];}
       const existing=getCharacters(book.id);
       const merged=[...existing];
       extracted.forEach(ec=>{
@@ -1257,7 +1257,7 @@ function QueuePage({navigate,onSettings}){
           const seoRaw=await callGemini(`Amazon KDP SEO. Title: ${book.title}\nGenre: ${book.genre}\nDesc: ${book.description}\nRespond ONLY JSON: {"seo_title":"","seo_description":"","primary_keywords":[""]}`);
           trackUsage();
           const sm=seoRaw.match(/\{[\s\S]*\}/);
-          if(sm){const seo=JSON.parse(sm[0]);updateBook(id,{seo_title:seo.seo_title||"",seo_description:seo.seo_description||"",seo_keywords:(seo.primary_keywords||[]).join(", ")});}
+          if(sm){try{const seo=JSON.parse(sm[0]);updateBook(id,{seo_title:seo.seo_title||"",seo_description:seo.seo_description||"",seo_keywords:(seo.primary_keywords||[]).join(", ")});}catch(pe){addLog("⚠️ SEO parse failed — skipping SEO update");}}
         }
         if(getUsage()<DAILY_LIMIT){
           // Cover
@@ -1284,6 +1284,9 @@ function QueuePage({navigate,onSettings}){
         addLog(`❌ Error on "${book.title}": ${msg}`);
         if(e?.code==="QUOTA"){addLog("⏳ Quota hit — queue paused.");break;}
         removeFromQueue(id);// skip broken book
+      }finally{
+        // ensure current ID resets even on unexpected throw
+        setCurrentId(prev=>prev===id?null:prev);
       }
     }
     setCurrentId(null);setRunning(false);runRef.current=false;
@@ -1962,7 +1965,7 @@ function EditorPage({bookId,navigate,onSettings}){
           if(b.series_id&&getUsage()<DAILY_LIMIT-2){try{
             const evRaw=await callGemini(`List 2-3 key plot events from this chapter that matter for the series. ONLY valid JSON: {"events":["short event description"]}\nBook: "${outline.title||b.title}"\nChapter ${chapters[i].number}: "${chapters[i].title}"\nExcerpt: ${content.slice(0,600)}`,0.2);
             bump();const em=evRaw.match(/\{[\s\S]*\}/);
-            if(em){const evD=JSON.parse(em[0]);const sa=getSeries();const si=sa.findIndex(s=>s.id===b.series_id);
+            if(em){let evD;try{evD=JSON.parse(em[0]);}catch(pe){evD={};}const sa=getSeries();const si=sa.findIndex(s=>s.id===b.series_id);
             if(si>-1){sa[si].plot_events=[...(sa[si].plot_events||[]),...(evD.events||[]).map(ev=>({book:`Book ${b.series_number||"?"}`,event:ev}))];setSeries(sa);}}
           }catch(evE){/* silent */}}
         }catch(e){if(e?.code==="QUOTA"){setQuotaHit(true);break;}log(`⚠️ Ch.${i+1} error — skipped`);}
@@ -1985,7 +1988,7 @@ function EditorPage({bookId,navigate,onSettings}){
       try{
         const freshBook=getBook(bookId);
         const raw=await callGemini(`Amazon KDP market research expert. Analyze competitive landscape.\nTitle: ${freshBook.title}\nGenre: ${freshBook.genre}\nAudience: ${freshBook.target_audience}\nDesc: ${freshBook.description}\n\nRespond ONLY JSON: {"market_summary":"","positioning_statement":"","market_gaps":[""],"reader_pain_points":[""],"pricing_recommendation":{"launch_price":"","rationale":""},"ku_recommendation":{"enroll_in_ku":true,"rationale":""},"categories":{"primary":"","secondary":"","why":""},"launch_strategy":[""]}`,0.4);
-        bump();const match=raw.match(/\{[\s\S]*\}/);if(match){updateBook(bookId,{competitor_analysis:JSON.parse(match[0])});setBook(getBook(bookId));}
+        bump();const match=raw.match(/\{[\s\S]*\}/);if(match){try{updateBook(bookId,{competitor_analysis:JSON.parse(match[0])});setBook(getBook(bookId));}catch(pe){throw{code:"PARSE",msg:"AI returned malformed competitor analysis JSON — please retry."};} }
       }catch(e){if(e?.code==="QUOTA"){setQuotaHit(true);}}
       if(getUsage()>=DAILY_LIMIT){upd({auto_build:false,build_step:""});setIsBuilding(false);return;}
       // Hooks
@@ -1993,7 +1996,7 @@ function EditorPage({bookId,navigate,onSettings}){
       try{
         const freshBook=getBook(bookId);const freshOutline=JSON.parse(freshBook.outline||"{}");
         const raw=await callGemini(`Bestselling author and book marketer. Generate high-converting hooks.\nTitle: ${freshBook.title}\nGenre: ${freshBook.genre}\nAudience: ${freshBook.target_audience}\nDesc: ${freshOutline.description||freshBook.description}\n\nRespond ONLY JSON: {"opening_lines":[""],"back_cover_blurbs":[""],"tagline":"","social_media_hooks":[""],"email_subject_lines":[""],"series_read_order_page":"","amazon_a_plus_headline":""}`,0.9);
-        bump();const match=raw.match(/\{[\s\S]*\}/);if(match){updateBook(bookId,{hooks:JSON.parse(match[0]),auto_build:false,build_step:""});setBook(getBook(bookId));}
+        bump();const match=raw.match(/\{[\s\S]*\}/);if(match){try{updateBook(bookId,{hooks:JSON.parse(match[0]),auto_build:false,build_step:""});setBook(getBook(bookId));}catch(pe){throw{code:"PARSE",msg:"AI returned malformed hooks JSON — please retry."};} }
       }catch(e){if(e?.code==="QUOTA"){setQuotaHit(true);}}
 
       if(getUsage()<DAILY_LIMIT){
@@ -2063,7 +2066,7 @@ function EditorPage({bookId,navigate,onSettings}){
     }catch(e){handleErr(e);}finally{setBusy(false);}
   };
 
-  const genSEO=async()=>{if(quotaHit||isBuilding)return;setBusy(true);setError("");try{const outline=(()=>{try{return JSON.parse(book.outline||"{}");}catch{return {};}})();const raw=await callGemini(`You are a top-tier Amazon KDP bestseller strategist with 15+ years optimizing book discoverability.\n\nBook Details:\nTitle: "${outline.title||book.title}"\nGenre: ${book.genre}\nAudience: ${book.target_audience}\nDescription: ${outline.description||''}\n\nGenerate complete publishing metadata. Respond ONLY with valid JSON (no markdown, no code blocks):\n{"seo_title":"Exact-match keyword-rich title for KDP (max 200 chars)","seo_description":"400-word Amazon description with hook, 3 bullet points using • , social proof, call to action","primary_keywords":["7 long-tail exact-match Amazon search phrases readers actually type"],"backend_keywords":"up to 7 extra search terms space-separated for Amazon backend field (no repeats from primary)","bisac_categories":["Primary BISAC category path","Secondary BISAC category path"],"back_cover_copy":"3-paragraph back cover blurb: hook sentence, escalating tension or benefit, cliffhanger or promise","author_bio_template":"Professional 3rd-person author bio template 80 words","recommended_price_usd":4.99,"price_rationale":"One sentence pricing strategy","comp_titles":["3 comparable bestselling books Author — Title format"],"hook_line":"One irresistible sentence for social media"}`);bump();const match=raw.match(/\{[\s\S]*\}/);if(!match)throw{code:"PARSE"};const seo=JSON.parse(match[0]);upd({seo_title:seo.seo_title||"",seo_description:seo.seo_description||"",seo_keywords:(seo.primary_keywords||[]).join(", "),notes:JSON.stringify(seo)});flash("SEO generated! 🔍");}catch(e){handleErr(e);}finally{setBusy(false);}};
+  const genSEO=async()=>{if(quotaHit||isBuilding)return;setBusy(true);setError("");try{const outline=(()=>{try{return JSON.parse(book.outline||"{}");}catch{return {};}})();const raw=await callGemini(`You are a top-tier Amazon KDP bestseller strategist with 15+ years optimizing book discoverability.\n\nBook Details:\nTitle: "${outline.title||book.title}"\nGenre: ${book.genre}\nAudience: ${book.target_audience}\nDescription: ${outline.description||''}\n\nGenerate complete publishing metadata. Respond ONLY with valid JSON (no markdown, no code blocks):\n{"seo_title":"Exact-match keyword-rich title for KDP (max 200 chars)","seo_description":"400-word Amazon description with hook, 3 bullet points using • , social proof, call to action","primary_keywords":["7 long-tail exact-match Amazon search phrases readers actually type"],"backend_keywords":"up to 7 extra search terms space-separated for Amazon backend field (no repeats from primary)","bisac_categories":["Primary BISAC category path","Secondary BISAC category path"],"back_cover_copy":"3-paragraph back cover blurb: hook sentence, escalating tension or benefit, cliffhanger or promise","author_bio_template":"Professional 3rd-person author bio template 80 words","recommended_price_usd":4.99,"price_rationale":"One sentence pricing strategy","comp_titles":["3 comparable bestselling books Author — Title format"],"hook_line":"One irresistible sentence for social media"}`);bump();const match=raw.match(/\{[\s\S]*\}/);if(!match)throw{code:"PARSE"};let seo;try{seo=JSON.parse(match[0]);}catch(pe){throw{code:"PARSE",msg:"AI returned malformed SEO JSON — please retry."};}upd({seo_title:seo.seo_title||"",seo_description:seo.seo_description||"",seo_keywords:(seo.primary_keywords||[]).join(", "),notes:JSON.stringify(seo)});flash("SEO generated! 🔍");}catch(e){handleErr(e);}finally{setBusy(false);}};
 
   const genAltTitles=async()=>{
     if(quotaHit||isBuilding||busy)return;setBusy(true);setError("");
@@ -2071,7 +2074,8 @@ function EditorPage({bookId,navigate,onSettings}){
       const outline=(()=>{try{return JSON.parse(book.outline||"{}");}catch{return {};}})();
       const raw=await callGemini(`You are an Amazon KDP bestseller expert. Generate 5 KILLER alternative titles for this book.\nBook: "${book.title}"\nGenre: ${book.genre}\nAudience: ${book.target_audience}\nDescription: ${outline.description||book.description}\n\nRules:\n• Each title must be unique in approach (curiosity, benefit, transformation, emotional, bold claim)\n• For fiction: evocative, genre-appropriate, memorable\n• For nonfiction: benefit-driven, searchable on Amazon\n\nRespond ONLY with valid JSON: {"alternatives":[{"title":"","subtitle":"","rationale":"why this works on KDP"}]}`);
       bump();const m=raw.match(/\{[\s\S]*\}/);if(!m)throw{code:"PARSE"};
-      const d=JSON.parse(m[0]);setAltTitles(d.alternatives||[]);
+      let d;try{d=JSON.parse(m[0]);}catch(pe){throw{code:"PARSE",msg:"AI returned malformed titles JSON — please retry."};}
+      setAltTitles(d.alternatives||[]);
       flash("5 alternative titles generated! 📝");
     }catch(e){handleErr(e);}finally{setBusy(false);}
   };
@@ -2122,7 +2126,7 @@ function EditorPage({bookId,navigate,onSettings}){
         if(c.includes("crept")||c.includes("whisper")||c.includes("shadow")||c.includes("silence"))return"TENSE — hushed, deliberate";
         return"STANDARD — follow natural prose rhythm";
       };
-      const outline=book.outline?JSON.parse(book.outline||"{}"):{};      const script=
+      const outline=(()=>{try{return JSON.parse(book.outline||"{}");}catch{return {};}})();      const script=
         "════════════════════════════════════════════════════════════\n"+
         "AUDIOBOOK NARRATION SCRIPT\n"+
         "════════════════════════════════════════════════════════════\n"+
@@ -2232,7 +2236,7 @@ function EditorPage({bookId,navigate,onSettings}){
           :<div className="bg-green-500/10 border border-green-500/30 rounded-2xl p-4 flex items-center gap-3"><span className="text-2xl">✅</span><div><p className="text-green-300 font-bold text-sm">Writing Quality Passed — {writingScore}/100 human</p></div></div>)}
           {reviewPassed&&writingPassed&&<Card><h2 className="text-white text-xl font-bold mb-2">Publish Your Book</h2><p className="text-white/40 mb-6 text-sm">Your book includes the series read-order page (if hooks were generated).</p>
             <div className="space-y-3 mb-8">
-              <BookStatsBar book={book}/>}{[{label:"Chapters written",done:book.chapters?.some(c=>c.content)},{label:"Cover generated",done:!!book.cover_image_url},{label:"SEO ready",done:!!book.seo_title},{label:"Review Agent passed (70+)",done:reviewPassed},{label:"Writing Quality passed (72+)",done:writingPassed},{label:"Market analysis done",done:!!book.competitor_analysis},{label:"Hooks & blurbs generated",done:!!book.hooks},{label:"Characters documented",done:(getCharacters(bookId)||[]).length>0}].map((item,i)=><div key={i} className={`flex items-center gap-3 px-4 py-3 rounded-lg ${item.done?"bg-green-500/10":"bg-white/5"}`}><span>{item.done?"✅":"⭕"}</span><span className={`text-sm ${item.done?"text-white":"text-white/35"}`}>{item.label}</span></div>)}
+              <BookStatsBar book={book}/>{[{label:"Chapters written",done:book.chapters?.some(c=>c.content)},{label:"Cover generated",done:!!book.cover_image_url},{label:"SEO ready",done:!!book.seo_title},{label:"Review Agent passed (70+)",done:reviewPassed},{label:"Writing Quality passed (72+)",done:writingPassed},{label:"Market analysis done",done:!!book.competitor_analysis},{label:"Hooks & blurbs generated",done:!!book.hooks},{label:"Characters documented",done:(getCharacters(bookId)||[]).length>0}].map((item,i)=><div key={i} className={`flex items-center gap-3 px-4 py-3 rounded-lg ${item.done?"bg-green-500/10":"bg-white/5"}`}><span>{item.done?"✅":"⭕"}</span><span className={`text-sm ${item.done?"text-white":"text-white/35"}`}>{item.label}</span></div>)}
             </div>
             <p className="text-white/50 text-sm font-semibold mb-3">Export Formats</p>
             <div className="grid grid-cols-2 gap-3">
@@ -2639,7 +2643,7 @@ function TranslatePanel({book,upd,quotaHit,bump,handleErr,flash}){
       const titleRaw=await callGemini(`Translate this book title and subtitle to ${targetLang}. Return ONLY JSON: {"title":"","subtitle":""}.\nTitle: ${book.title}\nSubtitle: ${book.subtitle||""}`,0.3);
       bump();
       const tm=titleRaw.match(/\{[\s\S]*\}/);
-      const titles=tm?JSON.parse(tm[0]):{title:book.title,subtitle:book.subtitle};
+      let titles={title:book.title,subtitle:book.subtitle};if(tm){try{titles=JSON.parse(tm[0]);}catch(pe){/* keep defaults */}}
       const wc=chapters.reduce((a,c)=>a+(c.content?c.content.split(/\s+/).length:0),0);
       upd({chapters,word_count:wc,title:titles.title||book.title,subtitle:titles.subtitle||book.subtitle,writing_language:targetLang});
       setDone(true);setProgress("");
