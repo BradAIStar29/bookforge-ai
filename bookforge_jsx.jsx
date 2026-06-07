@@ -520,7 +520,7 @@ function CompetitorPanel({book,onSettings}){
       trackUsage();
       const match=raw.match(/\{[\s\S]*\}/);
       if(!match)throw{code:"PARSE"};
-      const result=JSON.parse(match[0]);
+      let result;try{result=JSON.parse(match[0]);}catch(pe){throw{code:"PARSE",msg:"AI returned malformed JSON — please retry."};}
       setData(result);
       updateBook(book.id,{competitor_analysis:result});
     }catch(e){setError(errMsg(e));}
@@ -582,7 +582,7 @@ function HookPanel({book,onSettings}){
       trackUsage();
       const match=raw.match(/\{[\s\S]*\}/);
       if(!match)throw{code:"PARSE"};
-      const result=JSON.parse(match[0]);
+      let result;try{result=JSON.parse(match[0]);}catch(pe){throw{code:"PARSE",msg:"AI returned malformed JSON — please retry."};}
       setData(result);
       updateBook(book.id,{hooks:result});
     }catch(e){setError(errMsg(e));}
@@ -720,7 +720,7 @@ async function analyzeChapterHumanness(chapterText, bookTitle, genre, chapterTit
   trackUsage();
   const match = raw.match(/\{[\s\S]*\}/);
   if(!match) throw{code:"PARSE"};
-  const result = JSON.parse(match[0]);
+  let result;try{result=JSON.parse(match[0]);}catch(pe){throw{code:"PARSE",msg:"AI returned malformed JSON — please retry."};}
   // Merge local scan tells
   if(localTells.length > 0){
     result.ai_tells_found = [...new Set([...(result.ai_tells_found||[]), ...localTells.map(t=>`Pattern detected: "${t}..."`)])];
@@ -973,7 +973,7 @@ function ChapterQualityPanel({book,onSettings}){
       trackUsage();
       const match=raw.match(/\{[\s\S]*\}/);
       if(!match)throw{code:"PARSE"};
-      const result=JSON.parse(match[0]);
+      let result;try{result=JSON.parse(match[0]);}catch(pe){throw{code:"PARSE",msg:"AI returned malformed JSON — please retry."};}
       const newScores={...scores,[idx]:result};
       setScores(newScores);
       updateBook(book.id,{chapter_scores:newScores});
@@ -1157,7 +1157,7 @@ function VoiceTrainingPanel({onClose}){
       trackUsage();
       const match=raw.match(/\{[\s\S]*\}/);
       if(!match)throw{code:"PARSE"};
-      const result=JSON.parse(match[0]);
+      let result;try{result=JSON.parse(match[0]);}catch(pe){throw{code:"PARSE",msg:"AI returned malformed JSON — please retry."};}
       const vp={...result,sample:sample.slice(0,2000),analyzed_at:new Date().toISOString()};
       setVoiceProfile(vp);setProfile(vp);setSaved(true);
     }catch(e){setError(errMsg(e));}
@@ -1636,7 +1636,8 @@ function CreatePage({navigate,onSettings}){
       const raw=await callGemini(prompt);
       trackUsage();
       const match=raw.match(/\{[\s\S]*\}/);if(!match)throw{code:"PARSE"};
-      setOutline(JSON.parse(match[0]));setStep(2);
+      let _ol;try{_ol=JSON.parse(match[0]);}catch(pe){throw{code:"PARSE",msg:"AI returned malformed JSON — please retry."};}
+setOutline(_ol);setStep(2);
     }catch(e){setError(errMsg(e));}finally{setLoading(false);}
   };
 
@@ -1926,7 +1927,7 @@ function EditorPage({bookId,navigate,onSettings}){
     );
     bump();
     const match=raw.match(/\{[\s\S]*\}/);if(!match)throw{code:"PARSE"};
-    const outline=JSON.parse(match[0]);
+    let outline;try{outline=JSON.parse(match[0]);}catch(pe){throw{code:"PARSE",msg:"AI returned malformed JSON — please retry."};}
     const chapters=(outline.chapters||[]).map(c=>({...c,content:"",generated:false}));
     updateBook(bookId,{outline:JSON.stringify(outline),chapters,needs_outline:false,status:"writing"});
     return{outline,chapters};
@@ -1967,7 +1968,7 @@ function EditorPage({bookId,navigate,onSettings}){
       if(getUsage()>=DAILY_LIMIT){upd({auto_build:false,build_step:""});setIsBuilding(false);return;}
       // SEO
       log("🔍 Generating SEO…");setTab(3);
-      try{const raw=await callGemini(`You are an Amazon KDP bestseller SEO strategist. Generate complete publishing metadata.\nTitle: "${outline.title||b.title}"\nGenre: ${b.genre}\nAudience: ${b.target_audience}\nDescription: ${outline.description||''}\n\nRespond ONLY valid JSON (no markdown): {"seo_title":"","seo_description":"","primary_keywords":["k1","k2","k3","k4","k5","k6","k7"],"bisac_categories":["CAT1","CAT2"],"back_cover_copy":"","author_bio_template":""}`);bump();const match=raw.match(/\{[\s\S]*\}/);if(match){const seo=JSON.parse(match[0]);updateBook(bookId,{seo_title:seo.seo_title||"",seo_description:seo.seo_description||"",seo_keywords:(seo.primary_keywords||[]).join(", "),notes:JSON.stringify(seo)});setBook(getBook(bookId));}}catch(e){if(e?.code==="QUOTA"){setQuotaHit(true);upd({auto_build:false,build_step:""});setIsBuilding(false);return;}}
+      try{const raw=await callGemini(`You are an Amazon KDP bestseller SEO strategist. Generate complete publishing metadata.\nTitle: "${outline.title||b.title}"\nGenre: ${b.genre}\nAudience: ${b.target_audience}\nDescription: ${outline.description||''}\n\nRespond ONLY valid JSON (no markdown): {"seo_title":"","seo_description":"","primary_keywords":["k1","k2","k3","k4","k5","k6","k7"],"bisac_categories":["CAT1","CAT2"],"back_cover_copy":"","author_bio_template":""}`);bump();const match=raw.match(/\{[\s\S]*\}/);if(match){let seo;try{seo=JSON.parse(match[0]);}catch(pe){throw{code:"PARSE",msg:"AI returned malformed JSON — please retry."};}updateBook(bookId,{seo_title:seo.seo_title||"",seo_description:seo.seo_description||"",seo_keywords:(seo.primary_keywords||[]).join(", "),notes:JSON.stringify(seo)});setBook(getBook(bookId));}}catch(e){if(e?.code==="QUOTA"){setQuotaHit(true);upd({auto_build:false,build_step:""});setIsBuilding(false);return;}}
       if(getUsage()>=DAILY_LIMIT){upd({auto_build:false,build_step:""});setIsBuilding(false);return;}
       // Cover
       log("🎨 Generating cover…");setTab(2);
