@@ -1889,6 +1889,7 @@ function EditorPage({bookId,navigate,onSettings}){
   const [book,setBook]=useState(null);
   const [tab,setTab]=useState(0);
   const [busy,setBusy]=useState(false);
+  const [busyStep,setBusyStep]=useState("");
   const [altTitles,setAltTitles]=useState([]);
   const [busyCh,setBusyCh]=useState(null);
   const [error,setError]=useState("");
@@ -1901,7 +1902,7 @@ function EditorPage({bookId,navigate,onSettings}){
   const [customPrompt,setCustomPrompt]=useState("");
   const [lastAiPrompt,setLastAiPrompt]=useState("");
   const buildRef=useRef(false);
-  const TABS=["📋 Outline","✍️ Chapters","🎨 Cover","🔍 SEO","🤖 Review","🔎 Market","🪝 Hooks","📊 Quality","✍️ Writing","👥 Characters","📤 Publish","🌍 Translate","🎙️ Audio Studio"];
+  const TABS=["📋 Outline","✍️ Chapters","🎨 Cover","🔍 SEO","🤖 Review","🔎 Market","🪝 Hooks","📊 Quality","✍️ Writing","👥 Characters","📤 Publish","🌍 Translate","🎙️ Audio Studio","📦 Amazon KDP"];
 
   useEffect(()=>{
     const b=getBook(bookId);if(!b){navigate("home");return;}
@@ -2066,7 +2067,65 @@ function EditorPage({bookId,navigate,onSettings}){
     }catch(e){handleErr(e);}finally{setBusy(false);}
   };
 
-  const genSEO=async()=>{if(quotaHit||isBuilding)return;setBusy(true);setError("");try{const outline=(()=>{try{return JSON.parse(book.outline||"{}");}catch{return {};}})();const raw=await callGemini(`You are a top-tier Amazon KDP bestseller strategist with 15+ years optimizing book discoverability.\n\nBook Details:\nTitle: "${outline.title||book.title}"\nGenre: ${book.genre}\nAudience: ${book.target_audience}\nDescription: ${outline.description||''}\n\nGenerate complete publishing metadata. Respond ONLY with valid JSON (no markdown, no code blocks):\n{"seo_title":"Exact-match keyword-rich title for KDP (max 200 chars)","seo_description":"400-word Amazon description with hook, 3 bullet points using • , social proof, call to action","primary_keywords":["7 long-tail exact-match Amazon search phrases readers actually type"],"backend_keywords":"up to 7 extra search terms space-separated for Amazon backend field (no repeats from primary)","bisac_categories":["Primary BISAC category path","Secondary BISAC category path"],"back_cover_copy":"3-paragraph back cover blurb: hook sentence, escalating tension or benefit, cliffhanger or promise","author_bio_template":"Professional 3rd-person author bio template 80 words","recommended_price_usd":4.99,"price_rationale":"One sentence pricing strategy","comp_titles":["3 comparable bestselling books Author — Title format"],"hook_line":"One irresistible sentence for social media"}`);bump();const match=raw.match(/\{[\s\S]*\}/);if(!match)throw{code:"PARSE"};let seo;try{seo=JSON.parse(match[0]);}catch(pe){throw{code:"PARSE",msg:"AI returned malformed SEO JSON — please retry."};}upd({seo_title:seo.seo_title||"",seo_description:seo.seo_description||"",seo_keywords:(seo.primary_keywords||[]).join(", "),notes:JSON.stringify(seo)});flash("SEO generated! 🔍");}catch(e){handleErr(e);}finally{setBusy(false);}};
+  
+  // ══════════════════════════════════════════════════════════════════════════════
+  // 📦 AMAZON KDP PACKAGE GENERATOR
+  // ══════════════════════════════════════════════════════════════════════════════
+  const genKDPPackage=async()=>{
+    if(quotaHit||isBuilding)return;
+    setBusy(true);setBusyStep("🔍 Analyzing your book for Amazon KDP…");setError("");
+    try{
+      const outline=(()=>{try{return JSON.parse(book.outline||"{}");}catch{return {};}})();
+      const chapterSample=((book.chapters||[]).filter(c=>c.content).slice(0,2).map(c=>`Ch.${c.number} "${c.title}":\n${(c.content||"").slice(0,600)}`).join("\n\n"))||"No chapters written yet.";
+      const isAudio=book.format==="audiobook"||book.audio_url||book.audio_script;
+      const seriesCtx=book.series_name?`\nSeries: ${book.series_name} (Book ${book.series_number||1})`:""
+
+      setBusyStep("🧠 Building KDP title, keywords & BISAC categories…");
+      const raw1=await callGemini(
+        `You are a top Amazon KDP bestseller consultant. I need a COMPLETE Amazon product page package for this book.\n\nBook Title: "${outline.title||book.title}"\nSubtitle: "${outline.subtitle||book.subtitle||""}"\nGenre: ${book.genre}\nTarget Audience: ${book.target_audience}\nDescription: ${outline.description||book.description||""}\n${seriesCtx}\nHooks: ${book.hooks?JSON.stringify(JSON.parse(book.hooks)).slice(0,400):""}\nSEO keywords already found: ${book.seo_keywords||""}\n\nChapter Sample:\n${chapterSample}\n\nGenerate the COMPLETE KDP product page package. Respond ONLY with valid JSON (no markdown, no code blocks):\n{\n  "kdp_title": "Keyword-optimized book title for KDP (include 1-2 high-volume search terms naturally, max 200 chars)",\n  "kdp_subtitle": "Benefit-driven subtitle with top search keywords, max 200 chars",\n  "kdp_description_html": "Full Amazon book description in HTML (use <h2>, <b>, <p>, <ul><li> tags). Must be 3500-4000 chars. Structure: compelling 2-sentence hook → 3 bullet <li> points of what readers gain → story/content overview paragraph → who this book is for → final call to action. Use Amazon-specific formatting.",\n  "kdp_7_keywords": ["exact phrase 1","exact phrase 2","exact phrase 3","exact phrase 4","exact phrase 5","exact phrase 6","exact phrase 7"],\n  "kdp_bisac_1": "Full BISAC category path e.g. FICTION / Romance / Contemporary",\n  "kdp_bisac_2": "Second BISAC path",\n  "kdp_price_usd": 4.99,\n  "kdp_price_rationale": "One sentence pricing strategy with royalty math",\n  "kdp_author_bio": "Professional 3rd-person Amazon Author Central bio, 120-150 words, written as if the author is established",\n  "kdp_editorial_review": "A mock 4-5 star editorial review quote (for Amazon Editorial Reviews section), 60 words, from a fictional trade publication",\n  "kdp_series_info": "${book.series_name||"Standalone"}",\n  "kdp_territorial_rights": "worldwide",\n  "kdp_ai_disclosure": "This work was created with AI assistance. The author directed the creative vision, plot, characters, and content.",\n  "kdp_look_inside_hook": "The first 200-word excerpt optimized to hook readers in the Look Inside preview",\n  "kdp_a_plus_headline": "Amazon A+ Content headline (150 chars max)",\n  "kdp_a_plus_body": "Amazon A+ Content body paragraph (600 chars), emotionally engaging, uses lifestyle language",\n  "ai_search_keywords": ["8 discovery phrases optimized for AI search engines like ChatGPT, Perplexity, and Claude — conversational, question-based, or use-case phrasing e.g. best romance novel about second chances 2025"]\n}`
+      );
+      bump();
+      setBusyStep("✅ Parsing KDP metadata…");
+      const m1=raw1.match(/\{[\s\S]*\}/);
+      if(!m1)throw{code:"PARSE",msg:"KDP package JSON not found in AI response"};
+      let kdp;try{kdp=JSON.parse(m1[0]);}catch(pe){throw{code:"PARSE",msg:"AI returned malformed KDP JSON — please retry."};};
+
+      // Build optimized KDP cover prompt
+      setBusyStep("🎨 Generating KDP-optimized thumbnail prompt…");
+      const coverRaw=await callGemini(
+        `You are an Amazon KDP cover design expert. Generate a Pollinations.ai image prompt for a HIGH-CONVERTING Amazon thumbnail.\n\nBook: "${kdp.kdp_title}"\nGenre: ${book.genre}\nAudience: ${book.target_audience}\nBISAC: ${kdp.kdp_bisac_1}\nExisting cover URL: ${book.cover_image_url||"none"}\n\nAmazon thumbnail requirements:\n• Must look STUNNING at 160x250px (thumbnail size on search results)\n• Bold, high-contrast imagery that pops on white Amazon background\n• Strong focal point — single hero element or face\n• Genre visual language (romance: warm intimate tones; thriller: cold dark contrast; self-help: clean aspirational; fantasy: epic dramatic)\n• "Professional bestselling book cover" quality\n\nReturn ONLY the image prompt string — no JSON, no explanations.\nEnd with: "Amazon book cover, ultra-detailed, commercially published quality, no text no words no letters, portrait orientation 2:3 ratio"`
+      );
+      bump();
+      const coverPrompt=coverRaw.trim();
+
+      // Generate the KDP thumbnail via Pollinations
+      setBusyStep("🖼️ Rendering KDP thumbnail (optimized for Amazon search)…");
+      const seed=Math.floor(Math.random()*99999);
+      const thumbUrl=`https://image.pollinations.ai/prompt/${encodeURIComponent(coverPrompt)}?width=1400&height=2100&seed=${seed}&nologo=true&enhance=true`;
+
+      // ACX/Audiobook fields if applicable
+      let acx={};
+      if(isAudio){
+        setBusyStep("🎧 Building ACX/Audible product page…");
+        const acxRaw=await callGemini(
+          `You are an ACX (Audible Creation Exchange) publishing expert. Generate the complete Audible/ACX product page for this audiobook.\n\nBook: "${kdp.kdp_title}"\nGenre: ${book.genre}\nAudience: ${book.target_audience}\nRuntime estimate: ${Math.ceil(((book.chapters||[]).reduce((s,c)=>s+(c.content||"").split(/\s+/).length,0))/150)} minutes\n\nRespond ONLY with valid JSON:\n{"acx_title":"Audiobook title for ACX/Audible","acx_subtitle":"Audiobook subtitle","acx_description":"Audible product description 2000 chars — hook, what listeners experience, narrator style note, call to action","acx_keywords":["8 Audible search keywords"],"acx_categories":["Primary Audible category","Secondary"],"acx_narrator_direction":"2-sentence note to narrator on tone, pacing and emotion","acx_cover_prompt":"Pollinations.ai prompt for ACX square cover (3000x3000 required) — same art style as book cover but square crop"}`
+        );
+        bump();
+        const acxM=acxRaw.match(/\{[\s\S]*\}/);
+        if(acxM){try{acx=JSON.parse(acxM[0]);}catch(pe){acx={};}}
+      }
+
+      // Save everything
+      upd({
+        kdp_package:JSON.stringify({...kdp,coverPrompt,thumbUrl,...acx,generated_at:new Date().toISOString()}),
+        kdp_thumb_url:thumbUrl
+      });
+      flash("Amazon KDP package ready! 📦");
+    }catch(e){handleErr(e);}
+    finally{setBusy(false);setBusyStep("");}
+  };
+
+const genSEO=async()=>{if(quotaHit||isBuilding)return;setBusy(true);setError("");try{const outline=(()=>{try{return JSON.parse(book.outline||"{}");}catch{return {};}})();const raw=await callGemini(`You are a top-tier Amazon KDP bestseller strategist with 15+ years optimizing book discoverability.\n\nBook Details:\nTitle: "${outline.title||book.title}"\nGenre: ${book.genre}\nAudience: ${book.target_audience}\nDescription: ${outline.description||''}\n\nGenerate complete publishing metadata. Respond ONLY with valid JSON (no markdown, no code blocks):\n{"seo_title":"Exact-match keyword-rich title for KDP (max 200 chars)","seo_description":"400-word Amazon description with hook, 3 bullet points using • , social proof, call to action","primary_keywords":["7 long-tail exact-match Amazon search phrases readers actually type"],"backend_keywords":"up to 7 extra search terms space-separated for Amazon backend field (no repeats from primary)","bisac_categories":["Primary BISAC category path","Secondary BISAC category path"],"back_cover_copy":"3-paragraph back cover blurb: hook sentence, escalating tension or benefit, cliffhanger or promise","author_bio_template":"Professional 3rd-person author bio template 80 words","recommended_price_usd":4.99,"price_rationale":"One sentence pricing strategy","comp_titles":["3 comparable bestselling books Author — Title format"],"hook_line":"One irresistible sentence for social media"}`);bump();const match=raw.match(/\{[\s\S]*\}/);if(!match)throw{code:"PARSE"};let seo;try{seo=JSON.parse(match[0]);}catch(pe){throw{code:"PARSE",msg:"AI returned malformed SEO JSON — please retry."};}upd({seo_title:seo.seo_title||"",seo_description:seo.seo_description||"",seo_keywords:(seo.primary_keywords||[]).join(", "),notes:JSON.stringify(seo)});flash("SEO generated! 🔍");}catch(e){handleErr(e);}finally{setBusy(false);}};
 
   const genAltTitles=async()=>{
     if(quotaHit||isBuilding||busy)return;setBusy(true);setError("");
@@ -2266,7 +2325,372 @@ function EditorPage({bookId,navigate,onSettings}){
         </div>}
         {tab===11&&<TranslatePanel book={book} upd={upd} quotaHit={quotaHit} bump={bump} handleErr={handleErr} flash={flash}/>}
         {tab===12&&<AudioStudioPanel book={book} bookId={bookId} onSettings={onSettings} flash={flash}/>}
+      
+
+        {/* AMAZON KDP PACKAGE */}
+        {tab===13&&<KDPPackagePanel book={book} busy={busy} busyStep={busyStep} onGenerate={genKDPPackage} quotaHit={quotaHit} flash={flash} isBuilding={isBuilding}/>}
+        </div>
+    </div>
+  );
+}
+
+
+
+// ══════════════════════════════════════════════════════════════════════════════
+// 📦 AMAZON KDP PACKAGE PANEL
+// Full Amazon product page generator — books & audiobooks
+// ══════════════════════════════════════════════════════════════════════════════
+
+function KDPCopyBtn({text,label="📋 Copy"}){
+  const [copied,setCopied]=useState(false);
+  return(
+    <button onClick={()=>{navigator.clipboard.writeText(text).then(()=>{setCopied(true);setTimeout(()=>setCopied(false),2000);});}} className="text-xs text-white/30 hover:text-white/60 transition-colors px-2 py-0.5 rounded border border-white/10 hover:border-white/30">
+      {copied?"✅ Copied":label}
+    </button>
+  );
+}
+
+function KDPField({label,value,large=false,html=false,mono=false,badge=null}){
+  if(!value)return null;
+  const displayValue=Array.isArray(value)?value.join("\n"):value;
+  return(
+    <div>
+      <div className="flex items-center justify-between mb-1.5">
+        <p className="text-white/40 text-xs uppercase tracking-wider font-semibold">{label}{badge&&<span className="ml-2 text-xs bg-purple-500/20 text-purple-300 border border-purple-500/30 px-2 py-0.5 rounded-full normal-case">{badge}</span>}</p>
+        <KDPCopyBtn text={displayValue}/>
       </div>
+      {html
+        ?<div className="bg-white/10 rounded-xl p-4 text-white/80 text-sm leading-relaxed" dangerouslySetInnerHTML={{__html:value}}/>
+        :<div className={`bg-white/10 rounded-xl p-4 text-white/80 text-sm ${large?"leading-relaxed whitespace-pre-wrap":""}${mono?" font-mono":""}`}>{displayValue}</div>
+      }
+    </div>
+  );
+}
+
+function KDPBadgeList({label,items}){
+  if(!items||items.length===0)return null;
+  return(
+    <div>
+      <div className="flex items-center justify-between mb-1.5">
+        <p className="text-white/40 text-xs uppercase tracking-wider font-semibold">{label}</p>
+        <KDPCopyBtn text={items.join(", ")}/>
+      </div>
+      <div className="flex flex-wrap gap-2">
+        {items.map((item,i)=>(
+          <span key={i} className="bg-blue-500/15 text-blue-300 border border-blue-500/25 px-3 py-1 rounded-full text-xs">{item}</span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function KDPPackagePanel({book,busy,busyStep,onGenerate,quotaHit,flash,isBuilding}){
+  const [kdp,setKdp]=useState(null);
+  const [showACX,setShowACX]=useState(false);
+  const [thumbLoaded,setThumbLoaded]=useState(false);
+
+  useEffect(()=>{
+    if(book?.kdp_package){
+      try{setKdp(JSON.parse(book.kdp_package));}catch(e){setKdp(null);}
+    }
+  },[book?.kdp_package]);
+
+  const isAudio=book?.format==="audiobook"||!!(book?.audio_url)||!!(book?.audio_script);
+  const hasPackage=!!kdp;
+
+  // Character count helpers for KDP limits
+  const titleChars=(kdp?.kdp_title||"").length;
+  const subtitleChars=(kdp?.kdp_subtitle||"").length;
+  const descChars=(kdp?.kdp_description_html||"").replace(/<[^>]+>/g,"").length;
+  const keywordsValid=(kdp?.kdp_7_keywords||[]).filter(k=>k.length<=50).length;
+
+  return(
+    <div className="max-w-4xl mx-auto space-y-6">
+      {/* Header */}
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <h2 className="text-white text-2xl font-bold">📦 Amazon KDP Package</h2>
+          <p className="text-white/40 text-sm mt-1">Complete product page for Amazon KDP — books & audiobooks</p>
+        </div>
+        <button
+          onClick={onGenerate}
+          disabled={busy||quotaHit||isBuilding}
+          className="bg-gradient-to-r from-orange-500 to-amber-500 text-black px-5 py-2.5 rounded-xl font-bold hover:opacity-90 disabled:opacity-40 flex items-center gap-2 shrink-0 text-sm"
+        >
+          {busy?<><Spin size="h-4 w-4"/>{busyStep||"Generating…"}</>:(hasPackage?"🔄 Regenerate":"🚀 Generate KDP Package")}
+        </button>
+      </div>
+
+      {/* Quota warning */}
+      {quotaHit&&<div className="bg-amber-500/15 border border-amber-500/30 rounded-xl p-4 text-amber-300 text-sm">⚠️ Daily quota reached — generation paused. Resets at midnight Pacific.</div>}
+
+      {/* Empty state */}
+      {!hasPackage&&!busy&&(
+        <div className="bg-white/5 border border-white/10 rounded-2xl p-10 text-center">
+          <div className="text-6xl mb-4">📦</div>
+          <h3 className="text-white text-lg font-bold mb-2">Generate Your Amazon KDP Package</h3>
+          <p className="text-white/40 text-sm max-w-md mx-auto mb-6 leading-relaxed">
+            AI generates every field for your Amazon product page — keyword-rich title, HTML description, 7 backend keywords, BISAC categories, author bio, A+ content, editorial review, thumbnail prompt, and AI-search optimization.
+            {isAudio&&" Includes full ACX/Audible package too."}
+          </p>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs text-white/30 mb-6">
+            {[["📝","KDP Title & Subtitle"],["🏷️","7 Backend Keywords"],["📚","BISAC Categories"],["💰","Pricing Strategy"],["📖","HTML Description"],["👤","Author Bio"],["⭐","Editorial Review"],["🔍","A+ Content"],["🤖","AI Search Keywords"],["🖼️","KDP Thumbnail"],isAudio&&["🎧","ACX Package"],["🔎","Look Inside Hook"]].filter(Boolean).map(([icon,label],i)=>(
+              <div key={i} className="bg-white/5 rounded-lg p-2.5 text-center">
+                <div className="text-xl mb-1">{icon}</div>
+                <p>{label}</p>
+              </div>
+            ))}
+          </div>
+          <button onClick={onGenerate} disabled={busy||quotaHit||isBuilding} className="bg-gradient-to-r from-orange-500 to-amber-500 text-black font-bold px-8 py-3 rounded-xl hover:opacity-90 disabled:opacity-40">
+            🚀 Generate KDP Package (~3 API calls)
+          </button>
+        </div>
+      )}
+
+      {/* Loading state */}
+      {busy&&(
+        <div className="bg-white/5 border border-white/10 rounded-2xl p-8 text-center">
+          <Spin size="h-8 w-8"/>
+          <p className="text-white/60 mt-4 text-sm">{busyStep||"Generating…"}</p>
+          <p className="text-white/20 text-xs mt-2">Takes ~30 seconds — building all KDP fields</p>
+        </div>
+      )}
+
+      {/* KDP Package Results */}
+      {hasPackage&&!busy&&(
+        <div className="space-y-6">
+
+          {/* Compliance checklist */}
+          <div className="bg-white/5 border border-white/10 rounded-2xl p-5">
+            <h3 className="text-white font-bold mb-3 text-sm uppercase tracking-wider">📋 KDP Compliance Check</h3>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs">
+              {[
+                {label:"Title length",ok:titleChars>0&&titleChars<=200,val:`${titleChars}/200 chars`},
+                {label:"Subtitle length",ok:subtitleChars>0&&subtitleChars<=200,val:`${subtitleChars}/200 chars`},
+                {label:"Description length",ok:descChars>=2000&&descChars<=4000,val:`${descChars} chars`},
+                {label:"7 Keywords ≤50 chars",ok:keywordsValid===7,val:`${keywordsValid}/7 valid`},
+                {label:"BISAC Category 1",ok:!!(kdp.kdp_bisac_1),val:kdp.kdp_bisac_1?"✅ Set":"Missing"},
+                {label:"BISAC Category 2",ok:!!(kdp.kdp_bisac_2),val:kdp.kdp_bisac_2?"✅ Set":"Missing"},
+                {label:"Author Bio",ok:!!(kdp.kdp_author_bio),val:kdp.kdp_author_bio?"✅ Ready":"Missing"},
+                {label:"AI Disclosure",ok:!!(kdp.kdp_ai_disclosure),val:kdp.kdp_ai_disclosure?"✅ Ready":"Missing"},
+              ].map((item,i)=>(
+                <div key={i} className={`rounded-lg p-2.5 border ${item.ok?"bg-green-500/10 border-green-500/20":"bg-amber-500/10 border-amber-500/20"}`}>
+                  <p className={`font-semibold ${item.ok?"text-green-300":"text-amber-300"}`}>{item.ok?"✅":"⚠️"} {item.label}</p>
+                  <p className="text-white/40 mt-0.5">{item.val}</p>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Thumbnail */}
+          <div className="bg-white/5 border border-white/10 rounded-2xl p-5">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-white font-bold">🖼️ KDP Thumbnail</h3>
+              <div className="flex gap-2">
+                <span className="text-xs text-white/30 bg-white/5 px-2 py-1 rounded">1400×2100px (KDP min)</span>
+                {kdp.thumbUrl&&<a href={kdp.thumbUrl} target="_blank" rel="noopener noreferrer" className="text-xs text-white/50 hover:text-white bg-white/5 border border-white/10 px-3 py-1 rounded-lg hover:bg-white/10">⬇️ Download</a>}
+              </div>
+            </div>
+            <div className="flex gap-6 items-start">
+              {kdp.thumbUrl?(
+                <div className="shrink-0">
+                  <img
+                    src={kdp.thumbUrl}
+                    alt="KDP Thumbnail"
+                    className="w-28 rounded-xl shadow-xl shadow-purple-900/60 border border-white/10"
+                    onLoad={()=>setThumbLoaded(true)}
+                    onError={e=>{e.target.style.display="none";}}
+                  />
+                  {!thumbLoaded&&<div className="w-28 h-40 bg-white/5 rounded-xl flex items-center justify-center text-white/20 text-xs">Loading…</div>}
+                </div>
+              ):<div className="w-28 h-40 bg-white/5 border border-dashed border-white/10 rounded-xl flex items-center justify-center text-white/20 text-xs text-center p-2">No thumbnail yet</div>}
+              <div className="flex-1 space-y-3">
+                <div className="bg-blue-500/10 border border-blue-500/20 rounded-xl p-3">
+                  <p className="text-blue-300 text-xs font-semibold mb-1">📐 KDP Cover Specs</p>
+                  <ul className="text-white/40 text-xs space-y-1">
+                    <li>• Minimum: 1000×625px, ideal: 2560×1600px</li>
+                    <li>• KDP eBook: 1400×2100px portrait (2:3 ratio)</li>
+                    <li>• Print cover: calculated by KDP Cover Creator</li>
+                    <li>• Format: JPEG or TIFF, ≤50MB, RGB color</li>
+                  </ul>
+                </div>
+                <div>
+                  <p className="text-white/40 text-xs font-semibold mb-1">AI Prompt Used:</p>
+                  <p className="text-white/30 text-xs leading-relaxed italic">{(kdp.coverPrompt||"").slice(0,200)}…</p>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Core KDP Fields */}
+          <div className="bg-white/5 border border-white/10 rounded-2xl p-5 space-y-5">
+            <h3 className="text-white font-bold">📝 KDP Title & Metadata</h3>
+            <KDPField label="KDP Title" value={kdp.kdp_title} badge={`${titleChars} chars`}/>
+            <KDPField label="KDP Subtitle" value={kdp.kdp_subtitle} badge={`${subtitleChars} chars`}/>
+            <div className="grid grid-cols-2 gap-4">
+              <KDPField label="BISAC Category 1" value={kdp.kdp_bisac_1}/>
+              <KDPField label="BISAC Category 2" value={kdp.kdp_bisac_2}/>
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <KDPField label="Suggested Price" value={`$${kdp.kdp_price_usd||4.99}`}/>
+              <KDPField label="Series / Volume" value={kdp.kdp_series_info}/>
+            </div>
+            <KDPField label="Price Rationale" value={kdp.kdp_price_rationale}/>
+            <KDPField label="Territorial Rights" value={kdp.kdp_territorial_rights}/>
+            <KDPField label="AI Disclosure (KDP Required)" value={kdp.kdp_ai_disclosure}/>
+          </div>
+
+          {/* Amazon Description HTML */}
+          <div className="bg-white/5 border border-white/10 rounded-2xl p-5 space-y-4">
+            <h3 className="text-white font-bold">📖 Amazon Description (HTML)</h3>
+            <p className="text-white/30 text-xs">Paste directly into KDP's Book Description field — Amazon renders the HTML tags.</p>
+            <div>
+              <div className="flex items-center justify-between mb-2">
+                <p className="text-white/40 text-xs uppercase tracking-wider">Raw HTML (paste into KDP)</p>
+                <KDPCopyBtn text={kdp.kdp_description_html||""} label="📋 Copy HTML"/>
+              </div>
+              <textarea
+                readOnly
+                value={kdp.kdp_description_html||""}
+                className="w-full bg-white/10 border border-white/20 rounded-xl px-4 py-3 text-white/70 text-xs font-mono h-32 resize-none"
+              />
+            </div>
+            <div>
+              <p className="text-white/40 text-xs uppercase tracking-wider mb-2">Preview (how it renders)</p>
+              <div className="bg-white rounded-xl p-5 text-gray-800 text-sm leading-relaxed amazon-preview" dangerouslySetInnerHTML={{__html:kdp.kdp_description_html||""}}/>
+            </div>
+            <p className="text-white/20 text-xs">Description length: {descChars} chars (KDP allows up to 4000)</p>
+          </div>
+
+          {/* 7 Backend Keywords */}
+          <div className="bg-white/5 border border-white/10 rounded-2xl p-5 space-y-4">
+            <div className="flex items-center justify-between">
+              <h3 className="text-white font-bold">🏷️ 7 Backend Keywords</h3>
+              <KDPCopyBtn text={(kdp.kdp_7_keywords||[]).join("\n")} label="📋 Copy All"/>
+            </div>
+            <p className="text-white/30 text-xs">Paste one per line into KDP's Keywords fields. Each must be ≤50 chars. Never repeat words from your title.</p>
+            <div className="space-y-2">
+              {(kdp.kdp_7_keywords||[]).map((kw,i)=>(
+                <div key={i} className="flex items-center gap-3">
+                  <span className={`text-xs font-bold w-5 h-5 rounded-full flex items-center justify-center shrink-0 ${kw.length<=50?"bg-green-500/20 text-green-400":"bg-red-500/20 text-red-400"}`}>{i+1}</span>
+                  <div className="flex-1 bg-white/10 rounded-lg px-3 py-2 text-white/80 text-sm font-mono">{kw}</div>
+                  <span className={`text-xs ${kw.length<=50?"text-white/30":"text-red-400"}`}>{kw.length}/50</span>
+                  <KDPCopyBtn text={kw}/>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* AI Search Keywords */}
+          <div className="bg-white/5 border border-white/10 rounded-2xl p-5 space-y-4">
+            <div className="flex items-center justify-between">
+              <h3 className="text-white font-bold">🤖 AI Search Keywords</h3>
+              <KDPCopyBtn text={(kdp.ai_search_keywords||[]).join("\n")} label="📋 Copy All"/>
+            </div>
+            <p className="text-white/30 text-xs">Optimized for discovery via AI engines (ChatGPT, Perplexity, Claude). Use in your website meta tags, social bios, and Amazon Author Central.</p>
+            <KDPBadgeList label="" items={kdp.ai_search_keywords}/>
+          </div>
+
+          {/* Author Bio + Editorial Review */}
+          <div className="bg-white/5 border border-white/10 rounded-2xl p-5 space-y-5">
+            <h3 className="text-white font-bold">👤 Author & Press Content</h3>
+            <KDPField label="Amazon Author Bio (Author Central)" value={kdp.kdp_author_bio} large/>
+            <KDPField label="Editorial Review (Amazon Listing)" value={kdp.kdp_editorial_review} large/>
+          </div>
+
+          {/* A+ Content */}
+          <div className="bg-white/5 border border-white/10 rounded-2xl p-5 space-y-5">
+            <div className="flex items-start justify-between">
+              <div>
+                <h3 className="text-white font-bold">⭐ Amazon A+ Content</h3>
+                <p className="text-white/30 text-xs mt-1">Available after first sale. Add in KDP → A+ Content Manager. Boosts conversion by up to 10%.</p>
+              </div>
+            </div>
+            <KDPField label="A+ Headline" value={kdp.kdp_a_plus_headline}/>
+            <KDPField label="A+ Body Copy" value={kdp.kdp_a_plus_body} large/>
+          </div>
+
+          {/* Look Inside Hook */}
+          <div className="bg-white/5 border border-white/10 rounded-2xl p-5 space-y-4">
+            <h3 className="text-white font-bold">🔎 Look Inside Hook</h3>
+            <p className="text-white/30 text-xs">Amazon shows the first 10% of your book free. This optimized excerpt is written to hook readers in the first 200 words and drive purchase.</p>
+            <KDPField label="Opening Hook" value={kdp.kdp_look_inside_hook} large/>
+          </div>
+
+          {/* ACX / Audiobook Section */}
+          {(kdp.acx_title||isAudio)&&(
+            <div className="bg-white/5 border border-white/10 rounded-2xl overflow-hidden">
+              <button
+                onClick={()=>setShowACX(p=>!p)}
+                className="w-full flex items-center justify-between px-5 py-4 text-left hover:bg-white/5 transition-colors"
+              >
+                <div className="flex items-center gap-3">
+                  <span className="text-xl">🎧</span>
+                  <div>
+                    <h3 className="text-white font-bold">ACX / Audible Package</h3>
+                    <p className="text-white/30 text-xs">{kdp.acx_title?"Ready":"Click to expand"}</p>
+                  </div>
+                </div>
+                <span className="text-white/30">{showACX?"▲":"▼"}</span>
+              </button>
+              {showACX&&(
+                <div className="px-5 pb-5 space-y-5 border-t border-white/10 pt-5">
+                  {kdp.acx_title?(
+                    <>
+                      <KDPField label="ACX Title" value={kdp.acx_title}/>
+                      <KDPField label="ACX Subtitle" value={kdp.acx_subtitle}/>
+                      <KDPField label="ACX Description (Audible)" value={kdp.acx_description} large/>
+                      <KDPBadgeList label="ACX Keywords" items={kdp.acx_keywords}/>
+                      <div className="grid grid-cols-2 gap-4">
+                        <KDPField label="Primary Category" value={kdp.acx_categories?.[0]}/>
+                        <KDPField label="Secondary Category" value={kdp.acx_categories?.[1]}/>
+                      </div>
+                      <KDPField label="Narrator Direction" value={kdp.acx_narrator_direction} large/>
+                      <div className="bg-blue-500/10 border border-blue-500/20 rounded-xl p-4">
+                        <p className="text-blue-300 text-xs font-semibold mb-2">📐 ACX/Audible Cover Specs</p>
+                        <ul className="text-white/40 text-xs space-y-1">
+                          <li>• Required: 3000×3000px SQUARE (1:1 ratio)</li>
+                          <li>• Format: JPEG or PNG, RGB, ≤5MB</li>
+                          <li>• Must include title and author name visibly</li>
+                          <li>• No borders, no white space around edges</li>
+                        </ul>
+                      </div>
+                    </>
+                  ):(
+                    <div className="text-center py-6">
+                      <p className="text-white/40 text-sm">Re-run the KDP generator — ACX package is auto-included when an audiobook is detected.</p>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Quick guide */}
+          <div className="bg-gradient-to-br from-orange-500/10 to-amber-500/10 border border-orange-500/20 rounded-2xl p-5">
+            <h3 className="text-orange-300 font-bold mb-3">📋 KDP Upload Checklist</h3>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-xs text-white/50">
+              {[
+                "1. Download your .epub from the Publish tab",
+                "2. Paste KDP Title & Subtitle into manuscript title fields",
+                "3. Copy the HTML Description into KDP's description box",
+                "4. Enter the 7 keywords one per field",
+                "5. Select both BISAC categories",
+                "6. Upload your KDP thumbnail (download above)",
+                "7. Set your price using the strategy above",
+                "8. Add AI disclosure in the Content Disclosure section",
+                "9. After approval, add Author Bio to Author Central",
+                "10. Once live, add A+ Content for conversion boost",
+              ].map((step,i)=>(
+                <div key={i} className="flex items-start gap-2"><span className="text-orange-400/60 shrink-0">◦</span>{step}</div>
+              ))}
+            </div>
+          </div>
+
+          {/* Regenerated timestamp */}
+          {kdp.generated_at&&<p className="text-white/15 text-xs text-center">Generated {new Date(kdp.generated_at).toLocaleString()}</p>}
+        </div>
+      )}
     </div>
   );
 }
