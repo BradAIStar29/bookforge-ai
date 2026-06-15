@@ -2082,7 +2082,7 @@ function EditorPage({bookId,navigate,onSettings}){
 
       setBusyStep("🧠 Building KDP title, keywords & BISAC categories…");
       const raw1=await callGemini(
-        `You are a top Amazon KDP bestseller consultant. I need a COMPLETE Amazon product page package for this book.\n\nBook Title: "${outline.title||book.title}"\nSubtitle: "${outline.subtitle||book.subtitle||""}"\nGenre: ${book.genre}\nTarget Audience: ${book.target_audience}\nDescription: ${outline.description||book.description||""}\n${seriesCtx}\nHooks: ${book.hooks?JSON.stringify(JSON.parse(book.hooks)).slice(0,400):""}\nSEO keywords already found: ${book.seo_keywords||""}\n\nChapter Sample:\n${chapterSample}\n\nGenerate the COMPLETE KDP product page package. Respond ONLY with valid JSON (no markdown, no code blocks):\n{\n  "kdp_title": "Keyword-optimized book title for KDP (include 1-2 high-volume search terms naturally, max 200 chars)",\n  "kdp_subtitle": "Benefit-driven subtitle with top search keywords, max 200 chars",\n  "kdp_description_html": "Full Amazon book description in HTML (use <h2>, <b>, <p>, <ul><li> tags). Must be 3500-4000 chars. Structure: compelling 2-sentence hook → 3 bullet <li> points of what readers gain → story/content overview paragraph → who this book is for → final call to action. Use Amazon-specific formatting.",\n  "kdp_7_keywords": ["exact phrase 1","exact phrase 2","exact phrase 3","exact phrase 4","exact phrase 5","exact phrase 6","exact phrase 7"],\n  "kdp_bisac_1": "Full BISAC category path e.g. FICTION / Romance / Contemporary",\n  "kdp_bisac_2": "Second BISAC path",\n  "kdp_price_usd": 4.99,\n  "kdp_price_rationale": "One sentence pricing strategy with royalty math",\n  "kdp_author_bio": "Professional 3rd-person Amazon Author Central bio, 120-150 words, written as if the author is established",\n  "kdp_editorial_review": "A mock 4-5 star editorial review quote (for Amazon Editorial Reviews section), 60 words, from a fictional trade publication",\n  "kdp_series_info": "${book.series_name||"Standalone"}",\n  "kdp_territorial_rights": "worldwide",\n  "kdp_ai_disclosure": "This work was created with AI assistance. The author directed the creative vision, plot, characters, and content.",\n  "kdp_look_inside_hook": "The first 200-word excerpt optimized to hook readers in the Look Inside preview",\n  "kdp_a_plus_headline": "Amazon A+ Content headline (150 chars max)",\n  "kdp_a_plus_body": "Amazon A+ Content body paragraph (600 chars), emotionally engaging, uses lifestyle language",\n  "ai_search_keywords": ["8 discovery phrases optimized for AI search engines like ChatGPT, Perplexity, and Claude — conversational, question-based, or use-case phrasing e.g. best romance novel about second chances 2025"]\n}`
+        `You are a top Amazon KDP bestseller consultant. I need a COMPLETE Amazon product page package for this book.\n\nBook Title: "${outline.title||book.title}"\nSubtitle: "${outline.subtitle||book.subtitle||""}"\nGenre: ${book.genre}\nTarget Audience: ${book.target_audience}\nDescription: ${outline.description||book.description||""}\n${seriesCtx}\nHooks: ${book.hooks?(()=>{try{return JSON.stringify(JSON.parse(book.hooks)).slice(0,400);}catch{return "";}})():""}\nSEO keywords already found: ${book.seo_keywords||""}\n\nChapter Sample:\n${chapterSample}\n\nGenerate the COMPLETE KDP product page package. Respond ONLY with valid JSON (no markdown, no code blocks):\n{\n  "kdp_title": "Keyword-optimized book title for KDP (include 1-2 high-volume search terms naturally, max 200 chars)",\n  "kdp_subtitle": "Benefit-driven subtitle with top search keywords, max 200 chars",\n  "kdp_description_html": "Full Amazon book description in HTML (use <h2>, <b>, <p>, <ul><li> tags). Must be 3500-4000 chars. Structure: compelling 2-sentence hook → 3 bullet <li> points of what readers gain → story/content overview paragraph → who this book is for → final call to action. Use Amazon-specific formatting.",\n  "kdp_7_keywords": ["exact phrase 1","exact phrase 2","exact phrase 3","exact phrase 4","exact phrase 5","exact phrase 6","exact phrase 7"],\n  "kdp_bisac_1": "Full BISAC category path e.g. FICTION / Romance / Contemporary",\n  "kdp_bisac_2": "Second BISAC path",\n  "kdp_price_usd": 4.99,\n  "kdp_price_rationale": "One sentence pricing strategy with royalty math",\n  "kdp_author_bio": "Professional 3rd-person Amazon Author Central bio, 120-150 words, written as if the author is established",\n  "kdp_editorial_review": "A mock 4-5 star editorial review quote (for Amazon Editorial Reviews section), 60 words, from a fictional trade publication",\n  "kdp_series_info": "${book.series_name||"Standalone"}",\n  "kdp_territorial_rights": "worldwide",\n  "kdp_ai_disclosure": "This work was created with AI assistance. The author directed the creative vision, plot, characters, and content.",\n  "kdp_look_inside_hook": "The first 200-word excerpt optimized to hook readers in the Look Inside preview",\n  "kdp_a_plus_headline": "Amazon A+ Content headline (150 chars max)",\n  "kdp_a_plus_body": "Amazon A+ Content body paragraph (600 chars), emotionally engaging, uses lifestyle language",\n  "ai_search_keywords": ["8 discovery phrases optimized for AI search engines like ChatGPT, Perplexity, and Claude — conversational, question-based, or use-case phrasing e.g. best romance novel about second chances 2025"]\n}`
       );
       bump();
       setBusyStep("✅ Parsing KDP metadata…");
@@ -2863,17 +2863,22 @@ function AudioStudioPanel({book,bookId,onSettings,flash}){
   const downloadAllWav=async()=>{
     const indices=Object.keys(audioBlobs);
     if(indices.length===0){flash("Generate audio first");return;}
-    addLog("📦 Bundling all chapters into ZIP-like download…");
-    // Download each chapter individually (browser limitation — no zip without lib)
-    for(const idx of indices){
-      const ch=chapters[Number(idx)];
-      if(!ch)continue;
-      const a=document.createElement("a");
-      a.href=audioBlobs[idx];
-      a.download=`${(book.title||"book").replace(/[^a-z0-9]/gi,"_")}_ch${ch.number}_${ch.title.replace(/[^a-z0-9]/gi,"_")}.wav`;
-      a.click();await new Promise(r=>setTimeout(r,300));
+    try{
+      addLog("📦 Bundling all chapters into ZIP-like download…");
+      // Download each chapter individually (browser limitation — no zip without lib)
+      for(const idx of indices){
+        const ch=chapters[Number(idx)];
+        if(!ch)continue;
+        const a=document.createElement("a");
+        a.href=audioBlobs[idx];
+        a.download=`${(book.title||"book").replace(/[^a-z0-9]/gi,"_")}_ch${ch.number}_${ch.title.replace(/[^a-z0-9]/gi,"_")}.wav`;
+        a.click();await new Promise(r=>setTimeout(r,300));
+      }
+      flash("Downloaded "+indices.length+" chapter WAVs 🎧");
+    }catch(e){
+      addLog("❌ Download error: "+(e?.message||String(e)));
+      flash("Download failed — check console");
     }
-    flash("Downloaded "+indices.length+" chapter WAVs 🎧");
   };
 
   const playChapter=(idx)=>{
