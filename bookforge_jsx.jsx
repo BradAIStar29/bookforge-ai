@@ -27,6 +27,35 @@ const trackUsage=()=>{const today=new Date().toISOString().split("T")[0];const d
 // ── Languages ─────────────────────────────────────────────────────────────────
 const LANGUAGES=["English","Spanish","French","German","Italian","Portuguese","Dutch","Russian","Japanese","Korean","Chinese (Simplified)","Arabic","Hindi","Turkish","Polish","Swedish","Norwegian","Danish","Finnish","Greek","Hebrew","Indonesian","Malay","Thai","Vietnamese","Ukrainian","Czech","Hungarian","Romanian","Bulgarian","Croatian","Slovak"];
 
+// ── Gemini API ────────────────────────────────────────────────────────────────
+async function callGemini(prompt){
+  if(getUsage()>=DAILY_LIMIT)throw{code:"QUOTA"};
+  const key=getKey();
+  if(!key)throw{code:"NO_KEY"};
+  const res=await fetch(`${GEMINI_URL}?key=${key}`,{method:"POST",headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({contents:[{parts:[{text:prompt}]}],generationConfig:{temperature:0.85,maxOutputTokens:8192}})});
+  const data=await res.json();
+  if(!res.ok){
+    if(res.status===401||res.status===403)throw{code:"BAD_KEY"};
+    if(res.status===429||data?.error?.status==="RESOURCE_EXHAUSTED")throw{code:"QUOTA"};
+    throw{code:"ERROR",msg:data?.error?.message||`HTTP ${res.status}`};
+  }
+  const text=data?.candidates?.[0]?.content?.parts?.[0]?.text;
+  if(!text){if(data?.candidates?.[0]?.finishReason==="SAFETY")throw{code:"SAFETY"};throw{code:"EMPTY"};}
+  return text;
+}
+
+const errMsg=e=>{
+  const c=e?.code||"ERROR";
+  if(c==="NO_KEY"||c==="BAD_KEY")return"🔑 API key missing or invalid — check Settings.";
+  if(c==="QUOTA")return"⏳ Daily Gemini limit reached. Resets at midnight Pacific Time. Progress saved!";
+  if(c==="SAFETY")return"Content blocked by safety filter. Try rephrasing.";
+  if(c==="PARSE")return(e?.msg||"AI returned unexpected format — please retry.");
+  if(c==="EMPTY")return"AI returned empty response — please retry.";
+  return e?.msg||e?.message||"Something went wrong. Please try again.";
+};
+
+
 // ── Voice Profile ─────────────────────────────────────────────────────────────
 const getVoiceProfile=()=>ls.get("bfai_voice",null);
 const setVoiceProfile=v=>ls.set("bfai_voice",v);
