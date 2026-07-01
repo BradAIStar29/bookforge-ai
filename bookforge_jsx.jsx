@@ -33,6 +33,27 @@ const LANGUAGES=["English","Spanish","French","German","Italian","Portuguese","D
 const RETRY_DELAYS_MS=[2000,5000]; // backoff for transient failures
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 
+function playRetryChime(){
+  try{
+    const Ctx=window.AudioContext||window.webkitAudioContext;
+    if(!Ctx)return;
+    const ctx=new Ctx();
+    const o=ctx.createOscillator();const g=ctx.createGain();
+    o.type="sine";o.frequency.value=660;
+    g.gain.setValueAtTime(0.0001,ctx.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.09,ctx.currentTime+0.015);
+    g.gain.exponentialRampToValueAtTime(0.0001,ctx.currentTime+0.28);
+    o.connect(g);g.connect(ctx.destination);
+    o.start();o.stop(ctx.currentTime+0.3);
+    setTimeout(()=>{try{ctx.close();}catch(e){}},400);
+  }catch(e){/* audio not available — silent no-op */}
+}
+
+function notifyRetry(attempt,totalAttempts,reason){
+  try{window.dispatchEvent(new CustomEvent("bfai:retry",{detail:{attempt,totalAttempts,reason}}));}catch(e){}
+  playRetryChime();
+}
+
 async function callGemini(prompt,temperature=0.85,opts={}){
   if(getUsage()>=DAILY_LIMIT)throw{code:"QUOTA"};
   const key=getKey();
@@ -53,6 +74,7 @@ async function callGemini(prompt,temperature=0.85,opts={}){
         if(res.status===429||data?.error?.status==="RESOURCE_EXHAUSTED")throw{code:"QUOTA"};
         if(res.status>=500&&attempt<maxRetries){
           lastTransient={code:"ERROR",msg:data?.error?.message||`HTTP ${res.status}`};
+          notifyRetry(attempt+2,maxRetries+1,"server");
           await sleep(RETRY_DELAYS_MS[attempt]||5000);
           continue;
         }
@@ -71,6 +93,7 @@ async function callGemini(prompt,temperature=0.85,opts={}){
       const isNetwork=err instanceof TypeError;
       if((isAbort||isNetwork)&&attempt<maxRetries){
         lastTransient=isAbort?{code:"TIMEOUT",msg:"Request timed out — retrying…"}:{code:"NETWORK",msg:"Network error — retrying…"};
+        notifyRetry(attempt+2,maxRetries+1,isAbort?"timeout":"network");
         await sleep(RETRY_DELAYS_MS[attempt]||5000);
         continue;
       }
@@ -3369,16 +3392,33 @@ function App(){
   const [bookId,setBookId]=useState(savedNav?.bookId||null);
   const [showSettings,setShowSettings]=useState(false);
   const [homeTab,setHomeTab]=useState("library");
+  const [retryToasts,setRetryToasts]=useState([]);
   useEffect(()=>{
     // Hide loading screen once React has mounted
     const el=document.getElementById("loading");
     if(el){el.classList.add("hidden");setTimeout(()=>{el.style.display="none";},500);}
+  },[]);
+  useEffect(()=>{
+    const onRetry=e=>{
+      const{attempt,totalAttempts,reason}=e.detail||{};
+      const label=reason==="timeout"?"⏱️ Timed out":reason==="network"?"📡 Network hiccup":"⚠️ Server hiccup";
+      const id=Date.now()+Math.random();
+      setRetryToasts(prev=>[...prev,{id,msg:`${label} — auto-retrying (${attempt}/${totalAttempts})…`}]);
+      setTimeout(()=>setRetryToasts(prev=>prev.filter(t=>t.id!==id)),4000);
+    };
+    window.addEventListener("bfai:retry",onRetry);
+    return()=>window.removeEventListener("bfai:retry",onRetry);
   },[]);
   const navigate=(p,id=null)=>{setPage(p);if(id)setBookId(id);setNavState({page:p,bookId:id||bookId});window.scrollTo(0,0);};
   const currentBook=bookId?getBook(bookId):null;
   const isHome=page==="home";const isEditor=page==="editor";const isCreate=page==="create";
   return(
     <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900">
+      <div className="fixed top-4 right-4 z-[9999] flex flex-col gap-2 pointer-events-none">
+        {retryToasts.map(t=>(
+          <div key={t.id} className="bg-cyan-500/95 text-white text-xs font-semibold px-4 py-2.5 rounded-lg shadow-lg backdrop-blur-sm animate-pulse">{t.msg}</div>
+        ))}
+      </div>
       {showSettings&&<SettingsModal onClose={()=>setShowSettings(false)}/>}
       <Header
         onBack={!isHome?()=>navigate("home"):null}
