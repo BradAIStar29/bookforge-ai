@@ -21,6 +21,8 @@ const getSeries=()=>ls.get("bfai_series",[]);
 const setSeries=s=>ls.set("bfai_series",s);
 const getQueue=()=>ls.get("bfai_queue",[]);
 const setQueue=q=>ls.set("bfai_queue",q);
+const getNavState=()=>ls.get("bfai_nav",null);
+const setNavState=n=>ls.set("bfai_nav",n);
 const updateBook=(id,upd)=>{const books=getBooks();const i=books.findIndex(b=>b.id===id);if(i===-1)return null;books[i]={...books[i],...upd};setBooks(books);return books[i];};
 const getUsage=()=>{const today=new Date().toISOString().split("T")[0];const d=ls.get("bfai_usage",{});return d.date===today?(d.count||0):0;};
 const trackUsage=()=>{const today=new Date().toISOString().split("T")[0];const d=ls.get("bfai_usage",{});const c=(d.date===today?d.count:0)+1;ls.set("bfai_usage",{date:today,count:c});return c;};
@@ -28,21 +30,56 @@ const trackUsage=()=>{const today=new Date().toISOString().split("T")[0];const d
 const LANGUAGES=["English","Spanish","French","German","Italian","Portuguese","Dutch","Russian","Japanese","Korean","Chinese (Simplified)","Arabic","Hindi","Turkish","Polish","Swedish","Norwegian","Danish","Finnish","Greek","Hebrew","Indonesian","Malay","Thai","Vietnamese","Ukrainian","Czech","Hungarian","Romanian","Bulgarian","Croatian","Slovak"];
 
 // ── Gemini API ────────────────────────────────────────────────────────────────
-async function callGemini(prompt){
+const RETRY_DELAYS_MS=[2000,5000]; // backoff for transient failures
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+
+async function callGemini(prompt,temperature=0.85,opts={}){
   if(getUsage()>=DAILY_LIMIT)throw{code:"QUOTA"};
   const key=getKey();
   if(!key)throw{code:"NO_KEY"};
-  const res=await fetch(`${GEMINI_URL}?key=${key}`,{method:"POST",headers:{"Content-Type":"application/json"},
-    body:JSON.stringify({contents:[{parts:[{text:prompt}]}],generationConfig:{temperature:0.85,maxOutputTokens:8192}})});
-  const data=await res.json();
-  if(!res.ok){
-    if(res.status===401||res.status===403)throw{code:"BAD_KEY"};
-    if(res.status===429||data?.error?.status==="RESOURCE_EXHAUSTED")throw{code:"QUOTA"};
-    throw{code:"ERROR",msg:data?.error?.message||`HTTP ${res.status}`};
+  const maxRetries=opts.maxRetries??2;
+  const timeoutMs=opts.timeoutMs??90000; // 90s ceiling — long chapters take time, then fail fast
+  let lastTransient=null;
+  for(let attempt=0;attempt<=maxRetries;attempt++){
+    const controller=new AbortController();
+    const timer=setTimeout(()=>controller.abort(),timeoutMs);
+    try{
+      const res=await fetch(`${GEMINI_URL}?key=${key}`,{method:"POST",headers:{"Content-Type":"application/json"},signal:controller.signal,
+        body:JSON.stringify({contents:[{parts:[{text:prompt}]}],generationConfig:{temperature,maxOutputTokens:8192}})});
+      clearTimeout(timer);
+      const data=await res.json().catch(()=>({}));
+      if(!res.ok){
+        if(res.status===401||res.status===403)throw{code:"BAD_KEY"};
+        if(res.status===429||data?.error?.status==="RESOURCE_EXHAUSTED")throw{code:"QUOTA"};
+        if(res.status>=500&&attempt<maxRetries){
+          lastTransient={code:"ERROR",msg:data?.error?.message||`HTTP ${res.status}`};
+          await sleep(RETRY_DELAYS_MS[attempt]||5000);
+          continue;
+        }
+        throw{code:"ERROR",msg:data?.error?.message||`HTTP ${res.status}`};
+      }
+      const text=data?.candidates?.[0]?.content?.parts?.[0]?.text;
+      if(!text){
+        if(data?.candidates?.[0]?.finishReason==="SAFETY")throw{code:"SAFETY"};
+        throw{code:"EMPTY"};
+      }
+      return text;
+    }catch(err){
+      clearTimeout(timer);
+      if(err?.code)throw err; // our own explicit throws (BAD_KEY/QUOTA/SAFETY/EMPTY/ERROR) — no retry
+      const isAbort=err?.name==="AbortError";
+      const isNetwork=err instanceof TypeError;
+      if((isAbort||isNetwork)&&attempt<maxRetries){
+        lastTransient=isAbort?{code:"TIMEOUT",msg:"Request timed out — retrying…"}:{code:"NETWORK",msg:"Network error — retrying…"};
+        await sleep(RETRY_DELAYS_MS[attempt]||5000);
+        continue;
+      }
+      if(isAbort)throw{code:"TIMEOUT",msg:`Request timed out after ${timeoutMs/1000}s. Click Retry to try again — nothing is lost.`};
+      if(isNetwork)throw{code:"NETWORK",msg:"Network error — check your connection and click Retry."};
+      throw err;
+    }
   }
-  const text=data?.candidates?.[0]?.content?.parts?.[0]?.text;
-  if(!text){if(data?.candidates?.[0]?.finishReason==="SAFETY")throw{code:"SAFETY"};throw{code:"EMPTY"};}
-  return text;
+  throw lastTransient||{code:"ERROR",msg:"Failed after retries."};
 }
 
 const errMsg=e=>{
@@ -52,6 +89,8 @@ const errMsg=e=>{
   if(c==="SAFETY")return"Content blocked by safety filter. Try rephrasing.";
   if(c==="PARSE")return(e?.msg||"AI returned unexpected format — please retry.");
   if(c==="EMPTY")return"AI returned empty response — please retry.";
+  if(c==="TIMEOUT")return(e?.msg||"⏱️ Request timed out — nothing is lost, click Retry to continue.");
+  if(c==="NETWORK")return(e?.msg||"📡 Network error — check your connection and click Retry.");
   return e?.msg||e?.message||"Something went wrong. Please try again.";
 };
 
@@ -1586,6 +1625,20 @@ function HomePage({navigate,onSettings}){
   return(
     <div className="max-w-7xl mx-auto px-4 sm:px-6 py-8">
       {!getKey()&&<div className="bg-amber-500/15 border border-amber-500/40 rounded-xl p-4 mb-6 flex items-center gap-3"><span className="text-2xl">🔑</span><div className="flex-1"><p className="text-amber-300 font-semibold text-sm">Gemini API key not set</p><p className="text-amber-200/50 text-xs">Required to generate books. Free from Google AI Studio.</p></div><button onClick={onSettings} className="bg-amber-500 text-black text-xs font-bold px-4 py-2 rounded-lg hover:bg-amber-400">Set Key</button></div>}
+      {(()=>{
+        const stalled=allBooks.filter(b=>!["published","ready"].includes(b.status)&&(b.needs_outline||(b.chapters?.length>0&&b.chapters.some(c=>!c.generated))));
+        if(stalled.length===0)return null;
+        return(
+          <div className="bg-cyan-500/10 border border-cyan-500/30 rounded-xl p-4 mb-6">
+            <p className="text-cyan-200 text-sm font-semibold mb-2">⏸️ {stalled.length} book{stalled.length!==1?"s":""} paused mid-build — nothing is lost, pick up where you left off:</p>
+            <div className="flex flex-wrap gap-2">
+              {stalled.map(b=>(
+                <button key={b.id} onClick={()=>{updateBook(b.id,{auto_build:true});navigate("editor",b.id);}} className="bg-cyan-500/20 border border-cyan-500/40 text-cyan-300 text-xs font-bold px-3 py-2 rounded-lg hover:bg-cyan-500/30">▶ Resume "{b.title}"</button>
+              ))}
+            </div>
+          </div>
+        );
+      })()}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-8">
         {(()=>{
           const totalWords=allBooks.reduce((a,b)=>a+(b.word_count||0),0);
@@ -1977,6 +2030,7 @@ function EditorPage({bookId,navigate,onSettings}){
       const total=chapters.length;
       for(let i=0;i<total;i++){
         if(!buildRef.current)break;if(getUsage()>=DAILY_LIMIT){setQuotaHit(true);break;}
+        if(chapters[i].generated){continue;} // resume-safe: skip chapters already written
         log(`✍️ Writing chapter ${i+1}/${total}: "${chapters[i].title}"…`);setTab(1);setSelCh(i);
         try{
           const prev=chapters.slice(0,i).filter(c=>c.generated).map(c=>c.title).join(", ")||"None";
@@ -2280,8 +2334,14 @@ const genSEO=async()=>{if(quotaHit||isBuilding)return;setBusy(true);setError("")
       <div className="max-w-7xl mx-auto px-4 sm:px-6 py-6">
         {isBuilding&&<div className="bg-purple-500/15 border border-purple-500/40 rounded-xl p-5 mb-5"><div className="flex items-center gap-3 mb-3"><Spin/><p className="text-purple-300 font-semibold">Auto-building your book…</p></div><div className="h-1.5 bg-white/10 rounded-full overflow-hidden mb-3"><div className="h-full bg-gradient-to-r from-purple-500 to-pink-500 rounded-full pulse-a" style={{width:`${Math.min(((book.chapters||[]).filter(c=>c.generated).length/Math.max((book.chapters||[{a:1}]).length,1))*70+5,95)}%`}}/></div><div className="space-y-1 max-h-24 overflow-y-auto">{buildLog.slice(-5).map((l,i)=><p key={i} className="text-purple-200/50 text-xs">{l}</p>)}</div></div>}
         {quotaHit&&<div className="bg-amber-500/20 border border-amber-500/40 rounded-xl p-4 mb-5 flex gap-3 items-start"><span className="text-2xl">⏳</span><div className="flex-1"><p className="text-amber-300 font-semibold">Daily Gemini Limit Reached</p><p className="text-amber-200/60 text-sm mt-0.5">Resets at midnight Pacific Time. All progress saved!</p></div><button onClick={()=>{setQuotaHit(false);setError("");}} className="text-amber-400/40 hover:text-amber-300">✕</button></div>}
-        {error&&!quotaHit&&<div className="bg-red-500/20 border border-red-500/30 text-red-300 rounded-xl p-4 mb-5 text-sm flex justify-between"><span>{error}</span><button onClick={()=>setError("")} className="ml-4 shrink-0">✕</button></div>}
+        {error&&!quotaHit&&<div className="bg-red-500/20 border border-red-500/30 text-red-300 rounded-xl p-4 mb-5 text-sm flex items-center justify-between gap-3"><span className="flex-1">{error}</span><div className="flex items-center gap-2 shrink-0">{(book?.chapters?.length>0||book?.needs_outline)&&!isBuilding&&<button onClick={()=>{setError("");upd({auto_build:true});runAutoBuild(getBook(bookId));}} className="bg-cyan-500/20 border border-cyan-500/40 text-cyan-300 text-xs font-bold px-3 py-1.5 rounded-lg hover:bg-cyan-500/30">🔄 Retry</button>}<button onClick={()=>setError("")} className="text-red-300/60 hover:text-red-300">✕</button></div></div>}
         {success&&<div className="bg-green-500/20 border border-green-500/30 text-green-300 rounded-xl p-4 mb-5 text-sm">{success}</div>}
+        {!isBuilding&&!quotaHit&&book&&(book.needs_outline||(book.chapters?.length>0&&book.chapters.some(c=>!c.generated)))&&(
+          <div className="bg-cyan-500/10 border border-cyan-500/30 rounded-xl p-4 mb-5 text-sm flex items-center justify-between gap-3">
+            <span className="text-cyan-200">⏸️ This book's build stopped partway — {book.needs_outline?"outline not generated yet":`${book.chapters.filter(c=>c.generated).length}/${book.chapters.length} chapters done`}. Nothing is lost.</span>
+            <button onClick={()=>{setError("");upd({auto_build:true});runAutoBuild(getBook(bookId));}} className="bg-cyan-500 text-white text-xs font-bold px-4 py-2 rounded-lg hover:bg-cyan-400 shrink-0">▶ Resume Build</button>
+          </div>
+        )}
 
         {/* OUTLINE */}
         {tab===0&&<div className="max-w-3xl mx-auto"><Card>{book.series_name&&<div className="mb-3"><SeriesBibleInline bookId={bookId}/></div>}<h2 className="text-white text-xl font-bold">{book.title}</h2>{book.subtitle&&<p className="text-purple-300 mt-1 mb-4 text-sm">{book.subtitle}</p>}<p className="text-white/60 text-sm leading-relaxed mb-6">{book.description}</p>{book.chapters?.length>0&&<><p className="text-white/40 text-xs uppercase tracking-wider mb-3">Chapters ({book.chapters.length})</p><div className="space-y-2">{book.chapters.map((ch,i)=><div key={i} className={`rounded-xl p-3 border flex gap-3 items-start ${ch.generated?"bg-green-500/10 border-green-500/20":"bg-white/5 border-white/10"}`}><span className={`font-bold text-sm min-w-[24px] ${ch.generated?"text-green-400":"text-purple-400"}`}>{ch.generated?"✓":ch.number+"."}</span><div className="flex-1"><p className="text-white text-sm font-medium">{ch.title}</p><p className="text-white/35 text-xs mt-0.5">{ch.description}</p>{ch.content&&<div className="flex items-center gap-3 mt-1.5"><span className="text-green-400/70 text-xs">{ch.content.split(/\s+/).length.toLocaleString()} words</span><span className="text-white/20 text-xs">~{Math.ceil(ch.content.split(/\s+/).length/200)} min read</span></div>}{ch.opening_hook&&!ch.content&&<p className="text-purple-300/50 text-xs mt-1 italic">Hook: {ch.opening_hook.slice(0,80)}…</p>}</div>{ch.generated?<span className="text-green-400/50 text-xs shrink-0">✅ Done</span>:<span className="text-white/20 text-xs shrink-0">Pending</span>}</div>)}</div><div className="mt-5 bg-white/5 rounded-xl p-4"><div className="flex justify-between text-xs text-white/40 mb-2"><span>Progress</span><span>{book.chapters.filter(c=>c.generated).length}/{book.chapters.length} chapters</span></div><div className="h-2 bg-white/10 rounded-full overflow-hidden"><div className="h-full bg-gradient-to-r from-purple-500 to-pink-500 rounded-full" style={{width:`${(book.chapters.filter(c=>c.generated).length/book.chapters.length)*100}%`}}/></div></div></>}{(!book.chapters||book.chapters.length===0)&&isBuilding&&<div className="text-center py-8 text-white/30"><Spin/><p className="mt-3 text-sm">Generating outline…</p></div>}</Card></div>}
@@ -3304,8 +3364,9 @@ const saveMangaProject=p=>{const all=getMangaProjects();const i=all.findIndex(x=
 const deleteMangaProject=id=>setMangaProjects(getMangaProjects().filter(p=>p.id!==id));
 
 function App(){
-  const [page,setPage]=useState("home");
-  const [bookId,setBookId]=useState(null);
+  const savedNav=getNavState();
+  const [page,setPage]=useState(savedNav?.page||"home");
+  const [bookId,setBookId]=useState(savedNav?.bookId||null);
   const [showSettings,setShowSettings]=useState(false);
   const [homeTab,setHomeTab]=useState("library");
   useEffect(()=>{
@@ -3313,7 +3374,7 @@ function App(){
     const el=document.getElementById("loading");
     if(el){el.classList.add("hidden");setTimeout(()=>{el.style.display="none";},500);}
   },[]);
-  const navigate=(p,id=null)=>{setPage(p);if(id)setBookId(id);window.scrollTo(0,0);};
+  const navigate=(p,id=null)=>{setPage(p);if(id)setBookId(id);setNavState({page:p,bookId:id||bookId});window.scrollTo(0,0);};
   const currentBook=bookId?getBook(bookId):null;
   const isHome=page==="home";const isEditor=page==="editor";const isCreate=page==="create";
   return(
