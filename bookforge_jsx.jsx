@@ -984,13 +984,50 @@ async function runManuscriptHumanCheck(book){
   try{return JSON.parse(match[0]);}catch(pe){throw{code:"PARSE",msg:"AI returned malformed JSON — please retry."};}
 }
 
-function WritingQualityPanel({book,onSettings}){
+function WritingQualityPanel({book,onSettings,onApply}){
   const [chScores, setChScores] = useState(book.writing_quality||{});
   const [manuscript, setManuscript] = useState(book.manuscript_quality||null);
   const [loadingCh, setLoadingCh] = useState(null);
   const [loadingMs, setLoadingMs] = useState(false);
+  const [improving, setImproving] = useState(false);
+  const [wqFlash, setWqFlash] = useState("");
   const [error, setError] = useState("");
   const [activeTab, setActiveTab] = useState("manuscript");
+
+  function flashWQ(msg){setWqFlash(msg);setTimeout(()=>setWqFlash(""),5000);}
+
+  // Count available rewrite improvements across all scored chapters
+  const hasRewrites = Object.values(chScores).some(s=>s.rewrite_examples?.length>0);
+  const totalRewrites = Object.values(chScores).reduce((a,s)=>a+(s.rewrite_examples?.length||0),0);
+
+  // Apply all rewrite_examples across all scored chapters, then re-run manuscript check
+  const improveWriting = async()=>{
+    if(!hasRewrites||improving)return;
+    if(!getKey()){onSettings();return;}
+    setImproving(true);setError("");
+    const oldScore=manuscript?.overall_human_score||avgHuman||0;
+    try{
+      const chapters=(book.chapters||[]).map((ch,idx)=>{
+        const s=chScores[idx];
+        if(!s?.rewrite_examples?.length||!ch.content)return ch;
+        let content=ch.content;
+        for(const ex of s.rewrite_examples){
+          if(ex.original&&ex.rewrite&&content.includes(ex.original)){
+            content=content.replace(ex.original,ex.rewrite);
+          }
+        }
+        return {...ch,content};
+      });
+      const updatedBook=onApply?.({chapters})||{...book,chapters};
+      // Re-run manuscript check against the improved text
+      const result=await runManuscriptHumanCheck(updatedBook);
+      setManuscript(result);
+      updateBook(book.id,{manuscript_quality:result,chapters});
+      const delta=result.overall_human_score-oldScore;
+      flashWQ(delta>=0?`Improved! Score: ${oldScore} → ${result.overall_human_score} (+${delta}) 🚀`:`Re-scored: ${oldScore} → ${result.overall_human_score}`);
+    }catch(e){setError(errMsg(e));}
+    finally{setImproving(false);}
+  };
 
   const scoreChapter = async(idx) => {
     if(!getKey()){onSettings();return;}
@@ -1084,6 +1121,11 @@ function WritingQualityPanel({book,onSettings}){
           </button>
           {writtenCount===0&&<p className="text-white/25 text-sm text-center">Write at least one chapter first.</p>}
           {manuscript&&(<>
+            {wqFlash&&<div className="bg-purple-500/15 border border-purple-500/40 text-purple-200 rounded-xl p-3 text-sm text-center font-medium">{wqFlash}</div>}
+            {hasRewrites&&<button onClick={improveWriting} disabled={improving||loadingMs} className="w-full bg-gradient-to-r from-amber-500 to-orange-500 text-white py-4 rounded-xl font-bold text-lg hover:opacity-90 disabled:opacity-50 flex items-center justify-center gap-2 shadow-lg shadow-amber-900/30">
+              {improving?<><Spin/>Applying {totalRewrites} rewrites & re-scoring…</>:"🚀 Improve My Writing — Apply All Rewrites"}
+            </button>}
+            {!hasRewrites&&manuscript?.manuscript_verdict!=="PASS"&&<p className="text-white/30 text-xs text-center bg-white/5 rounded-xl p-3">💡 Run Chapter-by-Chapter analysis to get specific rewrite suggestions you can auto-apply here.</p>}
             {/* Dimension breakdown */}
             <Card>
               <h3 className="text-white font-semibold mb-4">Manuscript Assessment</h3>
@@ -2519,7 +2561,7 @@ const genSEO=async()=>{if(quotaHit||isBuilding)return;setBusy(true);setError("")
         {tab===7&&<div className="max-w-3xl mx-auto"><ChapterQualityPanel book={book} onSettings={onSettings}/></div>}
 
         {/* WRITING QUALITY */}
-        {tab===8&&<WritingQualityPanel book={book} onSettings={onSettings}/>}
+        {tab===8&&<WritingQualityPanel book={book} onSettings={onSettings} onApply={(updates)=>{const b=upd(updates);return b;}}/>}
 
         {/* PUBLISH */}
         {tab===9&&<CharactersPanel book={book} onSettings={onSettings}/>}
