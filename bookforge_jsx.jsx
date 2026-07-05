@@ -2286,6 +2286,90 @@ function EditorPage({bookId,navigate,onSettings}){
           log(wq.manuscript_verdict==="PASS"?`✅ Writing quality: ${wq.overall_human_score}/100 — reads human!`:`⚠️ Writing quality: ${wq.overall_human_score}/100 — AI patterns detected`);
         }catch(e){if(e?.code==="QUOTA"){setQuotaHit(true);}}
       }
+      // ── AUTO-CORRECTION ROUND ──────────────────────────────────────
+      // If either quality gate failed, attempt one automatic improvement round
+      let curBook=getBook(bookId);
+      let rvPassed=curBook?.review?.verdict==="PASS";
+      let wqPassed=curBook?.manuscript_quality?.manuscript_verdict==="PASS";
+
+      if((!rvPassed||!wqPassed)&&getUsage()<DAILY_LIMIT-3){
+        log("🔧 Auto-correcting — applying AI suggestions to improve scores…");
+
+        // ── Fix Review Agent if it failed ──
+        if(!rvPassed&&curBook?.review&&getUsage()<DAILY_LIMIT-2){
+          try{
+            const rv=curBook.review;
+            const fixes={};
+            if(rv.title_suggestions?.[0]){
+              const parts=rv.title_suggestions[0].split(":");
+              fixes.title=parts[0].trim();
+              const sub=parts.slice(1).join(":").trim();
+              if(sub)fixes.subtitle=sub;
+            }
+            if(rv.subtitle_suggestion)fixes.subtitle=rv.subtitle_suggestion;
+            if(rv.keyword_suggestions?.length)fixes.seo_keywords=rv.keyword_suggestions.join(", ");
+            if(rv.seo_rewrite)fixes.seo_description=rv.seo_rewrite;
+            if(Object.keys(fixes).length>0){
+              log("  📖 Applying Review Agent suggestions…");
+              const updated=updateBook(bookId,fixes);setBook(getBook(bookId));
+              const reReview=await runReviewAgent(updated);
+              updateBook(bookId,{review:reReview});setBook(getBook(bookId));
+              rvPassed=reReview.verdict==="PASS";
+              log(rvPassed?`  ✅ Review improved to ${reReview.overall_score}/100 — PASS!`:`  📊 Review improved to ${reReview.overall_score}/100 (still below 70)`);
+            }
+          }catch(e){if(e?.code==="QUOTA"){setQuotaHit(true);}log("  ⚠️ Review auto-fix failed — see Review tab");}
+        }
+
+        // ── Fix Writing Quality if it failed ──
+        if(!wqPassed&&getUsage()<DAILY_LIMIT-2){
+          try{
+            log("  ✍️ Analyzing chapters for rewrite suggestions…");setTab(8);
+            const chaps=curBook.chapters||[];
+            const wqScores={};
+            // Analyze up to 5 chapters to collect rewrite examples
+            const sampleIdxs=[];
+            const writtenIdxs=chaps.map((c,i)=>c.content?i:-1).filter(i=>i>=0);
+            if(writtenIdxs.length<=5){sampleIdxs.push(...writtenIdxs);}
+            else{sampleIdxs.push(writtenIdxs[0],writtenIdxs[Math.floor(writtenIdxs.length*0.25)],writtenIdxs[Math.floor(writtenIdxs.length*0.5)],writtenIdxs[Math.floor(writtenIdxs.length*0.75)],writtenIdxs[writtenIdxs.length-1]);}
+            for(const idx of sampleIdxs){
+              if(getUsage()>=DAILY_LIMIT)break;
+              try{
+                const res=await analyzeChapterHumanness(chaps[idx].content,curBook.title,curBook.genre,chaps[idx].title);
+                wqScores[idx]=res;
+              }catch(e){if(e?.code==="QUOTA"){setQuotaHit(true);break;}}
+            }
+            // Apply all rewrite examples across analyzed chapters
+            let rewritesApplied=0;
+            const fixedChapters=chaps.map((ch,idx)=>{
+              const s=wqScores[idx];
+              if(!s?.rewrite_examples?.length||!ch.content)return ch;
+              let content=ch.content;
+              for(const ex of s.rewrite_examples){
+                if(ex.original&&ex.rewrite&&content.includes(ex.original)){
+                  content=content.replace(ex.original,ex.rewrite);
+                  rewritesApplied++;
+                }
+              }
+              return {...ch,content};
+            });
+            if(rewritesApplied>0){
+              log(`  ✍️ Applied ${rewritesApplied} rewrite fixes across manuscript…`);
+              updateBook(bookId,{chapters:fixedChapters,writing_quality:wqScores});setBook(getBook(bookId));
+              // Re-run manuscript check
+              const reWQ=await runManuscriptHumanCheck(getBook(bookId));
+              updateBook(bookId,{manuscript_quality:reWQ});setBook(getBook(bookId));
+              wqPassed=reWQ.manuscript_verdict==="PASS";
+              log(wqPassed?`  ✅ Writing quality improved to ${reWQ.overall_human_score}/100 — PASS!`:`  📊 Writing quality improved to ${reWQ.overall_human_score}/100 (still below 78)`);
+            }else{
+              log("  ℹ️ No specific rewrites found — see Writing Quality tab for manual fixes");
+            }
+          }catch(e){if(e?.code==="QUOTA"){setQuotaHit(true);}log("  ⚠️ Writing quality auto-fix failed — see Writing Quality tab");}
+        }
+
+        log("🔧 Auto-correction complete.");
+      }
+
+      // ── FINAL STATUS ──────────────────────────────────────────────
       const finalBook=getBook(bookId);
       const passed=finalBook?.review?.verdict==="PASS";
       const wPassed=finalBook?.manuscript_quality?.manuscript_verdict==="PASS";
