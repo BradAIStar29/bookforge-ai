@@ -622,6 +622,7 @@ async function runReviewAgent(book){
 function ReviewPanel({book,onApply,onSettings}){
   const [review,setReview]=useState(book.review||null);
   const [loading,setLoading]=useState(false);
+  const [improving,setImproving]=useState(false);
   const [error,setError]=useState("");
   const [applied,setApplied]=useState({});
   const run=async()=>{if(!getKey()){onSettings();return;}setLoading(true);setError("");try{const r=await runReviewAgent(book);setReview(r);updateBook(book.id,{review:r});}catch(e){setError(errMsg(e));}finally{setLoading(false);}};
@@ -629,6 +630,35 @@ function ReviewPanel({book,onApply,onSettings}){
   const applyKeywords=kws=>{onApply({seo_keywords:kws.join(", ")});setApplied(a=>({...a,kws:true}));};
   const applySEO=d=>{onApply({seo_description:d});setApplied(a=>({...a,seo:true}));};
   const applySubtitle=s=>{onApply({subtitle:s});setApplied(a=>({...a,sub:true}));};
+  const hasImprovements=!!(review&&(review.title_suggestions?.length||review.subtitle_suggestion||review.keyword_suggestions?.length||review.seo_rewrite));
+  const improveBook=async()=>{
+    if(!review||!hasImprovements||improving)return;
+    if(!getKey()){onSettings();return;}
+    setImproving(true);setError("");
+    const oldScore=review.overall_score;
+    try{
+      const updates={};
+      if(review.title_suggestions?.[0]){
+        const parts=review.title_suggestions[0].split(":");
+        updates.title=parts[0].trim();
+        const subFromTitle=parts.slice(1).join(":").trim();
+        if(subFromTitle)updates.subtitle=subFromTitle;
+      }
+      if(review.subtitle_suggestion)updates.subtitle=review.subtitle_suggestion;
+      if(review.keyword_suggestions?.length)updates.seo_keywords=review.keyword_suggestions.join(", ");
+      if(review.seo_rewrite)updates.seo_description=review.seo_rewrite;
+      const updatedBook=onApply(updates)||{...book,...updates};
+      setApplied({title:!!updates.title,sub:!!updates.subtitle,kws:!!updates.seo_keywords,seo:!!updates.seo_description});
+      const r=await runReviewAgent(updatedBook);
+      setReview(r);
+      updateBook(book.id,{review:r});
+      const delta=r.overall_score-oldScore;
+      flash_review(delta>=0?`Improved! Score: ${oldScore} → ${r.overall_score} (+${delta}) 🚀`:`Re-scored: ${oldScore} → ${r.overall_score}`);
+    }catch(e){setError(errMsg(e));}
+    finally{setImproving(false);}
+  };
+  const [reviewFlash,setReviewFlash]=useState("");
+  function flash_review(msg){setReviewFlash(msg);setTimeout(()=>setReviewFlash(""),5000);}
   return(
     <div className="max-w-3xl mx-auto space-y-5">
       <Card>
@@ -647,6 +677,10 @@ function ReviewPanel({book,onApply,onSettings}){
             <div><p className={`font-bold text-lg ${review.verdict==="PASS"?"text-green-300":"text-red-300"}`}>{review.verdict==="PASS"?"Approved for Publishing":"Not Ready — Action Required"}</p>
               <p className="text-white/50 text-sm">{review.verdict_reason}</p></div></div>
         </div>
+        {reviewFlash&&<div className="bg-purple-500/15 border border-purple-500/40 text-purple-200 rounded-xl p-3 text-sm text-center font-medium">{reviewFlash}</div>}
+        {hasImprovements&&<button onClick={improveBook} disabled={improving} className="w-full bg-gradient-to-r from-amber-500 to-orange-500 text-white py-4 rounded-xl font-bold text-lg hover:opacity-90 disabled:opacity-50 flex items-center justify-center gap-2 shadow-lg shadow-amber-900/30">
+          {improving?<><Spin/>Improving & re-scoring…</>:"🚀 Improve My Odds — Apply All Suggestions"}
+        </button>}
         <Card>
           <h3 className="text-white font-semibold mb-4">Score Breakdown</h3>
           {[["📖 Title","title_score"],["🔑 Keywords","keyword_score"],["🔍 SEO Description","seo_score"],["⭐ Differentiation","differentiation_score"]].map(([label,key])=>(
@@ -2473,7 +2507,7 @@ const genSEO=async()=>{if(quotaHit||isBuilding)return;setBusy(true);setError("")
         {tab===3&&<div className="max-w-3xl mx-auto"><Card><div className="flex items-center justify-between mb-6"><div><h2 className="text-white text-xl font-bold">SEO Optimization</h2><p className="text-white/40 text-sm mt-1">Amazon KDP & publishing metadata</p></div>{!isBuilding&&<button onClick={genSEO} disabled={busy||quotaHit||isBuilding} className="bg-gradient-to-r from-purple-500 to-pink-500 text-white px-5 py-2.5 rounded-xl font-semibold hover:opacity-90 disabled:opacity-50 flex items-center gap-2">{busy?<><Spin size="h-4 w-4"/>Generating…</>:"🔍 Generate SEO"}</button>}</div><div className="space-y-5">{[{label:"SEO Title",val:book.seo_title},{label:"SEO Description",val:book.seo_description,large:true},{label:"Keywords",val:book.seo_keywords}].map(f=><div key={f.label}><div className="flex items-center justify-between mb-2"><p className="text-white/40 text-xs uppercase tracking-wider">{f.label}</p>{f.val&&<button onClick={()=>{navigator.clipboard.writeText(f.val);flash("Copied! 📋");}} className="text-xs text-white/30 hover:text-white/60 transition-colors">📋 Copy</button>}</div>{f.val?<div className={`bg-white/10 rounded-xl p-4 text-white/80 text-sm ${f.large?"leading-relaxed":""}`}>{f.val}</div>:<div className="bg-white/5 border border-dashed border-white/10 rounded-xl p-4 text-white/20 text-sm italic">{isBuilding?"Generating…":"Auto-populated during build"}</div>}</div>)}{book.notes&&(()=>{try{const n=JSON.parse(book.notes);return(<div className="space-y-5">{n.back_cover_copy&&<div><p className="text-white/40 text-xs uppercase tracking-wider mb-2">Back Cover Copy</p><div className="bg-white/10 rounded-xl p-4 text-white/80 text-sm leading-relaxed">{n.back_cover_copy}</div></div>}{n.bisac_categories?.length>0&&<div><p className="text-white/40 text-xs uppercase tracking-wider mb-2">BISAC Categories (KDP)</p><div className="flex flex-wrap gap-2">{n.bisac_categories.map((c,i)=><span key={i} className="bg-blue-500/20 text-blue-300 border border-blue-500/30 px-3 py-1 rounded-full text-xs">{c}</span>)}</div></div>}{n.backend_keywords&&<div><div className="flex items-center justify-between mb-2"><p className="text-white/40 text-xs uppercase tracking-wider">Amazon Backend Keywords</p><button onClick={()=>{navigator.clipboard.writeText(n.backend_keywords);flash("Copied! 📋");}} className="text-xs text-white/30 hover:text-white/60">📋 Copy</button></div><div className="bg-white/10 rounded-xl p-4 text-white/80 text-sm font-mono">{n.backend_keywords}</div><p className="text-white/20 text-xs mt-1">Paste into KDP "Keywords" field 8 — these are invisible to readers but boost search rank.</p></div>}{n.comp_titles?.length>0&&<div><p className="text-white/40 text-xs uppercase tracking-wider mb-2">Comparable Titles (Comps)</p><div className="bg-white/10 rounded-xl p-4 space-y-1">{n.comp_titles.map((t,i)=><p key={i} className="text-white/70 text-sm">📚 {t}</p>)}</div><p className="text-white/20 text-xs mt-1">Use comps in your KDP description and marketing: "Fans of [Comp] will love this."</p></div>}{n.recommended_price_usd&&<div className="bg-green-500/10 border border-green-500/20 rounded-xl p-4"><div className="flex items-center justify-between"><div><p className="text-white/40 text-xs uppercase tracking-wider mb-1">Recommended Price</p><p className="text-green-300 text-2xl font-bold">${n.recommended_price_usd}</p><p className="text-white/40 text-xs mt-1">{n.price_rationale}</p></div><div className="text-right text-xs text-white/30"><p>Royalty @ 70%</p><p className="text-green-400 font-bold text-base">${(n.recommended_price_usd*0.70-0.15).toFixed(2)}/sale</p><p className="text-white/20">KDP direct (US)</p></div></div></div>}{n.hook_line&&<div><p className="text-white/40 text-xs uppercase tracking-wider mb-2">Marketing Hook Line</p><div className="bg-amber-500/10 border border-amber-500/20 rounded-xl p-4"><p className="text-amber-200 text-sm italic">"{n.hook_line}"</p></div><p className="text-white/20 text-xs mt-1">Use this in social media posts, email subject lines, and Amazon ads.</p></div>}</div>);}catch{return null;}})()}{/* Title A/B Testing */}<div className="mt-6 pt-6 border-t border-white/10"><div className="flex items-center justify-between mb-4"><div><h3 className="text-white font-bold text-sm">Title A/B Testing</h3><p className="text-white/35 text-xs mt-0.5">Generate alternative titles to find your bestseller hook</p></div><button onClick={genAltTitles} disabled={busy||quotaHit||isBuilding} className="text-xs bg-purple-500/20 text-purple-300 border border-purple-500/30 px-3 py-1.5 rounded-lg hover:bg-purple-500/30 disabled:opacity-40 flex items-center gap-1">{busy?<><Spin size="h-3 w-3"/>Generating…</>:"📝 Generate 5 Titles"}</button></div>{altTitles.length>0&&<div className="space-y-3">{altTitles.map((t,i)=><div key={i} className="bg-white/5 border border-white/10 rounded-xl p-4"><div className="flex items-start justify-between gap-3"><div className="flex-1"><p className="text-white font-semibold text-sm">{t.title}</p>{t.subtitle&&<p className="text-white/50 text-xs mt-0.5 italic">{t.subtitle}</p>}<p className="text-white/30 text-xs mt-2">💡 {t.rationale}</p></div><button onClick={()=>upd({title:t.title,subtitle:t.subtitle||book.subtitle})} className="text-xs bg-green-500/20 text-green-300 border border-green-500/30 px-2 py-1 rounded-lg hover:bg-green-500/30 shrink-0">Use This</button></div></div>)}</div>}</div></div></Card></div>}
 
         {/* REVIEW */}
-        {tab===4&&<ReviewPanel book={book} onSettings={onSettings} onApply={(updates)=>{upd(updates);flash("Applied! Re-run review to update score.");}}/>}
+        {tab===4&&<ReviewPanel book={book} onSettings={onSettings} onApply={(updates)=>{const b=upd(updates);flash("Applied! Re-run review to update score.");return b;}}/>}
 
         {/* MARKET */}
         {tab===5&&<div className="max-w-3xl mx-auto"><CompetitorPanel book={book} onSettings={onSettings}/></div>}
