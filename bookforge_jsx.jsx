@@ -216,6 +216,8 @@ const getVoiceProfile=()=>ls.get("bfai_voice",null);
 const setVoiceProfile=v=>ls.set("bfai_voice",v);
 const getAuthorProfile=()=>ls.get("bfai_author",{name:"",bio:"",website:"",photo_url:""});
 const setAuthorProfile=p=>ls.set("bfai_author",p);
+const getAutoCorrect=()=>ls.get("bfai_autocorrect",true);
+const setAutoCorrect=v=>ls.set("bfai_autocorrect",v);
 const getCharacters=bookId=>ls.get("bfai_chars_"+bookId,[]);
 const setCharacters=(bookId,chars)=>ls.set("bfai_chars_"+bookId,chars);
 
@@ -504,9 +506,11 @@ function SettingsModal({onClose}){
   const [sTab,setSTab]=useState("api"); // api | voice | author
   const [author,setAuthor]=useState(getAuthorProfile());
   const [authorSaved,setAuthorSaved]=useState(false);
+  const [autoCorrect,setAutoCorrect]=useState(getAutoCorrect());
 
   const save=()=>{if(!draft.trim())return;setKey(draft);setSaved(true);setTimeout(()=>setSaved(false),2000);};
   const saveAuthor=()=>{setAuthorProfile(author);setAuthorSaved(true);setTimeout(()=>setAuthorSaved(false),2000);};
+  const setAutoCorrectSetting=v=>{setAutoCorrect(v);};
 
   return(
     <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center p-4">
@@ -518,7 +522,7 @@ function SettingsModal({onClose}){
         {/* Settings tabs */}
         <div className="px-6 pt-4">
           <div className="bg-white/5 border border-white/10 rounded-xl p-1 flex gap-1 mb-5">
-            {[["api","🔑 API Key"],["voice","🎙️ Voice"],["author","👤 Author"]].map(([id,label])=>(
+            {[["api","🔑 API Key"],["voice","🎙️ Voice"],["author","👤 Author"],["build","🔧 Build"]].map(([id,label])=>(
               <button key={id} onClick={()=>setSTab(id)} className={`flex-1 py-2 rounded-lg text-xs font-medium transition-all ${sTab===id?"bg-purple-500 text-white":"text-white/40 hover:text-white"}`}>{label}</button>
             ))}
           </div>
@@ -541,6 +545,31 @@ function SettingsModal({onClose}){
               <div><label className="text-white/60 text-sm font-medium block mb-2">Bio</label><textarea rows={4} value={author.bio||""} onChange={e=>setAuthor({...author,bio:e.target.value})} placeholder="Your author bio — 100-200 words works best" className="w-full bg-white/10 border border-white/20 rounded-xl px-4 py-3 text-white placeholder-white/20 focus:outline-none focus:border-purple-500 resize-none text-sm"/></div>
               <div><label className="text-white/60 text-sm font-medium block mb-2">Website / Newsletter Link</label><input value={author.website||""} onChange={e=>setAuthor({...author,website:e.target.value})} placeholder="https://yourwebsite.com" className="w-full bg-white/10 border border-white/20 rounded-xl px-4 py-3 text-white placeholder-white/20 focus:outline-none focus:border-purple-500 text-sm"/></div>
               <button onClick={saveAuthor} className={`w-full py-3 rounded-xl font-semibold transition-all ${authorSaved?"bg-green-500 text-white":"bg-gradient-to-r from-purple-500 to-pink-500 text-white hover:opacity-90"}`}>{authorSaved?"✅ Saved!":"Save Author Profile"}</button>
+            </div>
+          )}
+          {sTab==="build"&&(
+            <div className="space-y-5">
+              <div><h3 className="text-white font-bold text-lg mb-1">🔧 Build Settings</h3><p className="text-white/40 text-sm">Control how auto-build handles quality gates.</p></div>
+              <div className="bg-white/5 border border-white/10 rounded-xl p-4">
+                <div className="flex items-center justify-between gap-4">
+                  <div>
+                    <p className="text-white font-medium text-sm">Auto-Correct on Gate Failure</p>
+                    <p className="text-white/40 text-xs mt-1">When a quality gate fails at the end of auto-build, automatically apply AI suggestions and re-score. Disable if you prefer to review suggestions manually before applying.</p>
+                  </div>
+                  <button onClick={()=>{const v=!autoCorrect;setAutoCorrect(v);setAutoCorrectSetting(v);}} className={`relative shrink-0 w-12 h-6 rounded-full transition-colors ${autoCorrect?"bg-green-500":"bg-white/20"}`}>
+                    <span className={`absolute top-0.5 w-5 h-5 bg-white rounded-full transition-transform ${autoCorrect?"translate-x-6":"translate-x-0.5"}`}/>
+                  </button>
+                </div>
+              </div>
+              <div className="bg-white/5 border border-white/10 rounded-xl p-4">
+                <p className="text-white/50 text-xs">When enabled, auto-build will:</p>
+                <ul className="text-white/40 text-xs mt-2 space-y-1.5">
+                  <li className="flex gap-2"><span className="text-purple-400">📖</span>Apply Review Agent title, subtitle, keyword & SEO suggestions if review score &lt; 70</li>
+                  <li className="flex gap-2"><span className="text-purple-400">✍️</span>Analyze chapters for AI-tell rewrites and apply them if writing quality score &lt; 78</li>
+                  <li className="flex gap-2"><span className="text-purple-400">🔄</span>Re-run both quality checks and report the improved scores</li>
+                </ul>
+                <p className="text-white/30 text-xs mt-3 italic">Each step is quota-guarded — won't run if you're low on daily API requests.</p>
+              </div>
             </div>
           )}
         </div>
@@ -2292,7 +2321,7 @@ function EditorPage({bookId,navigate,onSettings}){
       let rvPassed=curBook?.review?.verdict==="PASS";
       let wqPassed=curBook?.manuscript_quality?.manuscript_verdict==="PASS";
 
-      if((!rvPassed||!wqPassed)&&getUsage()<DAILY_LIMIT-3){
+      if((!rvPassed||!wqPassed)&&getUsage()<DAILY_LIMIT-3&&getAutoCorrect()){
         log("🔧 Auto-correcting — applying AI suggestions to improve scores…");
 
         // ── Fix Review Agent if it failed ──
