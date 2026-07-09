@@ -1848,7 +1848,7 @@ function HomePage({navigate,onSettings}){
     <div className="max-w-7xl mx-auto px-4 sm:px-6 py-8">
       {!getKey()&&<div className="bg-amber-500/15 border border-amber-500/40 rounded-xl p-4 mb-6 flex items-center gap-3"><span className="text-2xl">🔑</span><div className="flex-1"><p className="text-amber-300 font-semibold text-sm">Gemini API key not set</p><p className="text-amber-200/50 text-xs">Required to generate books. Free from Google AI Studio.</p></div><button onClick={onSettings} className="bg-amber-500 text-black text-xs font-bold px-4 py-2 rounded-lg hover:bg-amber-400">Set Key</button></div>}
       {(()=>{
-        const stalled=allBooks.filter(b=>!["published","ready"].includes(b.status)&&(b.needs_outline||(b.chapters?.length>0&&b.chapters.some(c=>!c.generated))));
+        const stalled=allBooks.filter(b=>!b.build_complete&&!["published","ready"].includes(b.status)&&(b.needs_outline||(b.chapters?.length>0&&b.chapters.some(c=>!c.generated))));
         if(stalled.length===0)return null;
         return(
           <div className="bg-cyan-500/10 border border-cyan-500/30 rounded-xl p-4 mb-6">
@@ -2245,6 +2245,12 @@ function EditorPage({bookId,navigate,onSettings}){
 
   const runAutoBuild=async(b)=>{
     if(getUsage()>=DAILY_LIMIT){setQuotaHit(true);upd({auto_build:false});return;}
+    // Guard: if build is already fully complete and all chapters are written, don't re-run
+    const allChaptersDone=(b.chapters||[]).length>0&&(b.chapters||[]).every(c=>c.generated);
+    if(b.build_complete&&allChaptersDone){
+      log("✅ Build already complete — nothing to do. Use ↺ Re-run in the banner to reset.");
+      upd({auto_build:false});setIsBuilding(false);return;
+    }
     setIsBuilding(true);setTab(0);
     try{
       let chapters=b.chapters||[];let outline=b.outline?JSON.parse(b.outline):{};
@@ -2278,40 +2284,48 @@ function EditorPage({bookId,navigate,onSettings}){
       }
       if(getUsage()>=DAILY_LIMIT){upd({auto_build:false,build_step:""});setIsBuilding(false);return;}
       // SEO
+      if(!getBook(bookId)?.seo_done){
       log("🔍 Generating SEO…");setTab(3);
-      try{const raw=await callGemini(`You are an Amazon KDP bestseller SEO strategist. Generate complete publishing metadata.\nTitle: "${outline.title||b.title}"\nGenre: ${b.genre}\nAudience: ${b.target_audience}\nDescription: ${outline.description||''}\n\nRespond ONLY valid JSON (no markdown): {"seo_title":"","seo_description":"","primary_keywords":["k1","k2","k3","k4","k5","k6","k7"],"bisac_categories":["CAT1","CAT2"],"back_cover_copy":"","author_bio_template":""}`);bump();const match=raw.match(/\{[\s\S]*\}/);if(match){let seo;try{seo=JSON.parse(match[0]);}catch(pe){throw{code:"PARSE",msg:"AI returned malformed JSON — please retry."};}updateBook(bookId,{seo_title:seo.seo_title||"",seo_description:seo.seo_description||"",seo_keywords:(seo.primary_keywords||[]).join(", "),notes:JSON.stringify(seo)});setBook(getBook(bookId));}}catch(e){if(e?.code==="QUOTA"){setQuotaHit(true);upd({auto_build:false,build_step:""});setIsBuilding(false);return;}}
+      try{const raw=await callGemini(`You are an Amazon KDP bestseller SEO strategist. Generate complete publishing metadata.\nTitle: "${outline.title||b.title}"\nGenre: ${b.genre}\nAudience: ${b.target_audience}\nDescription: ${outline.description||''}\n\nRespond ONLY valid JSON (no markdown): {"seo_title":"","seo_description":"","primary_keywords":["k1","k2","k3","k4","k5","k6","k7"],"bisac_categories":["CAT1","CAT2"],"back_cover_copy":"","author_bio_template":""}`);bump();const match=raw.match(/\{[\s\S]*\}/);if(match){let seo;try{seo=JSON.parse(match[0]);}catch(pe){throw{code:"PARSE",msg:"AI returned malformed JSON — please retry."};}updateBook(bookId,{seo_title:seo.seo_title||"",seo_description:seo.seo_description||"",seo_keywords:(seo.primary_keywords||[]).join(", "),notes:JSON.stringify(seo),seo_done:true});setBook(getBook(bookId));}}catch(e){if(e?.code==="QUOTA"){setQuotaHit(true);upd({auto_build:false,build_step:""});setIsBuilding(false);return;}}} // end seo_done if
       if(getUsage()>=DAILY_LIMIT){upd({auto_build:false,build_step:""});setIsBuilding(false);return;}
       // Cover
+      if(!getBook(bookId)?.cover_done){
       log("🎨 Generating cover…");setTab(2);
-      try{const aiPrompt=await callGemini(`Detailed image generation prompt for professional book cover.\nBook: "${outline.title}"\nGenre: ${b.genre}\nDesc: ${outline.description}\n\n- Describe specific characters (gender, age, look, ethnicity)\n- For gay/LGBT+ romance: two male characters, emotional interaction\n- Setting, mood, lighting, palette, art style\n- NO text or words\n- Commercial quality\nReturn ONLY the prompt.`);bump();const finalPrompt=aiPrompt.trim()+". No text, no words, no letters.";setLastAiPrompt(finalPrompt);const artUrl=`https://image.pollinations.ai/prompt/${encodeURIComponent(finalPrompt)}?width=832&height=1216&model=flux&nologo=true&enhance=true&seed=${Date.now()}`;const finalUrl=await finalizeCoverImage(artUrl,outline.title||b.title,getAuthorProfile().name,b.subtitle);updateBook(bookId,{cover_art_url:artUrl,cover_image_url:finalUrl});setBook(getBook(bookId));}catch(e){if(e?.code==="QUOTA"){setQuotaHit(true);upd({auto_build:false,build_step:""});setIsBuilding(false);return;}}
+      try{const aiPrompt=await callGemini(`Detailed image generation prompt for professional book cover.\nBook: "${outline.title}"\nGenre: ${b.genre}\nDesc: ${outline.description}\n\n- Describe specific characters (gender, age, look, ethnicity)\n- For gay/LGBT+ romance: two male characters, emotional interaction\n- Setting, mood, lighting, palette, art style\n- NO text or words\n- Commercial quality\nReturn ONLY the prompt.`);bump();const finalPrompt=aiPrompt.trim()+". No text, no words, no letters.";setLastAiPrompt(finalPrompt);const artUrl=`https://image.pollinations.ai/prompt/${encodeURIComponent(finalPrompt)}?width=832&height=1216&model=flux&nologo=true&enhance=true&seed=${Date.now()}`;const finalUrl=await finalizeCoverImage(artUrl,outline.title||b.title,getAuthorProfile().name,b.subtitle);updateBook(bookId,{cover_art_url:artUrl,cover_image_url:finalUrl,cover_done:true});setBook(getBook(bookId));}catch(e){if(e?.code==="QUOTA"){setQuotaHit(true);upd({auto_build:false,build_step:""});setIsBuilding(false);return;}}} // end cover_done if
       if(getUsage()>=DAILY_LIMIT){upd({auto_build:false,build_step:""});setIsBuilding(false);return;}
       // Review
+      if(!getBook(bookId)?.review_done){
       log("🤖 Running Review Agent…");setTab(4);
-      try{const freshBook=getBook(bookId);const review=await runReviewAgent(freshBook);updateBook(bookId,{review,status:review.verdict==="PASS"?"ready":"writing"});setBook(getBook(bookId));log(review.verdict==="PASS"?`✅ Review passed! ${review.overall_score}/100`:`⚠️ Review: ${review.overall_score}/100 — see Review tab`);}catch(e){if(e?.code==="QUOTA"){setQuotaHit(true);}}
+      try{const freshBook=getBook(bookId);const review=await runReviewAgent(freshBook);updateBook(bookId,{review,status:review.verdict==="PASS"?"ready":"writing",review_done:true});setBook(getBook(bookId));log(review.verdict==="PASS"?`✅ Review passed! ${review.overall_score}/100`:`⚠️ Review: ${review.overall_score}/100 — see Review tab`);}catch(e){if(e?.code==="QUOTA"){setQuotaHit(true);}}
+      } // end review_done if
       if(getUsage()>=DAILY_LIMIT){upd({auto_build:false,build_step:""});setIsBuilding(false);return;}
       // Competitor analysis
+      if(!getBook(bookId)?.competitor_done){
       log("🔎 Running competitor analysis…");setTab(5);
       try{
         const freshBook=getBook(bookId);
         const raw=await callGemini(`Amazon KDP market research expert. Analyze competitive landscape.\nTitle: ${freshBook.title}\nGenre: ${freshBook.genre}\nAudience: ${freshBook.target_audience}\nDesc: ${freshBook.description}\n\nRespond ONLY JSON: {"market_summary":"","positioning_statement":"","market_gaps":[""],"reader_pain_points":[""],"pricing_recommendation":{"launch_price":"","rationale":""},"ku_recommendation":{"enroll_in_ku":true,"rationale":""},"categories":{"primary":"","secondary":"","why":""},"launch_strategy":[""]}`,0.4);
-        bump();const match=raw.match(/\{[\s\S]*\}/);if(match){try{updateBook(bookId,{competitor_analysis:JSON.parse(match[0])});setBook(getBook(bookId));}catch(pe){throw{code:"PARSE",msg:"AI returned malformed competitor analysis JSON — please retry."};} }
+        bump();const match=raw.match(/\{[\s\S]*\}/);if(match){try{updateBook(bookId,{competitor_analysis:JSON.parse(match[0]),competitor_done:true});setBook(getBook(bookId));}catch(pe){throw{code:"PARSE",msg:"AI returned malformed competitor analysis JSON — please retry."};} }
       }catch(e){if(e?.code==="QUOTA"){setQuotaHit(true);}}
+      } // end competitor_done if
       if(getUsage()>=DAILY_LIMIT){upd({auto_build:false,build_step:""});setIsBuilding(false);return;}
       // Hooks
+      if(!getBook(bookId)?.hooks_done){
       log("🪝 Generating hooks…");setTab(6);
       try{
         const freshBook=getBook(bookId);const freshOutline=JSON.parse(freshBook.outline||"{}");
         const raw=await callGemini(`Bestselling author and book marketer. Generate high-converting hooks.\nTitle: ${freshBook.title}\nGenre: ${freshBook.genre}\nAudience: ${freshBook.target_audience}\nDesc: ${freshOutline.description||freshBook.description}\n\nRespond ONLY JSON: {"opening_lines":[""],"back_cover_blurbs":[""],"tagline":"","social_media_hooks":[""],"email_subject_lines":[""],"series_read_order_page":"","amazon_a_plus_headline":""}`,0.9);
-        bump();const match=raw.match(/\{[\s\S]*\}/);if(match){try{updateBook(bookId,{hooks:JSON.parse(match[0]),auto_build:false,build_step:""});setBook(getBook(bookId));}catch(pe){throw{code:"PARSE",msg:"AI returned malformed hooks JSON — please retry."};} }
+        bump();const match=raw.match(/\{[\s\S]*\}/);if(match){try{updateBook(bookId,{hooks:JSON.parse(match[0]),auto_build:false,build_step:"",hooks_done:true});setBook(getBook(bookId));}catch(pe){throw{code:"PARSE",msg:"AI returned malformed hooks JSON — please retry."};} }
       }catch(e){if(e?.code==="QUOTA"){setQuotaHit(true);}}
+      } // end hooks_done if
 
-      if(getUsage()<DAILY_LIMIT){
+      if(getUsage()<DAILY_LIMIT&&!getBook(bookId)?.wq_done){
         // Writing Quality manuscript check
         log("✍️ Running Writing Quality check…");
         try{
           const freshBook=getBook(bookId);
           const wq=await runManuscriptHumanCheck(freshBook);
-          updateBook(bookId,{manuscript_quality:wq});setBook(getBook(bookId));
+          updateBook(bookId,{manuscript_quality:wq,wq_done:true});setBook(getBook(bookId));
           log(wq.manuscript_verdict==="PASS"?`✅ Writing quality: ${wq.overall_human_score}/100 — reads human!`:`⚠️ Writing quality: ${wq.overall_human_score}/100 — AI patterns detected`);
         }catch(e){if(e?.code==="QUOTA"){setQuotaHit(true);}}
       }
@@ -2403,7 +2417,7 @@ function EditorPage({bookId,navigate,onSettings}){
       const passed=finalBook?.review?.verdict==="PASS";
       const wPassed=finalBook?.manuscript_quality?.manuscript_verdict==="PASS";
       flash(passed&&wPassed?"🎉 Both quality checks passed — ready to publish!":!passed?"📋 Review tab has improvements needed.":"✍️ Writing Quality tab has suggestions to humanize your manuscript.");
-      upd({auto_build:false,build_step:"",status:passed&&wPassed?"ready":"writing"});
+      upd({auto_build:false,build_step:"",status:passed&&wPassed?"ready":"writing",build_complete:passed&&wPassed,build_complete_date:new Date().toISOString()});
       setTab(passed&&wPassed?10:!passed?4:8);
     }catch(e){handleErr(e);upd({auto_build:false,build_step:""});}
     finally{setIsBuilding(false);buildRef.current=false;}
@@ -2638,14 +2652,44 @@ const genSEO=async()=>{if(quotaHit||isBuilding)return;setBusy(true);setError("")
         </div>
       </div>
       <div className="max-w-7xl mx-auto px-4 sm:px-6 py-6">
-        {isBuilding&&<div className="bg-purple-500/15 border border-purple-500/40 rounded-xl p-5 mb-5"><div className="flex items-center gap-3 mb-3"><Spin/><p className="text-purple-300 font-semibold">Auto-building your book…</p></div><div className="h-1.5 bg-white/10 rounded-full overflow-hidden mb-3"><div className="h-full bg-gradient-to-r from-purple-500 to-pink-500 rounded-full pulse-a" style={{width:`${Math.min(((book.chapters||[]).filter(c=>c.generated).length/Math.max((book.chapters||[{a:1}]).length,1))*70+5,95)}%`}}/></div><div className="space-y-1 max-h-24 overflow-y-auto">{buildLog.slice(-5).map((l,i)=><p key={i} className="text-purple-200/50 text-xs">{l}</p>)}</div></div>}
+        {isBuilding&&<div className="bg-purple-500/15 border border-purple-500/40 rounded-xl p-5 mb-5">
+          <div className="flex items-center gap-3 mb-3"><Spin/><p className="text-purple-300 font-semibold">Auto-building your book…</p></div>
+          <div className="h-1.5 bg-white/10 rounded-full overflow-hidden mb-3"><div className="h-full bg-gradient-to-r from-purple-500 to-pink-500 rounded-full pulse-a" style={{width:`${Math.min(((book.chapters||[]).filter(c=>c.generated).length/Math.max((book.chapters||[{a:1}]).length,1))*70+5,95)}%`}}/></div>
+          {/* Pipeline step status tracker */}
+          <div className="grid grid-cols-4 gap-1.5 mb-3">
+            {[
+              ["📋","Outline",!book.needs_outline],
+              ["✍️","Chapters",(book.chapters||[]).length>0&&(book.chapters||[]).every(c=>c.generated)],
+              ["🔍","SEO",!!book.seo_done],
+              ["🎨","Cover",!!book.cover_done],
+              ["🤖","Review",!!book.review_done],
+              ["🔎","Market",!!book.competitor_done],
+              ["🪝","Hooks",!!book.hooks_done],
+              ["📊","Writing",!!book.wq_done],
+            ].map(([icon,label,done])=>(
+              <div key={label} className={`flex items-center gap-1 rounded-lg px-2 py-1 text-xs ${done?"bg-green-500/20 text-green-300":"bg-white/5 text-white/30"}`}>
+                <span>{done?"✅":icon}</span><span className="truncate">{label}</span>
+              </div>
+            ))}
+          </div>
+          <div className="space-y-1 max-h-24 overflow-y-auto">{buildLog.slice(-5).map((l,i)=><p key={i} className="text-purple-200/50 text-xs">{l}</p>)}</div>
+        </div>}
         {quotaHit&&<div className="bg-amber-500/20 border border-amber-500/40 rounded-xl p-4 mb-5 flex gap-3 items-start"><span className="text-2xl">⏳</span><div className="flex-1"><p className="text-amber-300 font-semibold">Daily Gemini Limit Reached</p><p className="text-amber-200/60 text-sm mt-0.5">Resets at midnight Pacific Time. All progress saved!</p></div><button onClick={()=>{setQuotaHit(false);setError("");}} className="text-amber-400/40 hover:text-amber-300">✕</button></div>}
         {error&&!quotaHit&&<div className="bg-red-500/20 border border-red-500/30 text-red-300 rounded-xl p-4 mb-5 text-sm flex items-center justify-between gap-3"><span className="flex-1">{error}</span><div className="flex items-center gap-2 shrink-0">{(book?.chapters?.length>0||book?.needs_outline)&&!isBuilding&&<button onClick={()=>{setError("");upd({auto_build:true});runAutoBuild(getBook(bookId));}} className="bg-cyan-500/20 border border-cyan-500/40 text-cyan-300 text-xs font-bold px-3 py-1.5 rounded-lg hover:bg-cyan-500/30">🔄 Retry</button>}<button onClick={()=>setError("")} className="text-red-300/60 hover:text-red-300">✕</button></div></div>}
         {success&&<div className="bg-green-500/20 border border-green-500/30 text-green-300 rounded-xl p-4 mb-5 text-sm">{success}</div>}
-        {!isBuilding&&!quotaHit&&book&&(book.needs_outline||(book.chapters?.length>0&&book.chapters.some(c=>!c.generated)))&&(
+        {!isBuilding&&!quotaHit&&book&&!book.build_complete&&(book.needs_outline||(book.chapters?.length>0&&book.chapters.some(c=>!c.generated)))&&(
           <div className="bg-cyan-500/10 border border-cyan-500/30 rounded-xl p-4 mb-5 text-sm flex items-center justify-between gap-3">
             <span className="text-cyan-200">⏸️ This book's build stopped partway — {book.needs_outline?"outline not generated yet":`${book.chapters.filter(c=>c.generated).length}/${book.chapters.length} chapters done`}. Nothing is lost.</span>
             <button onClick={()=>{setError("");upd({auto_build:true});runAutoBuild(getBook(bookId));}} className="bg-cyan-500 text-white text-xs font-bold px-4 py-2 rounded-lg hover:bg-cyan-400 shrink-0">▶ Resume Build</button>
+          </div>
+        )}
+        {book?.build_complete&&!isBuilding&&(
+          <div className="bg-green-500/10 border border-green-500/30 rounded-xl p-4 mb-5 text-sm flex items-center justify-between gap-3">
+            <div>
+              <span className="text-green-300 font-semibold">✅ Build complete</span>
+              <span className="text-green-200/60 ml-2">— all chapters written, SEO generated, cover created, quality checks passed. Ready to publish.</span>
+            </div>
+            <button onClick={()=>upd({build_complete:false,seo_done:false,cover_done:false,review_done:false,competitor_done:false,hooks_done:false,wq_done:false})} className="text-white/30 text-xs hover:text-white/60 shrink-0" title="Reset completion flags to re-run the full pipeline">↺ Re-run</button>
           </div>
         )}
 
