@@ -1503,6 +1503,7 @@ function QueuePage({navigate,onSettings}){
     if(runRef.current)return;
     runRef.current=true;setRunning(true);setLog([]);
     const addLog=msg=>setLog(prev=>[...prev,{msg,time:new Date().toLocaleTimeString()}]);
+    try{
     while(true){
       const q=getQueue();
       if(q.length===0){addLog("✅ Queue complete!");break;}
@@ -1525,12 +1526,18 @@ function QueuePage({navigate,onSettings}){
           addLog(`  ✍️ Ch.${i+1}/${chapters.length}: "${chapters[i].title}"`);
           const series=book.series_id?getSeriesById(book.series_id):null;
           const seriesCtx=series?`\n\n${buildSeriesContext(series)}\nMaintain full consistency.`:"";
+          const qVP=getVoiceProfile();
+          const qVoiceCtx=qVP?.sample_analysis?`\n\nVOICE STYLE TO MATCH: ${qVP.sample_analysis}\nSentence rhythm: ${qVP.sentence_rhythm||\"\"}\nDistinctive patterns: ${(qVP.distinctive_patterns||[]).join(", ")}\nWrite EXACTLY in this style.`:\"\";
+          const qChars=getCharacters(id);
+          const qCharCtx=qChars.length?`\n\nESTABLISHED CHARACTERS (maintain exact consistency):\n${qChars.map(c=>`${c.name} [${c.role||\"\"}]: ${c.appearance||\"\"} — ${c.personality||\"\""}`).join("\n")}`:\"\";
+          const qLangNote=book.writing_language&&book.writing_language!=="English"?`\n\nWRITE IN: ${book.writing_language}`:\"\";
+          const qNfNote=book.nonfiction_mode?"\n\nNONFICTION MODE: End the chapter with a clearly marked Exercise, Reflection question, and Action Step.":"";
           const prevChaps=chapters.slice(0,i).filter(c=>c.generated);
           const prev=prevChaps.length===0?"None":
             prevChaps.length<=2?prevChaps.map(c=>c.title).join(", "):
             prevChaps.slice(-3).map(c=>`Ch.${c.number} "${c.title}": ${(c.content||"").slice(0,200).replace(/\n/g," ")}…`).join("\n");
           const content=await callGemini(
-            `Write Chapter ${chapters[i].number}: "${chapters[i].title}" for a ${book.genre} book titled "${outline.title||book.title}".${seriesCtx}\n`+
+            `Write Chapter ${chapters[i].number}: "${chapters[i].title}" for a ${book.genre} book titled "${outline.title||book.title}".${seriesCtx}${qVoiceCtx}${qCharCtx}${qLangNote}${qNfNote}\n`+
             `Chapter description: ${chapters[i].description}\nPrevious: ${prev}\nAudience: ${book.target_audience}\n\n`+
             `2,500–3,500 words. Match genre tone. Aim for the full word count.\n\nSTRUCTURE:\n• 3-5 distinct scenes per chapter, separated by: ⁂\n• Each scene has a clear goal → obstacle → outcome\n• Chapter must END on a hook, unresolved tension, or revelation that forces reading on\n• DO NOT wrap up cleanly — the best chapters end mid-breath\n\nWRITING RULES — violating these will get this chapter rejected:\n• NEVER start a sentence with 'He/She/They couldn't help but', 'In that moment', 'It dawned on', 'Something about the way', 'A wave of', 'A surge of'\n• NEVER state emotions directly ('he felt sad', 'warmth spread through her') — express through physical action, dialogue, or specific sensory detail\n• NEVER use em-dashes for dramatic effect more than once per page\n• VARY sentence length violently: one-word sentences. Fragments. Then a long, breathing sentence that winds through a scene and refuses to end neatly.\n• Dialogue must be messy and human: people talk past each other, leave things half-said, interrupt, change subject\n• Use SPECIFIC details: not 'the coffee shop smelled like coffee' but the burnt-sugar smell of the espresso machine at 6am, the sticky ring on the table from someone's iced latte\n• No clean emotional resolutions — conflict leaves residue\n• Character psychology must be specific, not convenient\n• Every scene must have a sensory anchor: a smell, a texture, a specific sound\n• Read like a published novel — no chapter summaries, no scene headers, no markdown`
           );
@@ -1579,8 +1586,9 @@ function QueuePage({navigate,onSettings}){
         setCurrentId(prev=>prev===id?null:prev);
       }
     }
-    setCurrentId(null);setRunning(false);runRef.current=false;
-    reload();
+    setCurrentId(null);
+    }catch(e){console.error("Queue outer error:",e);}
+    finally{setRunning(false);runRef.current=false;setCurrentId(null);reload();}
   };
 
   const eligibleBooks=qBooks.filter(b=>!["published"].includes(b.status)&&!b.chapters?.every(c=>c.generated));
@@ -1841,7 +1849,8 @@ function HomePage({navigate,onSettings}){
   const [allBooks,setBooksList]=useState([]);
   const [search,setSearch]=useState("");
   useEffect(()=>setBooksList(getBooks()),[]);
-  const books=search.trim()?allBooks.filter(b=>(b.title||"").toLowerCase().includes(search.toLowerCase())||(b.genre||"").toLowerCase().includes(search.toLowerCase())||(b.status||"").toLowerCase().includes(search.toLowerCase())):allBooks;
+  const sortedBooks=[...allBooks].sort((a,b)=>{ if(a.auto_build&&!b.auto_build)return -1; if(!a.auto_build&&b.auto_build)return 1; return new Date(b.created_date||0)-new Date(a.created_date||0); });
+  const books=search.trim()?sortedBooks.filter(b=>(b.title||"").toLowerCase().includes(search.toLowerCase())||(b.genre||"").toLowerCase().includes(search.toLowerCase())||(b.status||"").toLowerCase().includes(search.toLowerCase())):sortedBooks;
   const del=(id,e)=>{e.stopPropagation();if(!confirm("Delete this book?"))return;const b=getBooks().filter(x=>x.id!==id);setBooks(b);setBooksList(b);};
   const pct=b=>b.chapters?.length>0?(b.chapters.filter(c=>c.generated).length/b.chapters.length)*100:0;
   return(
@@ -1895,6 +1904,8 @@ function HomePage({navigate,onSettings}){
                   <h3 className="text-white font-bold text-base leading-tight mb-1 line-clamp-2">{book.title||"Untitled"}</h3>
                   {book.subtitle&&<p className="text-white/40 text-sm mb-2 line-clamp-1">{book.subtitle}</p>}
                   <div className="flex items-center justify-between mt-2"><span className="text-white/25 text-xs">{book.genre}</span><span className="text-white/25 text-xs">{book.word_count?`${Number(book.word_count).toLocaleString()} words`:"0 words"}</span></div>
+                  {book.auto_build&&!book.build_complete&&<p className="text-cyan-400 text-xs mt-2 truncate animate-pulse">🔄 {book.build_step||"Building…"}</p>}
+                  {book.build_complete&&<p className={`text-xs mt-2 ${book.gates_passed?"text-green-400":"text-amber-400"}`}>{book.gates_passed?"✅ Ready to publish":"⚠️ Review needed"}</p>}
                   {book.chapters?.length>0&&<div className="mt-3"><div className="h-1 bg-white/10 rounded-full overflow-hidden"><div className="h-full bg-gradient-to-r from-purple-500 to-pink-500 rounded-full" style={{width:`${pct(book)}%`}}/></div><p className="text-white/20 text-xs mt-1">{book.chapters.filter(c=>c.generated).length}/{book.chapters.length} chapters</p></div>}
                 </div>
               </div>
@@ -2444,7 +2455,7 @@ function EditorPage({bookId,navigate,onSettings}){
       const charCtx=chars.length?`\n\nCHARACTERS:\n${chars.map(c=>`${c.name}: ${c.appearance||""} — ${c.personality||""}`).join("\n")}`:"";
       const langNote=book.writing_language&&book.writing_language!=="English"?`\n\nWRITE IN: ${book.writing_language}`:"";
       const nfNote=book.nonfiction_mode?"\n\nEnd with: Exercise, Reflection, Action Step.":"";
-      const content=await callGemini(`Write Chapter ${ch.number}: "${ch.title}" for a ${book.genre} book titled "${outline.title}".${seriesCtx}${voiceCtx}${charCtx}${langNote}${nfNote}\n\nDesc: ${ch.description}\nPrevious: ${prev}\nAudience: ${book.target_audience}\n\n2,500–3,500 words. Match genre tone.\n\nWRITING RULES — violating these will get this chapter rejected:\n• NEVER start a sentence with 'He/She/They couldn't help but', 'In that moment', 'It dawned on', 'Something about the way', 'A wave of', 'A surge of'\n• NEVER state emotions directly ('he felt sad', 'warmth spread through her') — express through physical action, dialogue, or specific sensory detail\n• NEVER use em-dashes for dramatic effect more than once per page\n• VARY sentence length violently: one-word sentences. Fragments. Then a long, breathing sentence that winds through a scene and refuses to end neatly.\n• Dialogue must be messy and human: people talk past each other, leave things half-said, interrupt, change subject\n• Use SPECIFIC details: not 'the coffee shop smelled like coffee' but the burnt-sugar smell of the espresso machine at 6am, the sticky ring on the table from someone's iced latte\n• No clean emotional resolutions — conflict leaves residue\n• Character psychology must be specific, not convenient\n• Read like a novel — no chapter summaries, no scene headers, no markdown`);
+      const content=await callGemini(`Write Chapter ${ch.number}: "${ch.title}" for a ${book.genre} book titled "${outline.title}".${seriesCtx}${voiceCtx}${charCtx}${langNote}${nfNote}\n\nDesc: ${ch.description}\nPrevious: ${prev}\nAudience: ${book.target_audience}\n\n2,500–3,500 words. Match genre tone.\n\nSTRUCTURE:\n• 3-5 distinct scenes per chapter, separated by: ⁂\n• Each scene has a clear goal → obstacle → outcome\n• Chapter must END on a hook, unresolved tension, or revelation that forces reading on\n• DO NOT wrap up cleanly — the best chapters end mid-breath\n\nWRITING RULES — violating these will get this chapter rejected:\n• NEVER start a sentence with 'He/She/They couldn't help but', 'In that moment', 'It dawned on', 'Something about the way', 'A wave of', 'A surge of'\n• NEVER state emotions directly ('he felt sad', 'warmth spread through her') — express through physical action, dialogue, or specific sensory detail\n• NEVER use em-dashes for dramatic effect more than once per page\n• VARY sentence length violently: one-word sentences. Fragments. Then a long, breathing sentence that winds through a scene and refuses to end neatly.\n• Dialogue must be messy and human: people talk past each other, leave things half-said, interrupt, change subject\n• Use SPECIFIC details: not 'the coffee shop smelled like coffee' but the burnt-sugar smell of the espresso machine at 6am, the sticky ring on the table from someone's iced latte\n• No clean emotional resolutions — conflict leaves residue\n• Character psychology must be specific, not convenient\n• Read like a novel — no chapter summaries, no scene headers, no markdown`);
       bump();const chapters=[...(book.chapters||[])];chapters[idx]={...chapters[idx],content,generated:true};
       const wc=chapters.reduce((a,c)=>a+(c.content?c.content.split(/\s+/).length:0),0);
       // If all chapters now done + pipeline already ran → auto-stamp build_complete
