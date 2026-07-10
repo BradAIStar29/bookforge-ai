@@ -1546,7 +1546,7 @@ function QueuePage({navigate,onSettings}){
           const seoRaw=await callGemini(`Amazon KDP SEO. Title: ${book.title}\nGenre: ${book.genre}\nDesc: ${book.description}\nRespond ONLY JSON: {"seo_title":"","seo_description":"","primary_keywords":[""]}`);
           trackUsage();
           const sm=seoRaw.match(/\{[\s\S]*\}/);
-          if(sm){try{const seo=JSON.parse(sm[0]);updateBook(id,{seo_title:seo.seo_title||"",seo_description:seo.seo_description||"",seo_keywords:(seo.primary_keywords||[]).join(", ")});}catch(pe){addLog("⚠️ SEO parse failed — skipping SEO update");}}
+          if(sm){try{const seo=JSON.parse(sm[0]);updateBook(id,{seo_title:seo.seo_title||"",seo_description:seo.seo_description||"",seo_keywords:(seo.primary_keywords||[]).join(", "),seo_done:true});}catch(pe){addLog("⚠️ SEO parse failed — skipping SEO update");}}
         }
         if(getUsage()<DAILY_LIMIT){
           // Cover
@@ -1555,14 +1555,14 @@ function QueuePage({navigate,onSettings}){
           trackUsage();
           const artUrl=`https://image.pollinations.ai/prompt/${encodeURIComponent(cp.trim()+". No text.")}?width=832&height=1216&model=flux&nologo=true&enhance=true&seed=${Date.now()}`;
           const finalUrl=await finalizeCoverImage(artUrl,outline.title||book.title,getAuthorProfile().name,book.subtitle);
-          updateBook(id,{cover_art_url:artUrl,cover_image_url:finalUrl});
+          updateBook(id,{cover_art_url:artUrl,cover_image_url:finalUrl,cover_done:true});
         }
         if(getUsage()<DAILY_LIMIT){
           // Review
           addLog(`  🤖 Running review agent…`);
           const freshBook=getBook(id);
           const review=await runReviewAgent(freshBook);
-          updateBook(id,{review,status:review.verdict==="PASS"?"ready":"writing",auto_build:false,build_step:""});
+          updateBook(id,{review,status:review.verdict==="PASS"?"ready":"writing",auto_build:false,build_step:"",review_done:true,build_complete:true,build_complete_date:new Date().toISOString(),gates_passed:review.verdict==="PASS"});
           addLog(`  ${review.verdict==="PASS"?"✅":"⚠️"} Review: ${review.overall_score}/100 — ${review.verdict}`);
         }
         // Done — remove from queue
@@ -1848,7 +1848,7 @@ function HomePage({navigate,onSettings}){
     <div className="max-w-7xl mx-auto px-4 sm:px-6 py-8">
       {!getKey()&&<div className="bg-amber-500/15 border border-amber-500/40 rounded-xl p-4 mb-6 flex items-center gap-3"><span className="text-2xl">🔑</span><div className="flex-1"><p className="text-amber-300 font-semibold text-sm">Gemini API key not set</p><p className="text-amber-200/50 text-xs">Required to generate books. Free from Google AI Studio.</p></div><button onClick={onSettings} className="bg-amber-500 text-black text-xs font-bold px-4 py-2 rounded-lg hover:bg-amber-400">Set Key</button></div>}
       {(()=>{
-        const stalled=allBooks.filter(b=>!b.build_complete&&!["published","ready"].includes(b.status)&&(b.needs_outline||(b.chapters?.length>0&&b.chapters.some(c=>!c.generated))));
+        const stalled=allBooks.filter(b=>!b.build_complete&&!b.auto_build&&!["published","ready"].includes(b.status)&&(b.needs_outline||(b.chapters?.length>0&&b.chapters.some(c=>!c.generated))));
         if(stalled.length===0)return null;
         return(
           <div className="bg-cyan-500/10 border border-cyan-500/30 rounded-xl p-4 mb-6">
@@ -2111,7 +2111,12 @@ function ChapterEditor({book,chIdx,upd}){
     const chapters=[...(book.chapters||[])];
     chapters[chIdx]={...chapters[chIdx],content:draft,generated:true};
     const wc=chapters.reduce((a,c)=>a+(c.content?c.content.split(/\s+/).length:0),0);
-    upd({chapters,word_count:wc});
+    const allDone=chapters.every(c=>c.generated);
+    const curB=typeof getBook==="function"?getBook(book.id):null;
+    const extraStamps=allDone&&curB?.seo_done&&curB?.cover_done&&curB?.review_done&&!curB.build_complete
+      ?{build_complete:true,build_complete_date:new Date().toISOString(),gates_passed:curB?.review?.verdict==="PASS"&&curB?.manuscript_quality?.manuscript_verdict==="PASS"}
+      :{};
+    upd({chapters,word_count:wc,...extraStamps});
     setEditing(false);
   };
 
@@ -2356,7 +2361,7 @@ function EditorPage({bookId,navigate,onSettings}){
               log("  📖 Applying Review Agent suggestions…");
               const updated=updateBook(bookId,fixes);setBook(getBook(bookId));
               const reReview=await runReviewAgent(updated);
-              updateBook(bookId,{review:reReview});setBook(getBook(bookId));
+              updateBook(bookId,{review:reReview,review_done:true});setBook(getBook(bookId));
               rvPassed=reReview.verdict==="PASS";
               log(rvPassed?`  ✅ Review improved to ${reReview.overall_score}/100 — PASS!`:`  📊 Review improved to ${reReview.overall_score}/100 (still below 70)`);
             }
@@ -2400,7 +2405,7 @@ function EditorPage({bookId,navigate,onSettings}){
               updateBook(bookId,{chapters:fixedChapters,writing_quality:wqScores});setBook(getBook(bookId));
               // Re-run manuscript check
               const reWQ=await runManuscriptHumanCheck(getBook(bookId));
-              updateBook(bookId,{manuscript_quality:reWQ});setBook(getBook(bookId));
+              updateBook(bookId,{manuscript_quality:reWQ,wq_done:true});setBook(getBook(bookId));
               wqPassed=reWQ.manuscript_verdict==="PASS";
               log(wqPassed?`  ✅ Writing quality improved to ${reWQ.overall_human_score}/100 — PASS!`:`  📊 Writing quality improved to ${reWQ.overall_human_score}/100 (still below 78)`);
             }else{
@@ -2417,7 +2422,7 @@ function EditorPage({bookId,navigate,onSettings}){
       const passed=finalBook?.review?.verdict==="PASS";
       const wPassed=finalBook?.manuscript_quality?.manuscript_verdict==="PASS";
       flash(passed&&wPassed?"🎉 Both quality checks passed — ready to publish!":!passed?"📋 Review tab has improvements needed.":"✍️ Writing Quality tab has suggestions to humanize your manuscript.");
-      upd({auto_build:false,build_step:"",status:passed&&wPassed?"ready":"writing",build_complete:passed&&wPassed,build_complete_date:new Date().toISOString()});
+      upd({auto_build:false,build_step:"",status:passed&&wPassed?"ready":"writing",build_complete:true,gates_passed:passed&&wPassed,build_complete_date:new Date().toISOString()});
       setTab(passed&&wPassed?10:!passed?4:8);
     }catch(e){handleErr(e);upd({auto_build:false,build_step:""});}
     finally{setIsBuilding(false);buildRef.current=false;}
@@ -2442,7 +2447,13 @@ function EditorPage({bookId,navigate,onSettings}){
       const content=await callGemini(`Write Chapter ${ch.number}: "${ch.title}" for a ${book.genre} book titled "${outline.title}".${seriesCtx}${voiceCtx}${charCtx}${langNote}${nfNote}\n\nDesc: ${ch.description}\nPrevious: ${prev}\nAudience: ${book.target_audience}\n\n2,500–3,500 words. Match genre tone.\n\nWRITING RULES — violating these will get this chapter rejected:\n• NEVER start a sentence with 'He/She/They couldn't help but', 'In that moment', 'It dawned on', 'Something about the way', 'A wave of', 'A surge of'\n• NEVER state emotions directly ('he felt sad', 'warmth spread through her') — express through physical action, dialogue, or specific sensory detail\n• NEVER use em-dashes for dramatic effect more than once per page\n• VARY sentence length violently: one-word sentences. Fragments. Then a long, breathing sentence that winds through a scene and refuses to end neatly.\n• Dialogue must be messy and human: people talk past each other, leave things half-said, interrupt, change subject\n• Use SPECIFIC details: not 'the coffee shop smelled like coffee' but the burnt-sugar smell of the espresso machine at 6am, the sticky ring on the table from someone's iced latte\n• No clean emotional resolutions — conflict leaves residue\n• Character psychology must be specific, not convenient\n• Read like a novel — no chapter summaries, no scene headers, no markdown`);
       bump();const chapters=[...(book.chapters||[])];chapters[idx]={...chapters[idx],content,generated:true};
       const wc=chapters.reduce((a,c)=>a+(c.content?c.content.split(/\s+/).length:0),0);
-      upd({chapters,word_count:wc,status:"writing"});flash(`Chapter ${idx+1} written! ✍️`);
+      // If all chapters now done + pipeline already ran → auto-stamp build_complete
+      const allDone=chapters.every(c=>c.generated);
+      const curB=getBook(bookId);
+      const extraStamps=allDone&&curB?.seo_done&&curB?.cover_done&&curB?.review_done&&!curB.build_complete
+        ?{build_complete:true,build_complete_date:new Date().toISOString(),gates_passed:curB?.review?.verdict==="PASS"&&curB?.manuscript_quality?.manuscript_verdict==="PASS"}
+        :{};
+      upd({chapters,word_count:wc,status:"writing",...extraStamps});flash(`Chapter ${idx+1} written! ✍️`);
     }catch(e){handleErr(e);}finally{setBusyCh(null);}
   };
 
@@ -2677,19 +2688,23 @@ const genSEO=async()=>{if(quotaHit||isBuilding)return;setBusy(true);setError("")
         {quotaHit&&<div className="bg-amber-500/20 border border-amber-500/40 rounded-xl p-4 mb-5 flex gap-3 items-start"><span className="text-2xl">⏳</span><div className="flex-1"><p className="text-amber-300 font-semibold">Daily Gemini Limit Reached</p><p className="text-amber-200/60 text-sm mt-0.5">Resets at midnight Pacific Time. All progress saved!</p></div><button onClick={()=>{setQuotaHit(false);setError("");}} className="text-amber-400/40 hover:text-amber-300">✕</button></div>}
         {error&&!quotaHit&&<div className="bg-red-500/20 border border-red-500/30 text-red-300 rounded-xl p-4 mb-5 text-sm flex items-center justify-between gap-3"><span className="flex-1">{error}</span><div className="flex items-center gap-2 shrink-0">{(book?.chapters?.length>0||book?.needs_outline)&&!isBuilding&&<button onClick={()=>{setError("");upd({auto_build:true});runAutoBuild(getBook(bookId));}} className="bg-cyan-500/20 border border-cyan-500/40 text-cyan-300 text-xs font-bold px-3 py-1.5 rounded-lg hover:bg-cyan-500/30">🔄 Retry</button>}<button onClick={()=>setError("")} className="text-red-300/60 hover:text-red-300">✕</button></div></div>}
         {success&&<div className="bg-green-500/20 border border-green-500/30 text-green-300 rounded-xl p-4 mb-5 text-sm">{success}</div>}
-        {!isBuilding&&!quotaHit&&book&&!book.build_complete&&(book.needs_outline||(book.chapters?.length>0&&book.chapters.some(c=>!c.generated)))&&(
+        {!isBuilding&&!quotaHit&&book&&!book.build_complete&&!book.auto_build&&(book.needs_outline||(book.chapters?.length>0&&book.chapters.some(c=>!c.generated)))&&(
           <div className="bg-cyan-500/10 border border-cyan-500/30 rounded-xl p-4 mb-5 text-sm flex items-center justify-between gap-3">
             <span className="text-cyan-200">⏸️ This book's build stopped partway — {book.needs_outline?"outline not generated yet":`${book.chapters.filter(c=>c.generated).length}/${book.chapters.length} chapters done`}. Nothing is lost.</span>
             <button onClick={()=>{setError("");upd({auto_build:true});runAutoBuild(getBook(bookId));}} className="bg-cyan-500 text-white text-xs font-bold px-4 py-2 rounded-lg hover:bg-cyan-400 shrink-0">▶ Resume Build</button>
           </div>
         )}
         {book?.build_complete&&!isBuilding&&(
-          <div className="bg-green-500/10 border border-green-500/30 rounded-xl p-4 mb-5 text-sm flex items-center justify-between gap-3">
+          <div className={`${book.gates_passed?"bg-green-500/10 border-green-500/30":"bg-amber-500/10 border-amber-500/30"} border rounded-xl p-4 mb-5 text-sm flex items-center justify-between gap-3`}>
             <div>
-              <span className="text-green-300 font-semibold">✅ Build complete</span>
-              <span className="text-green-200/60 ml-2">— all chapters written, SEO generated, cover created, quality checks passed. Ready to publish.</span>
+              <span className={`${book.gates_passed?"text-green-300":"text-amber-300"} font-semibold`}>{book.gates_passed?"✅ Build complete":"⚠️ Pipeline finished"}</span>
+              <span className={`${book.gates_passed?"text-green-200/60":"text-amber-200/60"} ml-2`}>
+                {book.gates_passed
+                  ?"— all chapters written, SEO, cover, and quality checks done. Ready to publish!"
+                  :"— pipeline ran to completion. Check Review and Writing Quality tabs for what needs improving."}
+              </span>
             </div>
-            <button onClick={()=>upd({build_complete:false,seo_done:false,cover_done:false,review_done:false,competitor_done:false,hooks_done:false,wq_done:false})} className="text-white/30 text-xs hover:text-white/60 shrink-0" title="Reset completion flags to re-run the full pipeline">↺ Re-run</button>
+            <button onClick={()=>upd({build_complete:false,gates_passed:false,seo_done:false,cover_done:false,review_done:false,competitor_done:false,hooks_done:false,wq_done:false})} className="text-white/30 text-xs hover:text-white/60 shrink-0" title="Reset all completion flags to re-run the full pipeline">↺ Re-run</button>
           </div>
         )}
 
