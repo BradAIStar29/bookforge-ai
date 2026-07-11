@@ -52,10 +52,11 @@ function playRetryChime(){
 // ── Cover text compositor: bakes Title + Author onto the AI art via canvas ──
 function loadImageCORS(url){
   return new Promise((resolve,reject)=>{
+    const timer=setTimeout(()=>reject(new Error("Cover image load timed out after 15s")),15000);
     const img=new Image();
     img.crossOrigin="anonymous";
-    img.onload=()=>resolve(img);
-    img.onerror=()=>reject(new Error("Failed to load cover art image"));
+    img.onload=()=>{clearTimeout(timer);resolve(img);};
+    img.onerror=()=>{clearTimeout(timer);reject(new Error("Failed to load cover art image"));};
     img.src=url;
   });
 }
@@ -511,6 +512,17 @@ function SettingsModal({onClose}){
   const save=()=>{if(!draft.trim())return;setKey(draft);setSaved(true);setTimeout(()=>setSaved(false),2000);};
   const saveAuthor=()=>{setAuthorProfile(author);setAuthorSaved(true);setTimeout(()=>setAuthorSaved(false),2000);};
   const setAutoCorrectSetting=v=>{setAutoCorrect(v);};
+  const [testStatus,setTestStatus]=useState(null); // null | "testing" | "ok" | "fail"
+  const testKey=async()=>{
+    if(!draft.trim())return;
+    setTestStatus("testing");
+    try{
+      const r=await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${draft.trim()}`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({contents:[{parts:[{text:"Reply with just the word OK"}]}],generationConfig:{maxOutputTokens:5}})});
+      if(r.ok)setTestStatus("ok");
+      else{const err=await r.json();setTestStatus("fail");}
+    }catch(e){setTestStatus("fail");}
+    setTimeout(()=>setTestStatus(null),4000);
+  };
 
   return(
     <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center p-4">
@@ -534,7 +546,10 @@ function SettingsModal({onClose}){
               <p className="text-white/35 text-xs mb-3">Stored only in your browser. Never sent anywhere except Google's API.</p>
               <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noopener noreferrer" className="inline-block text-purple-400 text-xs underline mb-4 hover:text-purple-300">Get a free key at Google AI Studio →</a>
               <input type="password" placeholder="AIza..." value={draft} onChange={e=>setDraft(e.target.value)} onKeyDown={e=>e.key==="Enter"&&save()} className="w-full bg-white/10 border border-white/20 rounded-xl px-4 py-3 text-white placeholder-white/30 focus:outline-none focus:border-purple-500 mb-4 font-mono text-sm"/>
-              <button onClick={save} disabled={!draft.trim()} className={`w-full py-3 rounded-xl font-semibold transition-all ${saved?"bg-green-500 text-white":"bg-gradient-to-r from-purple-500 to-pink-500 text-white hover:opacity-90 disabled:opacity-50"}`}>{saved?"✅ Saved!":"Save API Key"}</button>
+              <div className="flex gap-2">
+                <button onClick={testKey} disabled={!draft.trim()||testStatus==="testing"} className={`flex-1 py-3 rounded-xl font-semibold text-sm transition-all border ${testStatus==="ok"?"bg-green-500/20 border-green-500 text-green-400":testStatus==="fail"?"bg-red-500/20 border-red-500 text-red-400":testStatus==="testing"?"border-white/20 text-white/40":"border-white/20 text-white/60 hover:border-purple-400 hover:text-white"}`}>{testStatus==="testing"?"⏳ Testing…":testStatus==="ok"?"✅ Key works!":testStatus==="fail"?"❌ Invalid key":"🔬 Test Key"}</button>
+                <button onClick={save} disabled={!draft.trim()} className={`flex-1 py-3 rounded-xl font-semibold transition-all ${saved?"bg-green-500 text-white":"bg-gradient-to-r from-purple-500 to-pink-500 text-white hover:opacity-90 disabled:opacity-50"}`}>{saved?"✅ Saved!":"Save Key"}</button>
+              </div>
             </div>
           )}
           {sTab==="voice"&&<VoiceTrainingPanel onClose={onClose}/>}
@@ -654,7 +669,7 @@ function ReviewPanel({book,onApply,onSettings}){
   const [improving,setImproving]=useState(false);
   const [error,setError]=useState("");
   const [applied,setApplied]=useState({});
-  const run=async()=>{if(!getKey()){onSettings();return;}setLoading(true);setError("");try{const r=await runReviewAgent(book);setReview(r);updateBook(book.id,{review:r});}catch(e){setError(errMsg(e));}finally{setLoading(false);}};
+  const run=async()=>{if(!getKey()){onSettings();return;}setLoading(true);setError("");try{const r=await runReviewAgent(book);setReview(r);updateBook(book.id,{review:r,review_done:true});}catch(e){setError(errMsg(e));}finally{setLoading(false);}};
   const applyTitle=t=>{const parts=t.split(":");const title=parts[0].trim();const subtitle=parts.slice(1).join(":").trim();onApply({title,subtitle:subtitle||book.subtitle});setApplied(a=>({...a,title:true}));};
   const applyKeywords=kws=>{onApply({seo_keywords:kws.join(", ")});setApplied(a=>({...a,kws:true}));};
   const applySEO=d=>{onApply({seo_description:d});setApplied(a=>({...a,seo:true}));};
@@ -680,7 +695,7 @@ function ReviewPanel({book,onApply,onSettings}){
       setApplied({title:!!updates.title,sub:!!updates.subtitle,kws:!!updates.seo_keywords,seo:!!updates.seo_description});
       const r=await runReviewAgent(updatedBook);
       setReview(r);
-      updateBook(book.id,{review:r});
+      updateBook(book.id,{review:r,review_done:true});
       const delta=r.overall_score-oldScore;
       flash_review(delta>=0?`Improved! Score: ${oldScore} → ${r.overall_score} (+${delta}) 🚀`:`Re-scored: ${oldScore} → ${r.overall_score}`);
     }catch(e){setError(errMsg(e));}
@@ -769,7 +784,7 @@ function CompetitorPanel({book,onSettings}){
       if(!match)throw{code:"PARSE"};
       let result;try{result=JSON.parse(match[0]);}catch(pe){throw{code:"PARSE",msg:"AI returned malformed JSON — please retry."};}
       setData(result);
-      updateBook(book.id,{competitor_analysis:result});
+      updateBook(book.id,{competitor_analysis:result,competitor_done:true});
     }catch(e){setError(errMsg(e));}
     finally{setLoading(false);}
   };
@@ -818,7 +833,12 @@ function HookPanel({book,onSettings}){
         `Title: ${book.title}\nSubtitle: ${book.subtitle||""}\nGenre: ${book.genre}\nAudience: ${book.target_audience}\n`+
         `Description: ${outline.description||book.description}\nSEO Keywords: ${book.seo_keywords||""}\n\n`+
         `Respond ONLY with valid JSON:\n`+
-        `{"opening_lines":["3 alternative killer opening sentences for Chapter 1 (the hook that makes readers buy)"],`+
+        `{"opening_lines":[`+
+        `{"style":"In Medias Res","line":"drop us into action already in progress — no setup"},`+
+        `{"style":"Thriller/Suspense","line":"immediate dread, ticking clock, or threat"},`+
+        `{"style":"Literary","line":"atmospheric, voice-driven, literary register"},`+
+        `{"style":"Commercial/Hook","line":"relatable problem or desire that speaks directly to the audience"},`+
+        `{"style":"Question/Intrigue","line":"unanswerable question that forces reader to keep going"}],`+
         `"back_cover_blurbs":["compelling 100-word blurb version 1","version 2"],`+
         `"amazon_a_plus_headline":"Short punchy headline for Amazon A+ content",`+
         `"series_read_order_page":"Full text of a 'Also by the Author / Books in this Series' page to embed at the end of the book",`+
@@ -831,7 +851,7 @@ function HookPanel({book,onSettings}){
       if(!match)throw{code:"PARSE"};
       let result;try{result=JSON.parse(match[0]);}catch(pe){throw{code:"PARSE",msg:"AI returned malformed JSON — please retry."};}
       setData(result);
-      updateBook(book.id,{hooks:result});
+      updateBook(book.id,{hooks:result,hooks_done:true});
     }catch(e){setError(errMsg(e));}
     finally{setLoading(false);}
   };
@@ -849,7 +869,7 @@ function HookPanel({book,onSettings}){
       </Card>
       {data&&(<>
         {data.tagline&&<div className="bg-gradient-to-r from-purple-900/60 to-pink-900/40 border border-purple-500/30 rounded-2xl p-5 text-center"><p className="text-white/40 text-xs uppercase tracking-wider mb-2">Tagline</p><p className="text-white font-bold text-2xl">"{data.tagline}"</p></div>}
-        {data.opening_lines?.length>0&&<Card><h3 className="text-white font-semibold mb-3">✍️ Opening Line Options <span className="text-white/30 font-normal text-sm">(Chapter 1 hook)</span></h3><div className="space-y-3">{data.opening_lines.map((l,i)=><div key={i} className="bg-white/5 rounded-xl p-4 flex justify-between gap-3 items-start"><p className="text-white/80 text-sm leading-relaxed flex-1 italic">"{l}"</p><button onClick={()=>copy(l)} className="text-xs border border-white/20 text-white/30 px-2 py-1 rounded-lg hover:text-white shrink-0">Copy</button></div>)}</div></Card>}
+        {data.opening_lines?.length>0&&<Card><h3 className="text-white font-semibold mb-3">✍️ Opening Line Options <span className="text-white/30 font-normal text-sm">(5 styles — pick your favorite)</span></h3><div className="space-y-3">{data.opening_lines.map((l,i)=>{const lineText=typeof l==="object"?l.line:l;const style=typeof l==="object"?l.style:null;return(<div key={i} className="bg-white/5 rounded-xl p-4 flex justify-between gap-3 items-start"><div className="flex-1">{style&&<span className="text-xs font-bold text-purple-400 uppercase tracking-wider mb-1 block">{style}</span>}<p className="text-white/80 text-sm leading-relaxed italic">"{lineText}"</p></div><button onClick={()=>copy(lineText)} className="text-xs border border-white/20 text-white/30 px-2 py-1 rounded-lg hover:text-white shrink-0">Copy</button></div>);})}</div></Card>}
         {data.back_cover_blurbs?.length>0&&<Card><h3 className="text-white font-semibold mb-3">📖 Back Cover Blurbs</h3><div className="space-y-4">{data.back_cover_blurbs.map((b,i)=><div key={i} className="bg-white/5 rounded-xl p-4"><div className="flex justify-between items-center mb-2"><p className="text-white/30 text-xs">Version {i+1}</p><button onClick={()=>copy(b)} className="text-xs border border-white/20 text-white/30 px-2 py-1 rounded-lg hover:text-white">Copy</button></div><p className="text-white/75 text-sm leading-relaxed">{b}</p></div>)}</div></Card>}
         {data.social_media_hooks?.length>0&&<Card><h3 className="text-white font-semibold mb-3">📱 Social Media Hooks</h3><div className="space-y-2">{data.social_media_hooks.map((h,i)=><div key={i} className="bg-white/5 rounded-xl px-4 py-3 flex justify-between gap-3 items-center"><p className="text-white/75 text-sm flex-1">{h}</p><button onClick={()=>copy(h)} className="text-xs border border-white/20 text-white/30 px-2 py-1 rounded-lg hover:text-white shrink-0">Copy</button></div>)}</div></Card>}
         {data.email_subject_lines?.length>0&&<Card><h3 className="text-white font-semibold mb-3">📧 Launch Email Subject Lines</h3><div className="space-y-2">{data.email_subject_lines.map((s,i)=><div key={i} className="bg-white/5 rounded-xl px-4 py-3 flex justify-between gap-3 items-center"><p className="text-white/75 text-sm flex-1">{s}</p><button onClick={()=>copy(s)} className="text-xs border border-white/20 text-white/30 px-2 py-1 rounded-lg hover:text-white shrink-0">Copy</button></div>)}</div></Card>}
@@ -1051,7 +1071,7 @@ function WritingQualityPanel({book,onSettings,onApply}){
       // Re-run manuscript check against the improved text
       const result=await runManuscriptHumanCheck(updatedBook);
       setManuscript(result);
-      updateBook(book.id,{manuscript_quality:result,chapters});
+      updateBook(book.id,{manuscript_quality:result,chapters,wq_done:true});
       const delta=result.overall_human_score-oldScore;
       flashWQ(delta>=0?`Improved! Score: ${oldScore} → ${result.overall_human_score} (+${delta}) 🚀`:`Re-scored: ${oldScore} → ${result.overall_human_score}`);
     }catch(e){setError(errMsg(e));}
@@ -1100,7 +1120,7 @@ function WritingQualityPanel({book,onSettings,onApply}){
     try{
       const result = await runManuscriptHumanCheck(book);
       setManuscript(result);
-      updateBook(book.id,{manuscript_quality:result});
+      updateBook(book.id,{manuscript_quality:result,wq_done:true});
     }catch(e){setError(errMsg(e));}
     finally{setLoadingMs(false);}
   };
@@ -1910,6 +1930,7 @@ function HomePage({navigate,onSettings}){
                 </div>
               </div>
               <button onClick={e=>del(book.id,e)} className="absolute top-2 left-2 w-7 h-7 bg-red-500/80 hover:bg-red-600 rounded-full text-white text-xs opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center shadow">✕</button>
+              <button onClick={e=>{e.stopPropagation();const src=getBook(book.id);if(!src)return;const dup={...src,id:Date.now().toString(36)+Math.random().toString(36).slice(2),title:src.title+" (Copy)",status:"draft",auto_build:false,build_complete:false,gates_passed:false,seo_done:false,cover_done:false,review_done:false,wq_done:false,competitor_done:false,hooks_done:false,review:null,manuscript_quality:null,build_complete_date:null};const books=getBooks();books.push(dup);setBooks(books);setBooksList(getBooks());}} className="absolute top-2 right-2 w-7 h-7 bg-blue-500/80 hover:bg-blue-600 rounded-full text-white text-xs opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center shadow" title="Duplicate book">⧉</button>
             </div>
           ))}
         </div>
@@ -1951,7 +1972,7 @@ function CreatePage({navigate,onSettings}){
       if(mode==="import"){
         prompt=`You are a professional book editor. Analyze this draft/notes and build a polished book outline from it.\n\nDRAFT/NOTES:\n${importText.slice(0,6000)}\n\nGenre: ${form.genre||"Fiction"}\nAudience: ${form.audience||"General Adults"}${styleCtx}${langNote}\n\n${form.nonfiction_mode?"Include exercises/reflections/action-steps fields per chapter.":""}\n\nRespond ONLY with valid JSON:\n{"title":"","subtitle":"","description":"","themes":[""],"tone_notes":"describe the intended emotional register and prose style","estimated_word_count":50000,"writing_language":"${form.language}","chapters":[{"number":1,"title":"","description":"","opening_hook":"how this chapter should open — first line or image","${form.nonfiction_mode?"exercise":"notes"}":""}]}`;
       } else {
-        prompt=`You are a bestselling author. Create a detailed book outline.\nTopic: ${form.topic}\nGenre: ${form.genre}\nAudience: ${form.audience}${styleCtx}${langNote}\n${form.nonfiction_mode?"Nonfiction mode: include exercises, reflections, and action steps per chapter.":""}\n\nRespond ONLY with valid JSON:\n{"title":"","subtitle":"","description":"","themes":[""],"tone_notes":"describe the intended emotional register and prose style","estimated_word_count":50000,"writing_language":"${form.language}","chapters":[{"number":1,"title":"","description":"","opening_hook":"how this chapter should open — first line or image","${form.nonfiction_mode?"exercise":"notes"}":""}]}`;
+        prompt=`You are a bestselling author. Create a detailed, commercially compelling book outline.\nTopic: ${form.topic}\nGenre: ${form.genre}\nAudience: ${form.audience}${styleCtx}${langNote}\n${form.nonfiction_mode?"Nonfiction mode: include exercises, reflections, and action steps per chapter.":""}\n\nRULES:\n• Generate EXACTLY 12-15 chapters (never fewer than 10)\n• Chapter titles must be SPECIFIC and evocative — never generic (e.g. not "Chapter 1: The Beginning")\n• Each chapter description must be 2-3 sentences with clear conflict or stakes\n• Subtitle must be sharp, benefit-driven, or intriguing\n• Target ~${Math.round(50000/13)} words per chapter\n• No filler chapters — every chapter must earn its place\n\nRespond ONLY with valid JSON:\n{"title":"","subtitle":"","description":"","themes":[""],"tone_notes":"describe the intended emotional register and prose style","estimated_word_count":50000,"writing_language":"${form.language}","chapters":[{"number":1,"title":"","description":"","opening_hook":"how this chapter should open — first line or image","target_words":3800,"${form.nonfiction_mode?"exercise":"notes"}":""}]}`;
       }
       const raw=await callGemini(prompt);
       trackUsage();
@@ -2267,6 +2288,11 @@ function EditorPage({bookId,navigate,onSettings}){
       log("✅ Build already complete — nothing to do. Use ↺ Re-run in the banner to reset.");
       upd({auto_build:false});setIsBuilding(false);return;
     }
+    // Validate chapter count
+    if(!b.needs_outline&&(!b.chapters||b.chapters.length<8)){
+      log("⚠️ Only "+(b.chapters?.length||0)+" chapters found in outline. Regenerate the outline with at least 8 chapters before building.");
+      upd({auto_build:false,build_step:""});setIsBuilding(false);return;
+    }
     setIsBuilding(true);setTab(0);
     try{
       let chapters=b.chapters||[];let outline=b.outline?JSON.parse(b.outline):{};
@@ -2302,7 +2328,7 @@ function EditorPage({bookId,navigate,onSettings}){
       // SEO
       if(!getBook(bookId)?.seo_done){
       log("🔍 Generating SEO…");setTab(3);
-      try{const raw=await callGemini(`You are an Amazon KDP bestseller SEO strategist. Generate complete publishing metadata.\nTitle: "${outline.title||b.title}"\nGenre: ${b.genre}\nAudience: ${b.target_audience}\nDescription: ${outline.description||''}\n\nRespond ONLY valid JSON (no markdown): {"seo_title":"","seo_description":"","primary_keywords":["k1","k2","k3","k4","k5","k6","k7"],"bisac_categories":["CAT1","CAT2"],"back_cover_copy":"","author_bio_template":""}`);bump();const match=raw.match(/\{[\s\S]*\}/);if(match){let seo;try{seo=JSON.parse(match[0]);}catch(pe){throw{code:"PARSE",msg:"AI returned malformed JSON — please retry."};}updateBook(bookId,{seo_title:seo.seo_title||"",seo_description:seo.seo_description||"",seo_keywords:(seo.primary_keywords||[]).join(", "),notes:JSON.stringify(seo),seo_done:true});setBook(getBook(bookId));}}catch(e){if(e?.code==="QUOTA"){setQuotaHit(true);upd({auto_build:false,build_step:""});setIsBuilding(false);return;}}} // end seo_done if
+      try{const raw=await callGemini(`You are an Amazon KDP bestseller SEO strategist. Generate complete publishing metadata.\nTitle: "${outline.title||b.title}"\nGenre: ${b.genre}\nAudience: ${b.target_audience}\nDescription: ${outline.description||''}\n\nRespond ONLY valid JSON (no markdown): {"seo_title":"MAX 60 CHARS — pack the top keyword first","seo_description":"150-200 words — compelling blurb ending with a call to action","primary_keywords":["2-4 word phrase","2-4 word phrase","2-4 word phrase","2-4 word phrase","2-4 word phrase","2-4 word phrase","2-4 word phrase"],"bisac_categories":["CAT1","CAT2"],"back_cover_copy":"","author_bio_template":""}`);bump();const match=raw.match(/\{[\s\S]*\}/);if(match){let seo;try{seo=JSON.parse(match[0]);}catch(pe){throw{code:"PARSE",msg:"AI returned malformed JSON — please retry."};}updateBook(bookId,{seo_title:seo.seo_title||"",seo_description:seo.seo_description||"",seo_keywords:(seo.primary_keywords||[]).join(", "),notes:JSON.stringify(seo),seo_done:true});setBook(getBook(bookId));}}catch(e){if(e?.code==="QUOTA"){setQuotaHit(true);upd({auto_build:false,build_step:""});setIsBuilding(false);return;}}} // end seo_done if
       if(getUsage()>=DAILY_LIMIT){upd({auto_build:false,build_step:""});setIsBuilding(false);return;}
       // Cover
       if(!getBook(bookId)?.cover_done){
