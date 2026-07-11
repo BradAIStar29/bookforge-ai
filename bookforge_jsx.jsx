@@ -421,10 +421,10 @@ function buildEPUB(book){
         `  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">\n`+
         `    <dc:identifier id="uid">${uid}</dc:identifier>\n`+
         `    <dc:title>${safe(title)}</dc:title>\n`+
-        (book.subtitle ? `    <dc:description>${safe(book.subtitle)}</dc:description>\n` : "")+
+        (book.subtitle ? `    <meta property="dcterms:alternative">${safe(book.subtitle)}</meta>\n` : "")+
         `    <dc:creator id="creator">${safe(author)}</dc:creator>\n`+
         `    <meta refines="#creator" property="role" scheme="marc:relators">aut</meta>\n`+
-        `    <dc:language>en</dc:language>\n`+
+        `    <dc:language>${safe((book.writing_language||"English").slice(0,2).toLowerCase())}</dc:language>\n`+
         `    <dc:subject>${safe(book.genre||"")}</dc:subject>\n`+
         (keywords ? `    <dc:subject>${safe(keywords)}</dc:subject>\n` : "")+
         `    <dc:description>${safe(book.description||"")}</dc:description>\n`+
