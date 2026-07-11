@@ -2018,7 +2018,12 @@ setOutline(_ol);setStep(2);
           </div>
           <div className="space-y-5">
             {mode==="idea"?(
-              <div><label className="text-white/70 text-sm font-medium block mb-2">Topic / Story Idea *</label><textarea rows={4} placeholder='E.g. "Two gay college athletes fall in love across rival teams during championship season"' value={form.topic} onChange={e=>setForm({...form,topic:e.target.value})} className="w-full bg-white/10 border border-white/20 rounded-xl px-4 py-3 text-white placeholder-white/25 focus:outline-none focus:border-purple-500 resize-none text-sm"/></div>
+              <div><label className="text-white/70 text-sm font-medium block mb-2">Topic / Story Idea *</label><textarea rows={4} placeholder='E.g. "Two gay college athletes fall in love across rival teams during championship season"' value={form.topic} onChange={e=>setForm({...form,topic:e.target.value})} className="w-full bg-white/10 border border-white/20 rounded-xl px-4 py-3 text-white placeholder-white/25 focus:outline-none focus:border-purple-500 resize-none text-sm"/>
+            <div className="flex flex-wrap gap-2 mt-2">
+              {['A second-chance romance at a coastal B&B','A detective haunted by the case that got away','A self-help book on building unshakeable morning habits','A cozy mystery in a Scottish castle','An enemies-to-lovers billionaire romance','A spiritual memoir of finding purpose after loss'].map(s=>(
+                <button key={s} onClick={()=>setForm(f=>({...f,topic:s}))} className="text-xs px-2.5 py-1 rounded-lg bg-white/5 border border-white/10 text-white/40 hover:text-white/70 hover:bg-white/10 transition-all text-left">{s}</button>
+              ))}
+            </div></div>
             ):(
               <div>
                 <label className="text-white/70 text-sm font-medium block mb-2">Paste Your Draft / Notes *</label>
@@ -2180,7 +2185,12 @@ function ChapterEditor({book,chIdx,upd}){
     return(
       <div>
         <div className="flex items-center justify-between mb-3">
-          <span className="text-white/40 text-xs">{wordCount.toLocaleString()} words</span>
+          {(()=>{
+  const target=ch?.target_words||3800;
+  const pct=target>0?Math.round((wordCount/target)*100):100;
+  const color=pct>=90?'text-green-400':pct>=70?'text-amber-400':'text-red-400';
+  return(<><span className="text-white/40 text-xs">{wordCount.toLocaleString()} words</span>{ch?.target_words&&<span className={}>{pct}% of target</span>}</>);
+})()}
           <div className="flex gap-2">
             <button onClick={()=>{setDraft(ch?.content||"");setEditing(false);setSelPara(null);}} className="text-xs px-3 py-1.5 rounded-lg bg-white/5 text-white/50 hover:bg-white/10">Cancel</button>
             <button onClick={save} className="text-xs px-3 py-1.5 rounded-lg bg-green-500/20 text-green-300 border border-green-500/30 hover:bg-green-500/30 font-medium">✅ Save</button>
@@ -2216,11 +2226,29 @@ function ChapterEditor({book,chIdx,upd}){
     <div>
       <div className="flex items-center justify-between mb-3">
         <div className="flex items-center gap-3">
-          <span className="text-white/40 text-xs">{ch?.content?ch.content.trim().split(/\s+/).length.toLocaleString():0} words</span>
-          {ch?.content&&<span className="text-white/25 text-xs">~{Math.ceil((ch.content.split(/\s+/).length||0)/200)} min read</span>}
+{(()=>{
+  const wc=ch?.content?ch.content.trim().split(/\s+/).length:0;
+  const target=ch?.target_words||3800;
+  const pct=target>0?Math.round((wc/target)*100):100;
+  const color=pct>=90?'text-green-400':pct>=70?'text-amber-400':'text-red-400';
+  return(<>
+    <span className="text-white/40 text-xs">{wc.toLocaleString()} words</span>
+    {ch?.target_words&&<span className={}>{pct}% of {target.toLocaleString()} target</span>}
+    {ch?.content&&<span className="text-white/25 text-xs">~{Math.ceil(wc/200)} min read</span>}
+  </>);
+})()}
         </div>
         <button onClick={()=>{setDraft(ch?.content||"");setEditing(true);}} className="text-xs px-3 py-1.5 rounded-lg bg-white/5 text-white/50 border border-white/10 hover:bg-white/10 hover:text-white/80 transition-all">✏️ Edit & Rewrite</button>
       </div>
+      {(ch?.opening_hook||ch?.notes)&&(
+  <details className="mb-3">
+    <summary className="text-white/30 text-xs cursor-pointer hover:text-white/50 select-none">📋 Chapter brief</summary>
+    <div className="mt-2 p-3 bg-white/3 border border-white/8 rounded-xl space-y-1">
+      {ch?.opening_hook&&<p className="text-white/40 text-xs"><span className="text-purple-400/60 font-medium">Hook: </span>{ch.opening_hook}</p>}
+      {ch?.notes&&<p className="text-white/40 text-xs"><span className="text-blue-400/60 font-medium">Notes: </span>{ch.notes}</p>}
+    </div>
+  </details>
+)}
       <div className="text-white/75 text-sm leading-relaxed whitespace-pre-wrap max-h-[560px] overflow-y-auto pr-2">{ch?.content}</div>
     </div>
   );
@@ -3579,7 +3607,19 @@ function TranslatePanel({book,upd,quotaHit,bump,handleErr,flash}){
           <h2 className="text-white text-xl font-bold mb-1">Book Translation</h2>
           <p className="text-white/40 text-sm">Translate your entire book into 30+ languages. Reach new KDP markets.</p>
         </div>
-        {done&&<div className="bg-green-500/15 border border-green-500/30 rounded-xl p-4 mb-5 text-center"><p className="text-green-300 font-semibold">✅ Translation complete! All chapters now in {targetLang}.</p><p className="text-green-300/60 text-xs mt-1">Re-run the Writing Quality Agent to verify quality in the new language.</p></div>}
+        {done&&<div className="bg-green-500/15 border border-green-500/30 rounded-xl p-4 mb-5 text-center">
+  <p className="text-green-300 font-semibold">✅ Translation complete! All chapters now in {targetLang}.</p>
+  <p className="text-green-300/60 text-xs mt-1 mb-3">Re-run the Writing Quality Agent to verify quality in the new language.</p>
+  <button onClick={async()=>{
+    try{
+      const blob=await buildEPUB({...book,chapters:(book.chapters||[]).map((c,i)=>({...c,content:c.content})),title:book.title+' ('+targetLang+')',subtitle:book.subtitle,writing_language:targetLang});
+      const url=URL.createObjectURL(blob);
+      const a=document.createElement('a');
+      a.href=url;a.download=(book.title||'book').replace(/[^a-z0-9]/gi,'_')+'_'+targetLang+'.epub';
+      a.click();URL.revokeObjectURL(url);
+    }catch(e){flash('Export failed: '+e.message,'red');}
+  }} className="px-4 py-2 bg-blue-500/20 border border-blue-500/30 text-blue-300 rounded-xl text-sm hover:bg-blue-500/30 transition-all">📥 Download Translated EPUB</button>
+</div>}
         {error&&<p className="text-red-400 text-sm mb-4 bg-red-500/10 rounded-xl p-3">{error}</p>}
         <div className="space-y-4">
           <div>
