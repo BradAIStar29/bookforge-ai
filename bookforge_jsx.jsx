@@ -1273,7 +1273,7 @@ function ChapterQualityPanel({book,onSettings}){
         `Book: "${book.title}" (${book.genre})\nChapter ${ch.number}: "${ch.title}"\n\n`+
         `CHAPTER TEXT (first 3000 chars):\n${ch.content.slice(0,3000)}\n\n`+
         `Respond ONLY with valid JSON:\n`+
-        `{"pacing_score":80,"tension_score":75,"character_voice_score":85,"prose_quality_score":80,"hook_score":70,`+
+        `{"pacing_score":80,"dialogue_ratio":35,"tension_score":75,"character_voice_score":85,"prose_quality_score":80,"hook_score":70,`+
         `"overall_score":78,"verdict":"STRONG","one_line_verdict":"One sentence assessment.",`+
         `"strengths":["strength 1","strength 2"],`+
         `"weaknesses":["specific weakness 1","specific weakness 2"],`+
@@ -1315,7 +1315,7 @@ function ChapterQualityPanel({book,onSettings}){
               </div>
               {s&&<>
                 <div className="grid grid-cols-5 gap-2 mb-3">
-                  {[["Pacing","pacing_score"],["Tension","tension_score"],["Voice","character_voice_score"],["Prose","prose_quality_score"],["Hook","hook_score"]].map(([label,key])=>(
+                  {[["Pacing","pacing_score"],["Dialogue%","dialogue_ratio"],["Tension","tension_score"],["Voice","character_voice_score"],["Prose","prose_quality_score"],["Hook","hook_score"]].map(([label,key])=>(
                     <div key={key} className="text-center"><div className={`text-sm font-bold ${scoreColor(s[key])}`}>{s[key]}</div><div className="text-white/25 text-xs">{label}</div></div>
                   ))}
                 </div>
@@ -1510,6 +1510,9 @@ function QueuePage({navigate,onSettings}){
   const [qBooks,setQBooks]=useState(getBooks());
   const [running,setRunning]=useState(false);
   const [currentId,setCurrentId]=useState(null);
+  const [buildStart,setBuildStart]=useState(null);
+  const [builtSoFar,setBuiltSoFar]=useState(0);
+  const [totalToBuild,setTotalToBuild]=useState(0);
   const [log,setLog]=useState([]);
   const runRef=useRef(false);
 
@@ -1594,6 +1597,7 @@ function QueuePage({navigate,onSettings}){
         }
         // Done — remove from queue
         removeFromQueue(id);
+        setBuiltSoFar(n=>n+1);
         addLog(`✅ "${book.title}" complete!`);
         reload();
       }catch(e){
@@ -1621,6 +1625,16 @@ function QueuePage({navigate,onSettings}){
         {queuedIds.length>0&&<button onClick={runQueue} disabled={running} className="bg-gradient-to-r from-purple-500 to-pink-500 text-white px-5 py-2.5 rounded-xl font-semibold hover:opacity-90 disabled:opacity-50 flex items-center gap-2">{running?<><Spin/>Running queue…</>:"▶ Start Queue"}</button>}
       </div>
 
+      {running&&buildStart&&builtSoFar>0&&(()=>{
+        const elapsed=(Date.now()-buildStart)/1000;
+        const rate=builtSoFar/elapsed;
+        const remaining=Math.max(totalToBuild-builtSoFar,0);
+        const etaSecs=remaining/Math.max(rate,0.0001);
+        const mins=Math.round(etaSecs/60);
+        return(<p className="text-white/30 text-xs text-center mb-4">
+          {builtSoFar}/{totalToBuild} books done · {mins>0?`~${mins} min remaining`:"Almost done…"}
+        </p>);
+      })()}
       {/* Live log */}
       {log.length>0&&(
         <div className="bg-black/40 border border-white/10 rounded-2xl p-4 mb-6 max-h-48 overflow-y-auto">
@@ -1868,9 +1882,12 @@ function SeriesPage({navigate,onSettings}){
 function HomePage({navigate,onSettings}){
   const [allBooks,setBooksList]=useState([]);
   const [search,setSearch]=useState("");
+  const [filterGenre,setFilterGenre]=useState("");
+  const [filterStatus,setFilterStatus]=useState("");
   useEffect(()=>setBooksList(getBooks()),[]);
   const sortedBooks=[...allBooks].sort((a,b)=>{ if(a.auto_build&&!b.auto_build)return -1; if(!a.auto_build&&b.auto_build)return 1; return new Date(b.created_date||0)-new Date(a.created_date||0); });
-  const books=search.trim()?sortedBooks.filter(b=>(b.title||"").toLowerCase().includes(search.toLowerCase())||(b.genre||"").toLowerCase().includes(search.toLowerCase())||(b.status||"").toLowerCase().includes(search.toLowerCase())):sortedBooks;
+  const searchedBooks=search.trim()?sortedBooks.filter(b=>(b.title||"").toLowerCase().includes(search.toLowerCase())||(b.genre||"").toLowerCase().includes(search.toLowerCase())||(b.status||"").toLowerCase().includes(search.toLowerCase())):sortedBooks;
+  const books=searchedBooks.filter(b=>!filterGenre||b.genre===filterGenre).filter(b=>!filterStatus||b.status===filterStatus);
   const del=(id,e)=>{e.stopPropagation();if(!confirm("Delete this book?"))return;const b=getBooks().filter(x=>x.id!==id);setBooks(b);setBooksList(b);};
   const pct=b=>b.chapters?.length>0?(b.chapters.filter(c=>c.generated).length/b.chapters.length)*100:0;
   return(
@@ -1904,7 +1921,17 @@ function HomePage({navigate,onSettings}){
         <h2 className="text-white text-xl font-bold">Your Library</h2>
         <button onClick={()=>navigate("create")} className="bg-gradient-to-r from-purple-500 to-pink-500 text-white px-5 py-2.5 rounded-xl font-semibold hover:opacity-90">+ New Book</button>
       </div>
-            <input type="text" placeholder="🔍 Search by title, genre, or status…" value={search} onChange={e=>setSearch(e.target.value)} className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-2.5 text-white text-sm placeholder-white/30 focus:outline-none focus:border-purple-500/50 mb-4"/>
+            <div className="flex flex-wrap gap-2 mb-4">
+            <input type="text" placeholder="🔍 Search by title, genre, or status…" value={search} onChange={e=>setSearch(e.target.value)} className="flex-1 min-w-48 bg-white/5 border border-white/10 rounded-xl px-4 py-2.5 text-white text-sm placeholder-white/30 focus:outline-none focus:border-purple-500/50"/>
+            <select value={filterGenre} onChange={e=>setFilterGenre(e.target.value)} className="bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-white/60 text-sm focus:outline-none focus:border-purple-500 cursor-pointer">
+              <option value="">All genres</option>
+              {GENRES.map(g=><option key={g} value={g}>{g}</option>)}
+            </select>
+            <select value={filterStatus} onChange={e=>setFilterStatus(e.target.value)} className="bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-white/60 text-sm focus:outline-none focus:border-purple-500 cursor-pointer">
+              <option value="">All statuses</option>
+              {['idea','outlining','writing','ready','published','queued'].map(s=><option key={s} value={s}>{s.charAt(0).toUpperCase()+s.slice(1)}</option>)}
+            </select>
+          </div>
       {books.length===0?(
         <div className="text-center py-24"><div className="text-7xl mb-4">📖</div><h2 className="text-white text-2xl font-bold mb-2">No books yet</h2><p className="text-white/40 mb-8">Generate your first AI-powered book in minutes</p><button onClick={()=>navigate("create")} className="bg-gradient-to-r from-purple-500 to-pink-500 text-white px-10 py-4 rounded-xl font-semibold text-lg hover:opacity-90">✨ Create Your First Book</button></div>
       ):(
@@ -2189,7 +2216,12 @@ function ChapterEditor({book,chIdx,upd}){
   const target=ch?.target_words||3800;
   const pct=target>0?Math.round((wordCount/target)*100):100;
   const color=pct>=90?'text-green-400':pct>=70?'text-amber-400':'text-red-400';
-  return(<><span className="text-white/40 text-xs">{wordCount.toLocaleString()} words</span>{ch?.target_words&&<span className={}>{pct}% of target</span>}</>);
+  return(<>{(()=>{
+            const target=ch?.target_words||0;
+            const pct=target>0?Math.round((wordCount/target)*100):null;
+            const color=!pct||pct>=90?"text-green-400":pct>=70?"text-amber-400":"text-red-400";
+            return(<><span className="text-white/40 text-xs">{wordCount.toLocaleString()} words</span>{target>0&&<span className={`text-xs ml-2 ${color}`}>{pct}% of target</span>}</>);
+          })()}{ch?.target_words&&<span className={}>{pct}% of target</span>}</>);
 })()}
           <div className="flex gap-2">
             <button onClick={()=>{setDraft(ch?.content||"");setEditing(false);setSelPara(null);}} className="text-xs px-3 py-1.5 rounded-lg bg-white/5 text-white/50 hover:bg-white/10">Cancel</button>
@@ -2249,6 +2281,15 @@ function ChapterEditor({book,chIdx,upd}){
     </div>
   </details>
 )}
+      {(ch?.opening_hook||ch?.notes)&&(
+        <details className="mb-3">
+          <summary className="text-white/30 text-xs cursor-pointer hover:text-white/50 select-none">📋 Chapter brief</summary>
+          <div className="mt-2 p-3 bg-white/5 border border-white/8 rounded-xl space-y-1.5">
+            {ch?.opening_hook&&<p className="text-white/40 text-xs"><span className="text-purple-400/70 font-medium">Hook: </span>{ch.opening_hook}</p>}
+            {ch?.notes&&<p className="text-white/40 text-xs"><span className="text-blue-400/70 font-medium">Notes: </span>{ch.notes}</p>}
+          </div>
+        </details>
+      )}
       <div className="text-white/75 text-sm leading-relaxed whitespace-pre-wrap max-h-[560px] overflow-y-auto pr-2">{ch?.content}</div>
     </div>
   );
