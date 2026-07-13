@@ -2213,16 +2213,11 @@ function ChapterEditor({book,chIdx,upd}){
       <div>
         <div className="flex items-center justify-between mb-3">
           {(()=>{
-  const target=ch?.target_words||3800;
-  const pct=target>0?Math.round((wordCount/target)*100):100;
-  const color=pct>=90?'text-green-400':pct>=70?'text-amber-400':'text-red-400';
-  return(<>{(()=>{
             const target=ch?.target_words||0;
             const pct=target>0?Math.round((wordCount/target)*100):null;
             const color=!pct||pct>=90?"text-green-400":pct>=70?"text-amber-400":"text-red-400";
             return(<><span className="text-white/40 text-xs">{wordCount.toLocaleString()} words</span>{target>0&&<span className={`text-xs ml-2 ${color}`}>{pct}% of target</span>}</>);
-          })()}{ch?.target_words&&<span className={}>{pct}% of target</span>}</>);
-})()}
+          })()}
           <div className="flex gap-2">
             <button onClick={()=>{setDraft(ch?.content||"");setEditing(false);setSelPara(null);}} className="text-xs px-3 py-1.5 rounded-lg bg-white/5 text-white/50 hover:bg-white/10">Cancel</button>
             <button onClick={save} className="text-xs px-3 py-1.5 rounded-lg bg-green-500/20 text-green-300 border border-green-500/30 hover:bg-green-500/30 font-medium">✅ Save</button>
@@ -2258,29 +2253,20 @@ function ChapterEditor({book,chIdx,upd}){
     <div>
       <div className="flex items-center justify-between mb-3">
         <div className="flex items-center gap-3">
-{(()=>{
-  const wc=ch?.content?ch.content.trim().split(/\s+/).length:0;
-  const target=ch?.target_words||3800;
-  const pct=target>0?Math.round((wc/target)*100):100;
-  const color=pct>=90?'text-green-400':pct>=70?'text-amber-400':'text-red-400';
-  return(<>
-    <span className="text-white/40 text-xs">{wc.toLocaleString()} words</span>
-    {ch?.target_words&&<span className={}>{pct}% of {target.toLocaleString()} target</span>}
-    {ch?.content&&<span className="text-white/25 text-xs">~{Math.ceil(wc/200)} min read</span>}
-  </>);
-})()}
+        {(()=>{
+          const wc=ch?.content?ch.content.trim().split(/\s+/).length:0;
+          const target=ch?.target_words||0;
+          const pct=target>0?Math.round((wc/target)*100):null;
+          const color=!pct||pct>=90?"text-green-400":pct>=70?"text-amber-400":"text-red-400";
+          return(<>
+            <span className="text-white/40 text-xs">{wc.toLocaleString()} words</span>
+            {target>0&&<span className={`text-xs font-medium ${color}`}>{pct}% of {target.toLocaleString()} target</span>}
+            {wc>0&&<span className="text-white/25 text-xs">~{Math.ceil(wc/200)} min read</span>}
+          </>);
+        })()}
         </div>
         <button onClick={()=>{setDraft(ch?.content||"");setEditing(true);}} className="text-xs px-3 py-1.5 rounded-lg bg-white/5 text-white/50 border border-white/10 hover:bg-white/10 hover:text-white/80 transition-all">✏️ Edit & Rewrite</button>
       </div>
-      {(ch?.opening_hook||ch?.notes)&&(
-  <details className="mb-3">
-    <summary className="text-white/30 text-xs cursor-pointer hover:text-white/50 select-none">📋 Chapter brief</summary>
-    <div className="mt-2 p-3 bg-white/3 border border-white/8 rounded-xl space-y-1">
-      {ch?.opening_hook&&<p className="text-white/40 text-xs"><span className="text-purple-400/60 font-medium">Hook: </span>{ch.opening_hook}</p>}
-      {ch?.notes&&<p className="text-white/40 text-xs"><span className="text-blue-400/60 font-medium">Notes: </span>{ch.notes}</p>}
-    </div>
-  </details>
-)}
       {(ch?.opening_hook||ch?.notes)&&(
         <details className="mb-3">
           <summary className="text-white/30 text-xs cursor-pointer hover:text-white/50 select-none">📋 Chapter brief</summary>
