@@ -287,6 +287,29 @@ async function callPuter(prompt,temperature=0.85,opts={}){
   let lastErr=null;
   for(let attempt=0;attempt<=maxRetries;attempt++){
     try{
+      // Streaming mode — Puter.js supports async iterators when stream:true
+      if(opts.onStream){
+        const resp=await puter.ai.chat(prompt,{model,temperature:Math.min(temperature,1),stream:true});
+        let fullText="";
+        // Puter returns an async iterable for streaming
+        if(resp&&typeof resp[Symbol.asyncIterator]==="function"){
+          for await(const part of resp){
+            const chunk=part?.text||part?.message?.content||"";
+            if(chunk){
+              fullText+=chunk;
+              opts.onStream(fullText);
+            }
+          }
+        }else{
+          // Fallback — some Puter versions return a callback-based stream
+          fullText=typeof resp==="string"?resp:String(resp);
+          opts.onStream(fullText);
+        }
+        fullText=fullText.trim();
+        if(!fullText)throw{code:"EMPTY"};
+        trackUsage();
+        return fullText;
+      }
       const resp=await puter.ai.chat(prompt,{model,temperature:Math.min(temperature,1)});
       // Puter returns text directly or in message.content
       let text="";
@@ -326,11 +349,11 @@ async function callGroq(prompt,temperature=0.85,opts={}){
   if(!key)throw{code:"NO_KEY",msg:"Groq API key missing — add one in Settings."};
   const model=getGroqModel();
   
-  const controller=new AbortController();
-  const timeout=setTimeout(()=>controller.abort(),120000);
-  
   let retries=0;
+  let controller,timeout;
   while(retries<=2){
+    controller=new AbortController();
+    timeout=setTimeout(()=>controller.abort(),120000);
     try{
       const resp=await fetch(GROQ_URL,{
         method:"POST",
@@ -407,7 +430,7 @@ async function callGroq(prompt,temperature=0.85,opts={}){
       trackUsage();
       return text;
     }catch(e){
-      clearTimeout(timeout);
+      if(timeout)clearTimeout(timeout);
       if(e?.name==="AbortError"){
         if(retries<2){
           window.dispatchEvent(new CustomEvent("bfai:retry",{detail:{attempt:retries+1}}));
@@ -452,7 +475,10 @@ async function callAIStream(prompt,temperature=0.85,opts={}){
   if(backend==="groq"&&opts.onStream){
     return callGroq(prompt,temperature,opts);
   }
-  // Fallback: generate all at once, then deliver
+  if(backend==="puter"&&opts.onStream){
+    return callPuter(prompt,temperature,opts);
+  }
+  // Gemini doesn't support SSE — generate all at once, then deliver
   const text=await callAI(prompt,temperature,opts);
   if(opts.onStream)opts.onStream(text);
   return text;
@@ -2685,8 +2711,9 @@ function ChapterEditor({book,chIdx,upd}){
 
   // Paragraph-level rewrite
   const rewriteParagraph=async(paraText,paraIdx,paragraphs)=>{
-    if(rewriting||!getKey())return;
-    setRewriting(true);setRewriteErr("");
+    if(rewriting)return;
+    if(getBackend()==="gemini"&&!getKey())return;
+    setSelPara(paraIdx);setRewriting(true);setRewriteErr("");
     try{
       const vp=getVoiceProfile();
       const voiceCtx=vp?.sample_analysis?`\nVOICE STYLE: ${vp.sample_analysis}\nMatch this style exactly.`:"";
@@ -2703,7 +2730,14 @@ function ChapterEditor({book,chIdx,upd}){
       newParas[paraIdx]=result.trim();
       const newContent=newParas.join("\n\n");
       setDraft(newContent);
-    }catch(e){setRewriteErr(errMsg(e));}finally{setRewriting(false);}
+      // Immediately persist the rewrite — don't wait for autosave
+      const chapters=[...(book.chapters||[])];
+      if(chapters[chIdx]){
+        chapters[chIdx]={...chapters[chIdx],content:newContent};
+        const wc=chapters.reduce((a,c)=>a+(c.content?c.content.split(/\s+/).length:0),0);
+        updateBook(book.id,{chapters,word_count:wc});
+      }
+    }catch(e){setRewriteErr(errMsg(e));}finally{setRewriting(false);setSelPara(null);}
   };
 
   if(editing){
@@ -2867,7 +2901,7 @@ function EditorPage({bookId,navigate,onSettings}){
           const charCtx=chars.length?`\n\nESTABLISHED CHARACTERS (maintain exact consistency):\n${chars.map(c=>`${c.name} [${c.role||""}]: ${c.appearance||""} — ${c.personality||""}`).join("\n")}`:"";
           const langNote=b.writing_language&&b.writing_language!=="English"?`\n\nWRITE IN: ${b.writing_language}`:"";
           const nonfictionNote=b.nonfiction_mode?"\n\nNONFICTION MODE: End the chapter with a clearly marked Exercise, Reflection question, and Action Step.":"";
-          const content=await callAI(`Write Chapter ${chapters[i].number}: "${chapters[i].title}" for a ${b.genre} book titled "${outline.title}".${seriesCtx}${voiceCtx}${charCtx}${langNote}${nonfictionNote}\n\nChapter: ${chapters[i].description}\nPrevious: ${prev}\nAudience: ${b.target_audience}\n\n${(()=>{const tw=ch?.target_words||3800;return `${Math.round(tw*0.75).toLocaleString()}–${tw.toLocaleString()} words`;})()}. Match genre tone precisely.\n\nSTRUCTURE:\n• 3-5 distinct scenes per chapter, separated by: ⁂\n• Each scene has a clear goal → obstacle → outcome\n• Chapter must END on a hook, unresolved tension, or revelation that forces reading on\n• DO NOT wrap up cleanly — the best chapters end mid-breath\n\nWRITING RULES — violating these will get this chapter rejected:\n• NEVER start a sentence with 'He/She/They couldn't help but', 'In that moment', 'It dawned on', 'Something about the way', 'A wave of', 'A surge of'\n• NEVER state emotions directly ('he felt sad', 'warmth spread through her') — express through physical action, dialogue, or specific sensory detail\n• NEVER use em-dashes for dramatic effect more than once per page\n• VARY sentence length violently: one-word sentences. Fragments. Then a long, breathing sentence that winds through a scene and refuses to end neatly.\n• Dialogue must be messy and human: people talk past each other, leave things half-said, interrupt, change subject\n• Use SPECIFIC details: not 'the coffee shop smelled like coffee' but the burnt-sugar smell of the espresso machine at 6am, the sticky ring on the table from someone's iced latte\n• No clean emotional resolutions — conflict leaves residue\n• Character psychology must be specific, not convenient\n• Read like a novel — no chapter summaries, no scene headers, no markdown`,0.85,{onStream:t=>{setBuildStep(`Ch.${i+1}/${chapters.length}: ${t.split(/\s+/).filter(Boolean).length} words streamed…`)}});
+          const content=await callAIStream(`Write Chapter ${chapters[i].number}: "${chapters[i].title}" for a ${b.genre} book titled "${outline.title}".${seriesCtx}${voiceCtx}${charCtx}${langNote}${nonfictionNote}\n\nChapter: ${chapters[i].description}\nPrevious: ${prev}\nAudience: ${b.target_audience}\n\n${(()=>{const tw=ch?.target_words||3800;return `${Math.round(tw*0.75).toLocaleString()}–${tw.toLocaleString()} words`;})()}. Match genre tone precisely.\n\nSTRUCTURE:\n• 3-5 distinct scenes per chapter, separated by: ⁂\n• Each scene has a clear goal → obstacle → outcome\n• Chapter must END on a hook, unresolved tension, or revelation that forces reading on\n• DO NOT wrap up cleanly — the best chapters end mid-breath\n\nWRITING RULES — violating these will get this chapter rejected:\n• NEVER start a sentence with 'He/She/They couldn't help but', 'In that moment', 'It dawned on', 'Something about the way', 'A wave of', 'A surge of'\n• NEVER state emotions directly ('he felt sad', 'warmth spread through her') — express through physical action, dialogue, or specific sensory detail\n• NEVER use em-dashes for dramatic effect more than once per page\n• VARY sentence length violently: one-word sentences. Fragments. Then a long, breathing sentence that winds through a scene and refuses to end neatly.\n• Dialogue must be messy and human: people talk past each other, leave things half-said, interrupt, change subject\n• Use SPECIFIC details: not 'the coffee shop smelled like coffee' but the burnt-sugar smell of the espresso machine at 6am, the sticky ring on the table from someone's iced latte\n• No clean emotional resolutions — conflict leaves residue\n• Character psychology must be specific, not convenient\n• Read like a novel — no chapter summaries, no scene headers, no markdown`,0.85,{onStream:t=>{setBuildStep(`Ch.${i+1}/${chapters.length}: ${t.split(/\s+/).filter(Boolean).length} words streamed…`)}});
           setStreamText(null);
           bump();chapters[i]={...chapters[i],content,generated:true};
           const wc=chapters.reduce((a,c)=>a+(c.content?c.content.split(/\s+/).length:0),0);
@@ -3037,7 +3071,7 @@ function EditorPage({bookId,navigate,onSettings}){
       const charCtx=chars.length?`\n\nCHARACTERS:\n${chars.map(c=>`${c.name}: ${c.appearance||""} — ${c.personality||""}`).join("\n")}`:"";
       const langNote=book.writing_language&&book.writing_language!=="English"?`\n\nWRITE IN: ${book.writing_language}`:"";
       const nfNote=book.nonfiction_mode?"\n\nEnd with: Exercise, Reflection, Action Step.":"";
-      const content=await callAI(`Write Chapter ${ch.number}: "${ch.title}" for a ${book.genre} book titled "${outline.title}".${seriesCtx}${voiceCtx}${charCtx}${langNote}${nfNote}\n\nDesc: ${ch.description}\nPrevious: ${prev}\nAudience: ${book.target_audience}\n\n${(()=>{const tw=chapters[i]?.target_words||3800;return `${Math.round(tw*0.75).toLocaleString()}–${tw.toLocaleString()} words`;})()}. Match genre tone.\n\nSTRUCTURE:\n• 3-5 distinct scenes per chapter, separated by: ⁂\n• Each scene has a clear goal → obstacle → outcome\n• Chapter must END on a hook, unresolved tension, or revelation that forces reading on\n• DO NOT wrap up cleanly — the best chapters end mid-breath\n\nWRITING RULES — violating these will get this chapter rejected:\n• NEVER start a sentence with 'He/She/They couldn't help but', 'In that moment', 'It dawned on', 'Something about the way', 'A wave of', 'A surge of'\n• NEVER state emotions directly ('he felt sad', 'warmth spread through her') — express through physical action, dialogue, or specific sensory detail\n• NEVER use em-dashes for dramatic effect more than once per page\n• VARY sentence length violently: one-word sentences. Fragments. Then a long, breathing sentence that winds through a scene and refuses to end neatly.\n• Dialogue must be messy and human: people talk past each other, leave things half-said, interrupt, change subject\n• Use SPECIFIC details: not 'the coffee shop smelled like coffee' but the burnt-sugar smell of the espresso machine at 6am, the sticky ring on the table from someone's iced latte\n• No clean emotional resolutions — conflict leaves residue\n• Character psychology must be specific, not convenient\n• Read like a novel — no chapter summaries, no scene headers, no markdown`);
+      const content=await callAIStream(`Write Chapter ${ch.number}: "${ch.title}" for a ${book.genre} book titled "${outline.title}".${seriesCtx}${voiceCtx}${charCtx}${langNote}${nfNote}\n\nDesc: ${ch.description}\nPrevious: ${prev}\nAudience: ${book.target_audience}\n\n${(()=>{const tw=chapters[i]?.target_words||3800;return `${Math.round(tw*0.75).toLocaleString()}–${tw.toLocaleString()} words`;})()}. Match genre tone.\n\nSTRUCTURE:\n• 3-5 distinct scenes per chapter, separated by: ⁂\n• Each scene has a clear goal → obstacle → outcome\n• Chapter must END on a hook, unresolved tension, or revelation that forces reading on\n• DO NOT wrap up cleanly — the best chapters end mid-breath\n\nWRITING RULES — violating these will get this chapter rejected:\n• NEVER start a sentence with 'He/She/They couldn't help but', 'In that moment', 'It dawned on', 'Something about the way', 'A wave of', 'A surge of'\n• NEVER state emotions directly ('he felt sad', 'warmth spread through her') — express through physical action, dialogue, or specific sensory detail\n• NEVER use em-dashes for dramatic effect more than once per page\n• VARY sentence length violently: one-word sentences. Fragments. Then a long, breathing sentence that winds through a scene and refuses to end neatly.\n• Dialogue must be messy and human: people talk past each other, leave things half-said, interrupt, change subject\n• Use SPECIFIC details: not 'the coffee shop smelled like coffee' but the burnt-sugar smell of the espresso machine at 6am, the sticky ring on the table from someone's iced latte\n• No clean emotional resolutions — conflict leaves residue\n• Character psychology must be specific, not convenient\n• Read like a novel — no chapter summaries, no scene headers, no markdown`,0.85,{onStream:t=>setStreamText(t)});
       bump();const chapters=[...(book.chapters||[])];chapters[idx]={...chapters[idx],content,generated:true};
       const wc=chapters.reduce((a,c)=>a+(c.content?c.content.split(/\s+/).length:0),0);
       // If all chapters now done + pipeline already ran → auto-stamp build_complete

@@ -364,6 +364,26 @@ async function callPuter(prompt, temperature = 0.85, opts = {}) {
   let lastErr = null;
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
+      if (opts.onStream) {
+        const resp2 = await puter.ai.chat(prompt, { model, temperature: Math.min(temperature, 1), stream: true });
+        let fullText = "";
+        if (resp2 && typeof resp2[Symbol.asyncIterator] === "function") {
+          for await (const part of resp2) {
+            const chunk = part?.text || part?.message?.content || "";
+            if (chunk) {
+              fullText += chunk;
+              opts.onStream(fullText);
+            }
+          }
+        } else {
+          fullText = typeof resp2 === "string" ? resp2 : String(resp2);
+          opts.onStream(fullText);
+        }
+        fullText = fullText.trim();
+        if (!fullText) throw { code: "EMPTY" };
+        trackUsage();
+        return fullText;
+      }
       const resp = await puter.ai.chat(prompt, { model, temperature: Math.min(temperature, 1) });
       let text = "";
       if (typeof resp === "string") text = resp;
@@ -397,10 +417,11 @@ async function callGroq(prompt, temperature = 0.85, opts = {}) {
   const key = getGroqKey();
   if (!key) throw { code: "NO_KEY", msg: "Groq API key missing \u2014 add one in Settings." };
   const model = getGroqModel();
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 12e4);
   let retries = 0;
+  let controller, timeout;
   while (retries <= 2) {
+    controller = new AbortController();
+    timeout = setTimeout(() => controller.abort(), 12e4);
     try {
       const resp = await fetch(GROQ_URL, {
         method: "POST",
@@ -471,7 +492,7 @@ async function callGroq(prompt, temperature = 0.85, opts = {}) {
       trackUsage();
       return text;
     } catch (e) {
-      clearTimeout(timeout);
+      if (timeout) clearTimeout(timeout);
       if (e?.name === "AbortError") {
         if (retries < 2) {
           window.dispatchEvent(new CustomEvent("bfai:retry", { detail: { attempt: retries + 1 } }));
@@ -509,6 +530,9 @@ async function callAIStream(prompt, temperature = 0.85, opts = {}) {
   const backend = getBackend();
   if (backend === "groq" && opts.onStream) {
     return callGroq(prompt, temperature, opts);
+  }
+  if (backend === "puter" && opts.onStream) {
+    return callPuter(prompt, temperature, opts);
   }
   const text = await callAI(prompt, temperature, opts);
   if (opts.onStream) opts.onStream(text);
@@ -2427,7 +2451,9 @@ function ChapterEditor({ book, chIdx, upd }) {
     setEditing(false);
   };
   const rewriteParagraph = async (paraText, paraIdx, paragraphs) => {
-    if (rewriting || !getKey()) return;
+    if (rewriting) return;
+    if (getBackend() === "gemini" && !getKey()) return;
+    setSelPara(paraIdx);
     setRewriting(true);
     setRewriteErr("");
     try {
@@ -2458,10 +2484,17 @@ RULES:
       newParas[paraIdx] = result.trim();
       const newContent = newParas.join("\n\n");
       setDraft(newContent);
+      const chapters = [...book.chapters || []];
+      if (chapters[chIdx]) {
+        chapters[chIdx] = { ...chapters[chIdx], content: newContent };
+        const wc = chapters.reduce((a, c) => a + (c.content ? c.content.split(/\s+/).length : 0), 0);
+        updateBook(book.id, { chapters, word_count: wc });
+      }
     } catch (e) {
       setRewriteErr(errMsg(e));
     } finally {
       setRewriting(false);
+      setSelPara(null);
     }
   };
   if (editing) {
@@ -2669,7 +2702,7 @@ ${chars.map((c) => `${c.name} [${c.role || ""}]: ${c.appearance || ""} \u2014 ${
 
 WRITE IN: ${b.writing_language}` : "";
           const nonfictionNote = b.nonfiction_mode ? "\n\nNONFICTION MODE: End the chapter with a clearly marked Exercise, Reflection question, and Action Step." : "";
-          const content = await callAI(`Write Chapter ${chapters[i2].number}: "${chapters[i2].title}" for a ${b.genre} book titled "${outline.title}".${seriesCtx}${voiceCtx}${charCtx}${langNote}${nonfictionNote}
+          const content = await callAIStream(`Write Chapter ${chapters[i2].number}: "${chapters[i2].title}" for a ${b.genre} book titled "${outline.title}".${seriesCtx}${voiceCtx}${charCtx}${langNote}${nonfictionNote}
 
 Chapter: ${chapters[i2].description}
 Previous: ${prev}
@@ -3067,7 +3100,7 @@ ${chars.map((c) => `${c.name}: ${c.appearance || ""} \u2014 ${c.personality || "
 
 WRITE IN: ${book.writing_language}` : "";
       const nfNote = book.nonfiction_mode ? "\n\nEnd with: Exercise, Reflection, Action Step." : "";
-      const content = await callAI(`Write Chapter ${ch2.number}: "${ch2.title}" for a ${book.genre} book titled "${outline.title}".${seriesCtx}${voiceCtx}${charCtx}${langNote}${nfNote}
+      const content = await callAIStream(`Write Chapter ${ch2.number}: "${ch2.title}" for a ${book.genre} book titled "${outline.title}".${seriesCtx}${voiceCtx}${charCtx}${langNote}${nfNote}
 
 Desc: ${ch2.description}
 Previous: ${prev}
@@ -3093,7 +3126,7 @@ WRITING RULES \u2014 violating these will get this chapter rejected:
 \u2022 Use SPECIFIC details: not 'the coffee shop smelled like coffee' but the burnt-sugar smell of the espresso machine at 6am, the sticky ring on the table from someone's iced latte
 \u2022 No clean emotional resolutions \u2014 conflict leaves residue
 \u2022 Character psychology must be specific, not convenient
-\u2022 Read like a novel \u2014 no chapter summaries, no scene headers, no markdown`);
+\u2022 Read like a novel \u2014 no chapter summaries, no scene headers, no markdown`, 0.85, { onStream: (t) => setStreamText(t) });
       bump();
       const chapters = [...book.chapters || []];
       chapters[idx] = { ...chapters[idx], content, generated: true };
