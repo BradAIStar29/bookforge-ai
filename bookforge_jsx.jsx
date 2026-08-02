@@ -18,6 +18,22 @@ const STATUS_ICONS={idea:"💡",outlining:"📋",writing:"✍️",ready:"✅",pu
 
 // ── Storage ───────────────────────────────────────────────────────────────────
 const ls={get:(k,d)=>{try{const v=localStorage.getItem(k);return v===null?d:JSON.parse(v)}catch{return d}},set:(k,v)=>{try{localStorage.setItem(k,JSON.stringify(v))}catch(e){if(e.name==="QuotaExceededError"){alert("⚠️ Storage full! Export your books to free space.");}}}};
+const safeLS=(k,v)=>{try{localStorage.setItem(k,v)}catch(e){if(e.name==="QuotaExceededError"){alert("⚠️ Storage full! Export your books to free space.");}}};
+// Throttle a function to once per animation frame — prevents excessive re-renders during streaming
+const rafThrottle=(fn)=>{
+  let lastVal=null, scheduled=false;
+  return(val)=>{
+    lastVal=val;
+    if(!scheduled){
+      scheduled=true;
+      requestAnimationFrame(()=>{
+        scheduled=false;
+        fn(lastVal);
+      });
+    }
+  };
+};
+
 const getKey=()=>localStorage.getItem("gemini_api_key")||"";
 const setKey=k=>localStorage.setItem("gemini_api_key",k.trim());
 
@@ -28,7 +44,7 @@ const BACKENDS=[
   {id:"groq",label:"Groq Turbo (⚡ Fastest)",desc:"500+ tokens/sec with Llama 4. Free API key, generous rate limits."}
 ];
 const getBackend=()=>localStorage.getItem("bfai_backend")||"gemini";
-const setBackend=b=>localStorage.setItem("bfai_backend",b);
+const setBackend=b=>safeLS("bfai_backend",b);
 
 // Puter text model options
 const PUTER_TEXT_MODELS=[
@@ -45,7 +61,7 @@ const PUTER_TEXT_MODELS=[
   {id:"qwen/qwen3.7-max",label:"Qwen 3.7 Max",desc:"Alibaba — strong multilingual support"}
 ];
 const getPuterTextModel=()=>localStorage.getItem("bfai_puter_text_model")||"google/gemini-3.6-flash";
-const setPuterTextModel=m=>localStorage.setItem("bfai_puter_text_model",m);
+const setPuterTextModel=m=>safeLS("bfai_puter_text_model",m);
 
 // Puter image model options
 const PUTER_IMAGE_MODELS=[
@@ -59,7 +75,7 @@ const PUTER_IMAGE_MODELS=[
   {id:"pollinations",label:"Pollinations.ai (current)",desc:"No Puter account needed — URL-based"}
 ];
 const getPuterImageModel=()=>localStorage.getItem("bfai_puter_image_model")||"pollinations";
-const setPuterImageModel=m=>localStorage.setItem("bfai_puter_image_model",m);
+const setPuterImageModel=m=>safeLS("bfai_puter_image_model",m);
 // ── Groq Models ──────────────────────────────────────────────────────────────────
 const GROQ_MODELS=[
   {id:"openai/gpt-oss-120b",label:"GPT-OSS 120B",desc:"OpenAI open-weight flagship — best for creative writing, 500 tok/s"},
@@ -69,14 +85,14 @@ const GROQ_MODELS=[
   {id:"llama-3.1-8b-instant",label:"Llama 3.1 8B (retiring Aug 16)",desc:"Legacy ultra-fast — being deprecated"}
 ];
 const getGroqKey=()=>localStorage.getItem("groq_api_key")||"";
-const setGroqKey=k=>localStorage.setItem("groq_api_key",k.trim());
+const setGroqKey=k=>safeLS("groq_api_key",k.trim());
 const DEPRECATED_GROQ_MODELS={"llama-4-scout-17b-16e-instruct":"openai/gpt-oss-120b","llama-4-maverick-17b-128e-instruct":"openai/gpt-oss-120b","mixtral-8x7b-32768":"openai/gpt-oss-20b","gemma2-9b-it":"openai/gpt-oss-20b","deepseek-r1-distill-llama-70b":"openai/gpt-oss-120b","qwen-2.5-72b-instruct":"openai/gpt-oss-120b"};
 const getGroqModel=()=>{
   let m=localStorage.getItem("bfai_groq_model")||"openai/gpt-oss-120b";
-  if(DEPRECATED_GROQ_MODELS[m]){localStorage.setItem("bfai_groq_model",DEPRECATED_GROQ_MODELS[m]);return DEPRECATED_GROQ_MODELS[m];}
+  if(DEPRECATED_GROQ_MODELS[m]){safeLS("bfai_groq_model",DEPRECATED_GROQ_MODELS[m]);return DEPRECATED_GROQ_MODELS[m];}
   return m;
 };
-const setGroqModel=m=>localStorage.setItem("bfai_groq_model",m);
+const setGroqModel=m=>safeLS("bfai_groq_model",m);
 const GROQ_URL="https://api.groq.com/openai/v1/chat/completions";
 // ── Groq Rate Limit Tracking ────────────────────────────────────────────────────
 let _groqRateState={remaining:null,limit:null,resetSec:null,tokensRemaining:null,tokensLimit:null};
@@ -168,6 +184,23 @@ const setQueue=q=>ls.set("bfai_queue",q);
 const getNavState=()=>ls.get("bfai_nav",null);
 const setNavState=n=>ls.set("bfai_nav",n);
 const updateBook=(id,upd)=>{const books=getBooks();const i=books.findIndex(b=>b.id===id);if(i===-1)return null;books[i]={...books[i],...upd};setBooks(books);return books[i];};
+// Migrate old books to include new fields — runs once per session
+const migrateBooks=()=>{
+  const books=getBooks();let changed=false;
+  for(const b of books){
+    if(b.build_complete===undefined){b.build_complete=false;changed=true;}
+    if(b.gates_passed===undefined){b.gates_passed=false;changed=true;}
+    if(b.seo_done===undefined){b.seo_done=false;changed=true;}
+    if(b.cover_done===undefined){b.cover_done=false;changed=true;}
+    if(b.review_done===undefined){b.review_done=false;changed=true;}
+    if(b.wq_done===undefined){b.wq_done=false;changed=true;}
+    if(b.competitor_done===undefined){b.competitor_done=false;changed=true;}
+    if(b.hooks_done===undefined){b.hooks_done=false;changed=true;}
+    if(b.chapters){for(const c of b.chapters){if(c.generated===undefined){c.generated=!!c.content;changed=true;}}}
+  }
+  if(changed)setBooks(books);
+};
+
 const getUsage=()=>{const today=new Date().toISOString().split("T")[0];const d=ls.get("bfai_usage",{});return d.date===today?(d.count||0):0;};
 const trackUsage=()=>{const today=new Date().toISOString().split("T")[0];const d=ls.get("bfai_usage",{});const c=(d.date===today?d.count:0)+1;ls.set("bfai_usage",{date:today,count:c});return c;};
 // Quota check — Puter mode has no daily limit
@@ -949,7 +982,7 @@ function SettingsModal({onClose}){
       <div className="bg-slate-800 border border-white/10 rounded-2xl max-w-lg w-full shadow-2xl max-h-[90vh] overflow-y-auto">
         <div className="sticky top-0 bg-slate-800 border-b border-white/10 px-6 py-4 flex items-center justify-between">
           <h2 className="text-white text-xl font-bold">⚙️ Settings</h2>
-          <button onClick={onClose} className="text-white/30 hover:text-white text-xl">✕</button>
+          <button onClick={onClose} aria-label="Close settings" data-close-btn="true" className="text-white/30 hover:text-white text-xl">✕</button>
         </div>
         {/* Settings tabs */}
         <div className="px-6 pt-4">
@@ -1134,7 +1167,7 @@ function Header({onBack,title,subtitle,onSettings,onTour,activeTab,setActiveTab}
             </div>
           )}
           {qLen>0&&<div className="bg-cyan-500/20 border border-cyan-500/30 text-cyan-300 text-xs px-2.5 py-1.5 rounded-lg">⏳ Queue: {qLen}</div>}
-          <button onClick={onSettings} className={`text-xs px-3 py-1.5 rounded-lg border transition-all ${hasCredentials()?"border-white/20 text-white/50 hover:border-white/40":"border-red-500/50 text-red-400 bg-red-500/10 pulse-a"}`}>{hasCredentials()?"⚙️ Settings":"⚠️ Set API Key"}</button>
+          <button onClick={onSettings} aria-label="Settings" data-close-btn="true" className={`text-xs px-3 py-1.5 rounded-lg border transition-all ${hasCredentials()?"border-white/20 text-white/50 hover:border-white/40":"border-red-500/50 text-red-400 bg-red-500/10 pulse-a"}`}>{hasCredentials()?"⚙️ Settings":"⚠️ Set API Key"}</button>
           {onTour&&<button onClick={onTour} title="Page tour — learn how to use this page" className="text-xs px-3 py-1.5 rounded-lg border border-purple-500/40 text-purple-300/70 hover:bg-purple-500/20 transition-all" id="tour-btn">❓ Tour</button>}
         </div>
       </div>
@@ -2442,10 +2475,11 @@ function HomePage({navigate,onSettings}){
   const [search,setSearch]=useState("");
   const [filterGenre,setFilterGenre]=useState("");
   const [filterStatus,setFilterStatus]=useState("");
-  useEffect(()=>setBooksList(getBooks()),[]);
+  useEffect(()=>{setBooksList(getBooks());setPageSize(12);},[search,filterGenre,filterStatus]);
   const sortedBooks=[...allBooks].sort((a,b)=>{ if(a.auto_build&&!b.auto_build)return -1; if(!a.auto_build&&b.auto_build)return 1; return new Date(b.created_date||0)-new Date(a.created_date||0); });
   const searchedBooks=search.trim()?sortedBooks.filter(b=>(b.title||"").toLowerCase().includes(search.toLowerCase())||(b.genre||"").toLowerCase().includes(search.toLowerCase())||(b.status||"").toLowerCase().includes(search.toLowerCase())):sortedBooks;
   const books=searchedBooks.filter(b=>!filterGenre||b.genre===filterGenre).filter(b=>!filterStatus||b.status===filterStatus);
+  const [pageSize,setPageSize]=useState(12);
   const del=(id,e)=>{e.stopPropagation();if(!confirm("Delete this book?"))return;const b=getBooks().filter(x=>x.id!==id);setBooks(b);setBooksList(b);};
   const pct=b=>b.chapters?.length>0?(b.chapters.filter(c=>c.generated).length/b.chapters.length)*100:0;
   return(
@@ -2497,11 +2531,12 @@ function HomePage({navigate,onSettings}){
               {['idea','outlining','writing','ready','published','queued'].map(s=><option key={s} value={s}>{s.charAt(0).toUpperCase()+s.slice(1)}</option>)}
             </select>
           </div>
+      {books.length>pageSize&&<div className="text-center mt-6"><button onClick={()=>setPageSize(p=>p+12)} className="bg-white/10 hover:bg-white/20 text-white/70 px-6 py-2.5 rounded-xl text-sm font-medium transition-colors">Load More ({books.length-pageSize} remaining)</button></div>}
       {books.length===0?(
         <div className="text-center py-24"><div className="text-7xl mb-4">📖</div><h2 className="text-white text-2xl font-bold mb-2">No books yet</h2><p className="text-white/40 mb-8">Generate your first AI-powered book in minutes</p><button onClick={()=>navigate("create")} className="bg-gradient-to-r from-purple-500 to-pink-500 text-white px-10 py-4 rounded-xl font-semibold text-lg hover:opacity-90">✨ Create Your First Book</button></div>
       ):(
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
-          {books.map(book=>(
+          {books.slice(0,pageSize).map(book=>(
             <div key={book.id} onClick={()=>navigate("editor",book.id)} className="group relative cursor-pointer">
               <div className="bg-white/5 border border-white/10 rounded-2xl overflow-hidden hover:border-purple-500/50 transition-all hover:shadow-lg hover:shadow-purple-900/20">
                 <div className="aspect-[3/2] bg-gradient-to-br from-purple-800/50 to-pink-800/50 relative overflow-hidden">
@@ -2521,7 +2556,7 @@ function HomePage({navigate,onSettings}){
                   {book.chapters?.length>0&&<div className="mt-3"><div className="h-1 bg-white/10 rounded-full overflow-hidden"><div className="h-full bg-gradient-to-r from-purple-500 to-pink-500 rounded-full" style={{width:`${pct(book)}%`}}/></div><p className="text-white/20 text-xs mt-1">{book.chapters.filter(c=>c.generated).length}/{book.chapters.length} chapters</p></div>}
                 </div>
               </div>
-              <button onClick={e=>del(book.id,e)} className="absolute top-2 left-2 w-7 h-7 bg-red-500/80 hover:bg-red-600 rounded-full text-white text-xs opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center shadow">✕</button>
+              <button onClick={e=>del(book.id,e)} aria-label="Delete book" className="absolute top-2 left-2 w-7 h-7 bg-red-500/80 hover:bg-red-600 rounded-full text-white text-xs opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center shadow">✕</button>
               <button onClick={e=>{e.stopPropagation();const src=getBook(book.id);if(!src)return;const dup={...src,id:Date.now().toString(36)+Math.random().toString(36).slice(2),title:src.title+" (Copy)",status:"draft",auto_build:false,build_complete:false,gates_passed:false,seo_done:false,cover_done:false,review_done:false,wq_done:false,competitor_done:false,hooks_done:false,review:null,manuscript_quality:null,build_complete_date:null};const books=getBooks();books.push(dup);setBooks(books);setBooksList(getBooks());}} className="absolute top-2 right-2 w-7 h-7 bg-blue-500/80 hover:bg-blue-600 rounded-full text-white text-xs opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center shadow" title="Duplicate book">⧉</button>
             </div>
           ))}
@@ -2794,7 +2829,7 @@ setOutline(_ol);setPendingPremise(null);setStep(2);
                 );
               })()}
             </div>
-            <button onClick={generate} disabled={loading||(mode==="idea"&&(!form.topic.trim()||!form.genre||!form.audience))||(mode==="import"&&!importText.trim())} className="w-full bg-gradient-to-r from-purple-500 to-pink-500 text-white py-4 rounded-xl font-semibold text-lg hover:opacity-90 disabled:opacity-40 flex items-center justify-center gap-2">{loading?<><Spin/>{mode==="import"?"Analyzing draft…":"Generating outline…"}</>:mode==="import"?"📄 Build Outline From Draft":"✨ Generate Book Outline"}</button>
+            <button onClick={generate} data-gen-btn="true" disabled={loading||(mode==="idea"&&(!form.topic.trim()||!form.genre||!form.audience))||(mode==="import"&&!importText.trim())} className="w-full bg-gradient-to-r from-purple-500 to-pink-500 text-white py-4 rounded-xl font-semibold text-lg hover:opacity-90 disabled:opacity-40 flex items-center justify-center gap-2">{loading?<><Spin/>{mode==="import"?"Analyzing draft…":"Generating outline…"}</>:mode==="import"?"📄 Build Outline From Draft":"✨ Generate Book Outline"}</button>
           </div>
         </Card>
       )}
@@ -3106,7 +3141,7 @@ function EditorPage({bookId,navigate,onSettings}){
           const charCtx=chars.length?`\n\nESTABLISHED CHARACTERS (maintain exact consistency):\n${chars.map(c=>`${c.name} [${c.role||""}]: ${c.appearance||""} — ${c.personality||""}`).join("\n")}`:"";
           const langNote=b.writing_language&&b.writing_language!=="English"?`\n\nWRITE IN: ${b.writing_language}`:"";
           const nonfictionNote=b.nonfiction_mode?"\n\nNONFICTION MODE: End the chapter with a clearly marked Exercise, Reflection question, and Action Step.":"";
-          const content=await callAIStream(`Write Chapter ${chapters[i].number}: "${chapters[i].title}" for a ${b.genre} book titled "${outline.title}".${seriesCtx}${voiceCtx}${charCtx}${langNote}${nonfictionNote}\n\nChapter: ${chapters[i].description}\nPrevious: ${prev}\nAudience: ${b.target_audience}\n\n${(()=>{const tw=ch?.target_words||3800;return `${Math.round(tw*0.75).toLocaleString()}–${tw.toLocaleString()} words`;})()}. Match genre tone precisely.\n\nSTRUCTURE:\n• 3-5 distinct scenes per chapter, separated by: ⁂\n• Each scene has a clear goal → obstacle → outcome\n• Chapter must END on a hook, unresolved tension, or revelation that forces reading on\n• DO NOT wrap up cleanly — the best chapters end mid-breath\n\nWRITING RULES — violating these will get this chapter rejected:\n• NEVER start a sentence with 'He/She/They couldn't help but', 'In that moment', 'It dawned on', 'Something about the way', 'A wave of', 'A surge of'\n• NEVER state emotions directly ('he felt sad', 'warmth spread through her') — express through physical action, dialogue, or specific sensory detail\n• NEVER use em-dashes for dramatic effect more than once per page\n• VARY sentence length violently: one-word sentences. Fragments. Then a long, breathing sentence that winds through a scene and refuses to end neatly.\n• Dialogue must be messy and human: people talk past each other, leave things half-said, interrupt, change subject\n• Use SPECIFIC details: not 'the coffee shop smelled like coffee' but the burnt-sugar smell of the espresso machine at 6am, the sticky ring on the table from someone's iced latte\n• No clean emotional resolutions — conflict leaves residue\n• Character psychology must be specific, not convenient\n• Read like a novel — no chapter summaries, no scene headers, no markdown`,0.85,{task:"creative",onStream:t=>{setBuildStep(`Ch.${i+1}/${chapters.length}: ${t.split(/\s+/).filter(Boolean).length} words streamed…`)}});
+          const content=await callAIStream(`Write Chapter ${chapters[i].number}: "${chapters[i].title}" for a ${b.genre} book titled "${outline.title}".${seriesCtx}${voiceCtx}${charCtx}${langNote}${nonfictionNote}\n\nChapter: ${chapters[i].description}\nPrevious: ${prev}\nAudience: ${b.target_audience}\n\n${(()=>{const tw=ch?.target_words||3800;return `${Math.round(tw*0.75).toLocaleString()}–${tw.toLocaleString()} words`;})()}. Match genre tone precisely.\n\nSTRUCTURE:\n• 3-5 distinct scenes per chapter, separated by: ⁂\n• Each scene has a clear goal → obstacle → outcome\n• Chapter must END on a hook, unresolved tension, or revelation that forces reading on\n• DO NOT wrap up cleanly — the best chapters end mid-breath\n\nWRITING RULES — violating these will get this chapter rejected:\n• NEVER start a sentence with 'He/She/They couldn't help but', 'In that moment', 'It dawned on', 'Something about the way', 'A wave of', 'A surge of'\n• NEVER state emotions directly ('he felt sad', 'warmth spread through her') — express through physical action, dialogue, or specific sensory detail\n• NEVER use em-dashes for dramatic effect more than once per page\n• VARY sentence length violently: one-word sentences. Fragments. Then a long, breathing sentence that winds through a scene and refuses to end neatly.\n• Dialogue must be messy and human: people talk past each other, leave things half-said, interrupt, change subject\n• Use SPECIFIC details: not 'the coffee shop smelled like coffee' but the burnt-sugar smell of the espresso machine at 6am, the sticky ring on the table from someone's iced latte\n• No clean emotional resolutions — conflict leaves residue\n• Character psychology must be specific, not convenient\n• Read like a novel — no chapter summaries, no scene headers, no markdown`,0.85,{task:"creative",onStream:rafThrottle(t=>setBuildStep(`Ch.${i+1}/${chapters.length}: ${t.split(/\s+/).filter(Boolean).length} words streamed…`))});
           setStreamText(null);
           bump();chapters[i]={...chapters[i],content,generated:true};
           const wc=chapters.reduce((a,c)=>a+(c.content?c.content.split(/\s+/).length:0),0);
@@ -3279,7 +3314,7 @@ function EditorPage({bookId,navigate,onSettings}){
       const charCtx=chars.length?`\n\nCHARACTERS:\n${chars.map(c=>`${c.name}: ${c.appearance||""} — ${c.personality||""}`).join("\n")}`:"";
       const langNote=fb.writing_language&&fb.writing_language!=="English"?`\n\nWRITE IN: ${fb.writing_language}`:"";
       const nfNote=fb.nonfiction_mode?"\n\nEnd with: Exercise, Reflection, Action Step.":"";
-      const content=await callAIStream(`Write Chapter ${ch.number}: "${ch.title}" for a ${fb.genre} book titled "${outline.title}".${seriesCtx}${voiceCtx}${charCtx}${langNote}${nfNote}\n\nDesc: ${ch.description}\nPrevious: ${prev}\nAudience: ${fb.target_audience}\n\n${(()=>{const tw=fb.chapters?.[idx]?.target_words||3800;return `${Math.round(tw*0.75).toLocaleString()}–${tw.toLocaleString()} words`;})()}. Match genre tone.\n\nSTRUCTURE:\n• 3-5 distinct scenes per chapter, separated by: ⁂\n• Each scene has a clear goal → obstacle → outcome\n• Chapter must END on a hook, unresolved tension, or revelation that forces reading on\n• DO NOT wrap up cleanly — the best chapters end mid-breath\n\nWRITING RULES — violating these will get this chapter rejected:\n• NEVER start a sentence with 'He/She/They couldn't help but', 'In that moment', 'It dawned on', 'Something about the way', 'A wave of', 'A surge of'\n• NEVER state emotions directly ('he felt sad', 'warmth spread through her') — express through physical action, dialogue, or specific sensory detail\n• NEVER use em-dashes for dramatic effect more than once per page\n• VARY sentence length violently: one-word sentences. Fragments. Then a long, breathing sentence that winds through a scene and refuses to end neatly.\n• Dialogue must be messy and human: people talk past each other, leave things half-said, interrupt, change subject\n• Use SPECIFIC details: not 'the coffee shop smelled like coffee' but the burnt-sugar smell of the espresso machine at 6am, the sticky ring on the table from someone's iced latte\n• No clean emotional resolutions — conflict leaves residue\n• Character psychology must be specific, not convenient\n• Read like a novel — no chapter summaries, no scene headers, no markdown`,0.85,{task:"creative",onStream:t=>setStreamText(t)});
+      const content=await callAIStream(`Write Chapter ${ch.number}: "${ch.title}" for a ${fb.genre} book titled "${outline.title}".${seriesCtx}${voiceCtx}${charCtx}${langNote}${nfNote}\n\nDesc: ${ch.description}\nPrevious: ${prev}\nAudience: ${fb.target_audience}\n\n${(()=>{const tw=fb.chapters?.[idx]?.target_words||3800;return `${Math.round(tw*0.75).toLocaleString()}–${tw.toLocaleString()} words`;})()}. Match genre tone.\n\nSTRUCTURE:\n• 3-5 distinct scenes per chapter, separated by: ⁂\n• Each scene has a clear goal → obstacle → outcome\n• Chapter must END on a hook, unresolved tension, or revelation that forces reading on\n• DO NOT wrap up cleanly — the best chapters end mid-breath\n\nWRITING RULES — violating these will get this chapter rejected:\n• NEVER start a sentence with 'He/She/They couldn't help but', 'In that moment', 'It dawned on', 'Something about the way', 'A wave of', 'A surge of'\n• NEVER state emotions directly ('he felt sad', 'warmth spread through her') — express through physical action, dialogue, or specific sensory detail\n• NEVER use em-dashes for dramatic effect more than once per page\n• VARY sentence length violently: one-word sentences. Fragments. Then a long, breathing sentence that winds through a scene and refuses to end neatly.\n• Dialogue must be messy and human: people talk past each other, leave things half-said, interrupt, change subject\n• Use SPECIFIC details: not 'the coffee shop smelled like coffee' but the burnt-sugar smell of the espresso machine at 6am, the sticky ring on the table from someone's iced latte\n• No clean emotional resolutions — conflict leaves residue\n• Character psychology must be specific, not convenient\n• Read like a novel — no chapter summaries, no scene headers, no markdown`,0.85,{task:"creative",onStream:rafThrottle(t=>setStreamText(t))});
       bump();const chapters=[...(fb.chapters||[])];chapters[idx]={...chapters[idx],content,generated:true};
       const wc=chapters.reduce((a,c)=>a+(c.content?c.content.split(/\s+/).length:0),0);
       // If all chapters now done + pipeline already ran → auto-stamp build_complete
@@ -3795,6 +3830,17 @@ function KDPCopyBtn({text,label="📋 Copy"}){
   );
 }
 
+// Sanitize HTML for dangerouslySetInnerHTML — strips <script>, on* attributes, javascript: URLs
+const sanitizeHTML=(html)=>{
+  if(!html)return"";
+  return String(html)
+    .replace(/<script[\s\S]*?<\/script>/gi,"")
+    .replace(/<iframe[\s\S]*?<\/iframe>/gi,"")
+    .replace(/on\w+="[^"]*"/gi,"")
+    .replace(/on\w+='[^']*'/gi,"")
+    .replace(/javascript:/gi,"");
+};
+
 function KDPField({label,value,large=false,html=false,mono=false,badge=null}){
   if(!value)return null;
   const displayValue=Array.isArray(value)?value.join("\n"):value;
@@ -3805,7 +3851,7 @@ function KDPField({label,value,large=false,html=false,mono=false,badge=null}){
         <KDPCopyBtn text={displayValue}/>
       </div>
       {html
-        ?<div className="bg-white/10 rounded-xl p-4 text-white/80 text-sm leading-relaxed" dangerouslySetInnerHTML={{__html:value}}/>
+        ?<div className="bg-white/10 rounded-xl p-4 text-white/80 text-sm leading-relaxed" dangerouslySetInnerHTML={{__html:sanitizeHTML(value)}}/>
         :<div className={`bg-white/10 rounded-xl p-4 text-white/80 text-sm ${large?"leading-relaxed whitespace-pre-wrap":""}${mono?" font-mono":""}`}>{displayValue}</div>
       }
     </div>
@@ -4002,7 +4048,7 @@ function KDPPackagePanel({book,busy,busyStep,onGenerate,quotaHit,flash,isBuildin
             </div>
             <div>
               <p className="text-white/40 text-xs uppercase tracking-wider mb-2">Preview (how it renders)</p>
-              <div className="bg-white rounded-xl p-5 text-gray-800 text-sm leading-relaxed amazon-preview" dangerouslySetInnerHTML={{__html:kdp.kdp_description_html||""}}/>
+              <div className="bg-white rounded-xl p-5 text-gray-800 text-sm leading-relaxed amazon-preview" dangerouslySetInnerHTML={{__html:sanitizeHTML(kdp.kdp_description_html||"")}}/>
             </div>
             <p className="text-white/20 text-xs">Description length: {descChars} chars (KDP allows up to 4000)</p>
           </div>
@@ -4724,10 +4770,25 @@ function App(){
   const [showSettings,setShowSettings]=useState(false);
   const [homeTab,setHomeTab]=useState("library");
   const [retryToasts,setRetryToasts]=useState([]);
-  useEffect(()=>{
+  useEffect(()=>{migrateBooks();
     // Hide loading screen once React has mounted
     const el=document.getElementById("loading");
     if(el){el.classList.add("hidden");setTimeout(()=>{el.style.display="none";},500);}
+  },[]);
+  // Keyboard shortcuts
+  useEffect(()=>{
+    const onKey=(e)=>{
+      if((e.ctrlKey||e.metaKey)&&e.key==="Enter"){
+        const btn=document.querySelector('[data-gen-btn="true"]:not([disabled])');
+        if(btn)btn.click();
+      }
+      if(e.key==="Escape"){
+        const btn=document.querySelector('[data-close-btn="true"]');
+        if(btn)btn.click();
+      }
+    };
+    window.addEventListener("keydown",onKey);
+    return()=>window.removeEventListener("keydown",onKey);
   },[]);
   useEffect(()=>{
     const onRetry=e=>{
@@ -4745,6 +4806,8 @@ function App(){
   const isHome=page==="home";const isEditor=page==="editor";const isCreate=page==="create";
   return(
     <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900">
+      {/* Offline indicator */}
+      {typeof navigator!=="undefined"&&!navigator.onLine&&<div className="bg-amber-500/15 border-b border-amber-500/30 px-4 py-1.5 text-center text-amber-300 text-xs font-medium">📡 You're offline — BookForge works in offline mode, but AI generation needs internet.</div>}
       <div className="fixed top-4 right-4 z-[9999] flex flex-col gap-2 pointer-events-none">
         {retryToasts.map(t=>(
           <div key={t.id} className="bg-cyan-500/95 text-white text-xs font-semibold px-4 py-2.5 rounded-lg shadow-lg backdrop-blur-sm animate-pulse">{t.msg}</div>
