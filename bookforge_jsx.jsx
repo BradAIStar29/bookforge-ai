@@ -5104,6 +5104,9 @@ function MangaCreateWizard({navigate, onSettings, onBack, onCreated}){
   const [genStatus, setGenStatus] = useState("");
   const [error, setError] = useState("");
   const [usage, setUsage] = useState(getUsage());
+  const [mangaTitles, setMangaTitles] = useState(null);
+  const [suggestingMangaTitles, setSuggestingMangaTitles] = useState(false);
+  const [titleError, setTitleError] = useState("");
 
   
   const runResearch = async () => {
@@ -5115,6 +5118,23 @@ function MangaCreateWizard({navigate, onSettings, onBack, onCreated}){
       setResearchData(data);
     } catch(e){ setError(errMsg(e)); }
     finally{ setResearchLoading(false); }
+  };
+
+  const suggestMangaTitles = async () => {
+    if(!hasCredentials()){ onSettings(); return; }
+    if(!genre){ setTitleError("Pick a genre first."); return; }
+    setSuggestingMangaTitles(true); setTitleError("");
+    try {
+      const genreLabel = MANGA_GENRES.find(g=>g.id===genre)?.label || genre;
+      const result = await suggestTitles(genreLabel, targetAudience, userIdea);
+      setMangaTitles(result.titles || []);
+    } catch(e) { setTitleError(errMsg(e)); }
+    finally { setSuggestingMangaTitles(false); }
+  };
+
+  const useMangaTitle = (t) => {
+    setUserIdea(t.title + (t.subtitle ? ` — ${t.subtitle}` : "") + (t.why ? `. ${t.why}` : ""));
+    setMangaTitles(null);
   };
 
   const create = async () => {
@@ -5265,6 +5285,23 @@ function MangaCreateWizard({navigate, onSettings, onBack, onCreated}){
           {/* Your idea */}
           <div>
             <label className="text-white/60 text-xs uppercase tracking-wider block mb-2">Your Story Idea (optional)</label>
+            <div className="flex gap-2 mb-2">
+              <button onClick={suggestMangaTitles} disabled={suggestingMangaTitles||!genre} className="text-xs px-3 py-1.5 rounded-lg bg-cyan-500/20 border border-cyan-500/30 text-cyan-300 hover:bg-cyan-500/30 transition-all disabled:opacity-40 flex items-center gap-1.5">
+                {suggestingMangaTitles?<><Spin size="h-3 w-3"/>Suggesting…</>:"✨ AI Suggest Titles"}
+              </button>
+            </div>
+            {titleError&&<div className="bg-red-500/15 border border-red-500/30 text-red-300 rounded-lg p-2 mb-2 text-xs">{titleError}</div>}
+            {mangaTitles&&(
+              <div className="bg-cyan-500/5 border border-cyan-500/20 rounded-xl p-3 mb-2 space-y-2 max-h-60 overflow-y-auto">
+                <p className="text-cyan-300 text-xs font-medium mb-1">Tap a title to use as your concept:</p>
+                {mangaTitles.map((t,i)=>(
+                  <button key={i} onClick={()=>useMangaTitle(t)} className="w-full text-left p-2.5 rounded-lg bg-white/5 hover:bg-cyan-500/10 border border-white/10 hover:border-cyan-500/30 transition-all">
+                    <p className="text-white text-sm font-medium">{t.title}{t.subtitle?<span className="text-white/50 font-normal">: {t.subtitle}</span>:""}</p>
+                    {t.why&&<p className="text-white/40 text-xs mt-0.5">{t.why}</p>}
+                  </button>
+                ))}
+              </div>
+            )}
             <textarea value={userIdea} onChange={e=>setUserIdea(e.target.value)} rows={4} placeholder="Describe your concept, characters, setting, or specific plot ideas. Leave blank and the AI will create a fresh concept based on your genre and research." className="w-full bg-white/10 border border-white/20 rounded-xl px-4 py-3 text-white placeholder-white/25 focus:outline-none focus:border-purple-500 text-sm resize-none leading-relaxed"/>
           </div>
 
