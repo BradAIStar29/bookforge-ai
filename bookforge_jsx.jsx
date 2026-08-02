@@ -2063,6 +2063,9 @@ function QueuePage({navigate,onSettings}){
   const [queue,setQueueState]=useState(getQueue());
   const [qBooks,setQBooks]=useState(getBooks());
   const [running,setRunning]=useState(false);
+  const [queueStart,setQueueStart]=useState(null);
+  const [chDone,setChDone]=useState(0);
+  const [chTotal,setChTotal]=useState(0);
   const [currentId,setCurrentId]=useState(null);
   const [buildStart,setBuildStart]=useState(null);
   const [builtSoFar,setBuiltSoFar]=useState(0);
@@ -2078,7 +2081,7 @@ function QueuePage({navigate,onSettings}){
 
   const runQueue=async()=>{
     if(runRef.current)return;
-    runRef.current=true;setRunning(true);setLog([]);
+    runRef.current=true;setRunning(true);setQueueStart(Date.now());setChDone(0);setChTotal(queue.reduce((a,b)=>a+(b.chapters||[]).filter(c=>!c.generated).length,0));setLog([]);
     const addLog=msg=>setLog(prev=>[...prev,{msg,time:new Date().toLocaleTimeString()}]);
     try{
     while(true){
@@ -2119,7 +2122,7 @@ function QueuePage({navigate,onSettings}){
             `${(()=>{const tw=chapters[i]?.target_words||3800;const wMin=Math.round(tw*0.75);const wMax=tw;return `${wMin.toLocaleString()}–${wMax.toLocaleString()} words`;})()}. Match genre tone. Aim for the full word count.\n\nSTRUCTURE:\n• 3-5 distinct scenes per chapter, separated by: ⁂\n• Each scene has a clear goal → obstacle → outcome\n• Chapter must END on a hook, unresolved tension, or revelation that forces reading on\n• DO NOT wrap up cleanly — the best chapters end mid-breath\n\nWRITING RULES — violating these will get this chapter rejected:\n• NEVER start a sentence with 'He/She/They couldn't help but', 'In that moment', 'It dawned on', 'Something about the way', 'A wave of', 'A surge of'\n• NEVER state emotions directly ('he felt sad', 'warmth spread through her') — express through physical action, dialogue, or specific sensory detail\n• NEVER use em-dashes for dramatic effect more than once per page\n• VARY sentence length violently: one-word sentences. Fragments. Then a long, breathing sentence that winds through a scene and refuses to end neatly.\n• Dialogue must be messy and human: people talk past each other, leave things half-said, interrupt, change subject\n• Use SPECIFIC details: not 'the coffee shop smelled like coffee' but the burnt-sugar smell of the espresso machine at 6am, the sticky ring on the table from someone's iced latte\n• No clean emotional resolutions — conflict leaves residue\n• Character psychology must be specific, not convenient\n• Every scene must have a sensory anchor: a smell, a texture, a specific sound\n• Read like a published novel — no chapter summaries, no scene headers, no markdown`,0.85,{task:"creative",onStream:t=>{addLog(`  ✍️ Ch.${i+1}/${chapters.length}: ${t.split(/\s+/).filter(Boolean).length} words streamed…`);}}
           );
           trackUsage();
-          chapters[i]={...chapters[i],content,generated:true};
+          chapters[i]={...chapters[i],content,generated:true};setChDone(prev=>prev+1);
           const wc=chapters.reduce((a,c)=>a+(c.content?c.content.split(/\s+/).length:0),0);
           updateBook(id,{chapters:[...chapters],word_count:wc});
           reload();
@@ -2185,9 +2188,12 @@ function QueuePage({navigate,onSettings}){
         const remaining=Math.max(totalToBuild-builtSoFar,0);
         const etaSecs=remaining/Math.max(rate,0.0001);
         const mins=Math.round(etaSecs/60);
-        return(<p className="text-white/30 text-xs text-center mb-4">
-          {builtSoFar}/{totalToBuild} books done · {mins>0?`~${mins} min remaining`:"Almost done…"}
-        </p>);
+        const pct=Math.round(builtSoFar/totalToBuild*100);
+        return(<div className="mb-4">
+          <div className="flex items-center justify-between mb-2"><span className="text-white/50 text-sm font-medium">{builtSoFar}/{totalToBuild} books · {pct}%</span><span className="text-white/30 text-xs">{mins>0?`~${mins} min remaining`:"Almost done…"}</span></div>
+          <div className="h-2 bg-white/10 rounded-full overflow-hidden"><div className="h-full bg-gradient-to-r from-cyan-500 to-blue-500 rounded-full transition-all" style={{width:pct+"%"}}/></div>
+          {chTotal>0&&<p className="text-white/20 text-xs mt-2 text-center">{chDone}/{chTotal} chapters written</p>}
+        </div>);
       })()}
       {/* Live log */}
       {log.length>0&&(
@@ -2491,7 +2497,10 @@ function SeriesPage({navigate,onSettings}){
 
       <div className="flex justify-between items-center mb-6">
         <h2 className="text-white text-xl font-bold">📗 Series Manager</h2>
-        <button onClick={()=>setShowCreate(!showCreate)} className="bg-gradient-to-r from-cyan-500 to-blue-500 text-white px-5 py-2.5 rounded-xl font-semibold hover:opacity-90">+ New Series</button>
+        <div className="flex gap-2">
+          {seriesList.filter(s=>s.book_ids?.length>0).length>0&&<button onClick={()=>{const s=seriesList.find(s=>s.book_ids?.length>0);if(s)exportSeriesBooks(s);}} className="bg-white/10 hover:bg-white/20 text-white/70 px-4 py-2.5 rounded-xl text-sm font-medium transition-colors">📦 Export Series</button>}
+          <button onClick={()=>setShowCreate(!showCreate)} className="bg-gradient-to-r from-cyan-500 to-blue-500 text-white px-5 py-2.5 rounded-xl font-semibold hover:opacity-90">+ New Series</button>
+        </div>
       </div>
 
       {showCreate&&(
@@ -2594,11 +2603,13 @@ function SeriesPage({navigate,onSettings}){
 function HomePage({navigate,onSettings}){
   const [allBooks,setBooksList]=useState([]);
   const [search,setSearch]=useState("");
+  const [debouncedSearch,setDebouncedSearch]=useState("");
+  useEffect(()=>{const t=setTimeout(()=>setDebouncedSearch(search),300);return()=>clearTimeout(t);},[search]);
   const [filterGenre,setFilterGenre]=useState("");
   const [filterStatus,setFilterStatus]=useState("");
-  useEffect(()=>{setBooksList(getBooks());setPageSize(12);},[search,filterGenre,filterStatus]);
+  useEffect(()=>{setBooksList(getBooks());setPageSize(12);},[debouncedSearch,filterGenre,filterStatus]);
   const sortedBooks=[...allBooks].sort((a,b)=>{ if(a.auto_build&&!b.auto_build)return -1; if(!a.auto_build&&b.auto_build)return 1; return new Date(b.created_date||0)-new Date(a.created_date||0); });
-  const searchedBooks=search.trim()?sortedBooks.filter(b=>(b.title||"").toLowerCase().includes(search.toLowerCase())||(b.genre||"").toLowerCase().includes(search.toLowerCase())||(b.status||"").toLowerCase().includes(search.toLowerCase())):sortedBooks;
+  const searchedBooks=debouncedSearch.trim()?sortedBooks.filter(b=>(b.title||"").toLowerCase().includes(debouncedSearch.toLowerCase())||(b.genre||"").toLowerCase().includes(debouncedSearch.toLowerCase())||(b.status||"").toLowerCase().includes(debouncedSearch.toLowerCase())):sortedBooks;
   const books=searchedBooks.filter(b=>!filterGenre||b.genre===filterGenre).filter(b=>!filterStatus||b.status===filterStatus);
   const [pageSize,setPageSize]=useState(12);
   const del=(id,e)=>{e.stopPropagation();if(!confirm("Delete this book?"))return;const b=getBooks().filter(x=>x.id!==id);setBooks(b);setBooksList(b);};
@@ -2671,7 +2682,7 @@ function HomePage({navigate,onSettings}){
                 <div className="p-5">
                   <h3 className="text-white font-bold text-base leading-tight mb-1 line-clamp-2">{book.title||"Untitled"}</h3>
                   {book.subtitle&&<p className="text-white/40 text-sm mb-2 line-clamp-1">{book.subtitle}</p>}
-                  <div className="flex items-center justify-between mt-2"><span className="text-white/25 text-xs">{book.genre}</span><span className="text-white/25 text-xs">{book.word_count?`${Number(book.word_count).toLocaleString()} words`:"0 words"}</span></div>
+                  <div className="flex items-center justify-between mt-2"><span className="text-white/25 text-xs">{book.genre}</span><span className="text-white/25 text-xs">{book.word_count?`${Number(book.word_count).toLocaleString()} words · ~${Math.ceil(book.word_count/200)}min`:"0 words"}</span></div>
                   {book.auto_build&&!book.build_complete&&<p className="text-cyan-400 text-xs mt-2 truncate animate-pulse">🔄 {book.build_step||"Building…"}</p>}
                   {book.build_complete&&<p className={`text-xs mt-2 ${book.gates_passed?"text-green-400":"text-amber-400"}`}>{book.gates_passed?"✅ Ready to publish":"⚠️ Review needed"}</p>}
                   {book.chapters?.length>0&&<div className="mt-3"><div className="h-1 bg-white/10 rounded-full overflow-hidden"><div className="h-full bg-gradient-to-r from-purple-500 to-pink-500 rounded-full" style={{width:`${pct(book)}%`}}/></div><p className="text-white/20 text-xs mt-1">{book.chapters.filter(c=>c.generated).length}/{book.chapters.length} chapters</p></div>}
@@ -3188,6 +3199,8 @@ function EditorPage({bookId,navigate,onSettings}){
   const [selCh,setSelCh]=useState(0);
   const [quotaHit,setQuotaHit]=useState(false);
   const [buildLog,setBuildLog]=useState([]);
+  const [readingMode,setReadingMode]=useState(false);
+  const [bookSearch,setBookSearch]=useState(false);
   const [isBuilding,setIsBuilding]=useState(false);
   const [coverMode,setCoverMode]=useState("auto");
   const [customPrompt,setCustomPrompt]=useState("");
@@ -3827,13 +3840,16 @@ const genCover=async()=>{if(quotaHit||isBuilding)return;setBusy(true);setError("
   const wc=ch.content?ch.content.trim().split(/\s+/).length:0;
   const tw=ch.target_words||0;
   const isShort=tw>0&&wc<tw*0.6;
-  return isShort
-    ?<span className="text-amber-400/70 text-xs shrink-0">⚠️ Short ({wc.toLocaleString()}/{tw.toLocaleString()})</span>
-    :<span className="text-green-400/50 text-xs shrink-0">✅ Done</span>;
-})():<span className="text-white/20 text-xs shrink-0">Pending</span>}</div>)}</div><div className="mt-5 bg-white/5 rounded-xl p-4"><div className="flex justify-between text-xs text-white/40 mb-2"><span>Progress</span><span>{book.chapters.filter(c=>c.generated).length}/{book.chapters.length} chapters</span></div><div className="h-2 bg-white/10 rounded-full overflow-hidden"><div className="h-full bg-gradient-to-r from-purple-500 to-pink-500 rounded-full" style={{width:`${(book.chapters.filter(c=>c.generated).length/book.chapters.length)*100}%`}}/></div></div></>}{(!book.chapters||book.chapters.length===0)&&isBuilding&&<div className="text-center py-8 text-white/30"><Spin/><p className="mt-3 text-sm">Generating outline…</p></div>}<div className="mt-5 flex items-center gap-3 pt-4 border-t border-white/10"><button onClick={()=>downloadBookJSON(book)} className="text-xs px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-white/60 hover:bg-white/10 hover:text-white/90 transition-all flex items-center gap-2">💾 Export Backup (JSON)</button><label className="text-xs px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-white/60 hover:bg-white/10 hover:text-white/90 transition-all flex items-center gap-2 cursor-pointer">📥 Import Backup<input type="file" accept=".json" className="hidden" onChange={async(e)=>{const file=e.target.files?.[0];if(!file)return;try{const imported=await importBookJSON(file);const books=JSON.parse(localStorage.getItem("bfai_books")||"[]");books.unshift(imported);localStorage.setItem("bfai_books",JSON.stringify(books));alert("Imported \""+imported.title+"\" successfully!");window.location.reload();}catch(err){alert("Import failed: "+err.message);}}}/></label></div></Card></div>}
+  return <div className="flex flex-col items-end gap-1 shrink-0">
+    {isShort
+      ?<span className="text-amber-400/70 text-xs">⚠️ Short ({wc.toLocaleString()}/{tw.toLocaleString()})</span>
+      :<span className="text-green-400/50 text-xs">✅ Done</span>}
+    <button onClick={e=>{e.stopPropagation();downloadChapterTxt(book,i);}} className="text-white/30 hover:text-white/60 text-xs">📄 Export TXT</button>
+  </div>;
+})():<span className="text-white/20 text-xs shrink-0">Pending</span>}</div>)}</div><div className="mt-5 bg-white/5 rounded-xl p-4"><div className="flex justify-between text-xs text-white/40 mb-2"><span>Progress</span><span>{book.chapters.filter(c=>c.generated).length}/{book.chapters.length} chapters</span></div><div className="h-2 bg-white/10 rounded-full overflow-hidden"><div className="h-full bg-gradient-to-r from-purple-500 to-pink-500 rounded-full" style={{width:`${(book.chapters.filter(c=>c.generated).length/book.chapters.length)*100}%`}}/></div></div></>}{(!book.chapters||book.chapters.length===0)&&isBuilding&&<div className="text-center py-8 text-white/30"><Spin/><p className="mt-3 text-sm">Generating outline…</p></div>}<div className="mt-5 flex items-center gap-3 pt-4 border-t border-white/10"><button onClick={()=>setReadingMode(true)} disabled={!book.chapters?.some(c=>c.generated)} className="text-xs px-3 py-2 rounded-lg bg-purple-500/20 border border-purple-500/30 text-purple-300 hover:bg-purple-500/30 hover:text-purple-200 transition-all flex items-center gap-2 disabled:opacity-40">📖 Read Book</button><button onClick={()=>downloadBookJSON(book)} className="text-xs px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-white/60 hover:bg-white/10 hover:text-white/90 transition-all flex items-center gap-2">💾 Export Backup (JSON)</button><label className="text-xs px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-white/60 hover:bg-white/10 hover:text-white/90 transition-all flex items-center gap-2 cursor-pointer">📥 Import Backup<input type="file" accept=".json" className="hidden" onChange={async(e)=>{const file=e.target.files?.[0];if(!file)return;try{const imported=await importBookJSON(file);const books=JSON.parse(localStorage.getItem("bfai_books")||"[]");books.unshift(imported);localStorage.setItem("bfai_books",JSON.stringify(books));alert("Imported \""+imported.title+"\" successfully!");window.location.reload();}catch(err){alert("Import failed: "+err.message);}}}/></label></div></Card></div>}
 
         {/* CHAPTERS */}
-        {tab===1&&<div className="grid grid-cols-1 lg:grid-cols-3 gap-5"><div className="lg:col-span-1"><div className="bg-white/5 border border-white/10 rounded-2xl p-4 sticky top-24"><div className="flex items-center justify-between mb-3"><h3 className="text-white font-semibold text-sm">Chapters</h3>{!isBuilding&&<button onClick={async()=>{
+        {tab===1&&<div className="grid grid-cols-1 lg:grid-cols-3 gap-5"><div className="lg:col-span-1"><div className="bg-white/5 border border-white/10 rounded-2xl p-4 sticky top-24"><div className="flex items-center justify-between mb-3"><h3 className="text-white font-semibold text-sm">Chapters</h3><div className="flex gap-1.5"><button onClick={()=>setReadingMode(true)} disabled={!book.chapters?.some(c=>c.generated)} className="text-xs text-purple-300 hover:text-purple-200 disabled:opacity-30 px-2 py-1 rounded bg-purple-500/10">📖 Read</button>{!isBuilding&&<button onClick={async()=>{
     // Write all unwritten chapters, then trigger remaining pipeline steps
     for(let i=0;i<(book.chapters||[]).length;i++){
       if(quotaBlocked()){setQuotaHit(true);break;}
@@ -3850,14 +3866,15 @@ const genCover=async()=>{if(quotaHit||isBuilding)return;setBusy(true);setError("
         flash("All chapters written! ✅");
       }
     }
-  }} disabled={busy||busyCh!==null||quotaHit||isBuilding} className="text-xs bg-purple-500/20 text-purple-300 border border-purple-500/30 px-3 py-1.5 rounded-lg hover:bg-purple-500/30 disabled:opacity-40">Write All</button>}</div><div className="space-y-1">{(book.chapters||[]).map((ch,i)=><button key={i} onClick={()=>setSelCh(i)} className={`w-full text-left px-3 py-2 rounded-lg text-sm transition-all ${selCh===i?"bg-purple-500/20 text-white border border-purple-500/30":"text-white/50 hover:bg-white/5"}`}><span className={ch.generated?"text-green-400":""}>{ch.generated?"✓ ":""}</span>{ch.number}. {ch.title}</button>)}</div></div></div><div className="lg:col-span-2">{book.chapters?.[selCh]&&<Card><div className="flex items-start justify-between mb-5 gap-4"><div><h2 className="text-white text-lg font-bold">Ch. {book.chapters?.[selCh].number}: {book.chapters?.[selCh].title}</h2><p className="text-white/35 text-sm mt-1">{book.chapters?.[selCh].description}</p></div>{!isBuilding&&<div className="flex gap-2 shrink-0"><button onClick={()=>genChapterIllustration(selCh)} disabled={busyCh!==null||quotaHit||isBuilding||busy} className="bg-white/5 border border-white/10 text-white/60 px-3 py-2 rounded-xl font-medium text-sm hover:bg-white/10 disabled:opacity-40 flex items-center gap-1.5" title="Generate chapter illustration">🖼️</button><button onClick={()=>genChapter(selCh)} disabled={busyCh!==null||quotaHit||isBuilding} className="bg-gradient-to-r from-purple-500 to-pink-500 text-white px-4 py-2 rounded-xl font-medium text-sm hover:opacity-90 disabled:opacity-50 flex items-center gap-2">{busyCh===selCh?<><Spin size="h-4 w-4"/>Writing…</>:book.chapters?.[selCh].generated?"✍️ Rewrite":"✍️ Write"}</button></div>}</div>{book.chapters?.[selCh]?.illustration_url&&<div className="mb-4"><img src={book.chapters?.[selCh].illustration_url} alt={`Chapter ${book.chapters?.[selCh].number} illustration`} className="w-full rounded-xl max-h-48 object-cover border border-white/10"/><p className="text-white/20 text-xs mt-1 text-center italic">{book.chapters?.[selCh].illustration_prompt?.slice(0,80)}…</p></div>}{streamText&&busyCh===selCh?(
+  }} disabled={busy||busyCh!==null||quotaHit||isBuilding} className="text-xs bg-purple-500/20 text-purple-300 border border-purple-500/30 px-3 py-1.5 rounded-lg hover:bg-purple-500/30 disabled:opacity-40">Write All</button>}</div></div><InBookSearch book={book} onJump={idx=>setSelCh(idx)}/><div className="space-y-1">{(book.chapters||[]).map((ch,i)=><button key={i} onClick={()=>setSelCh(i)} className={`w-full text-left px-3 py-2 rounded-lg text-sm transition-all ${selCh===i?"bg-purple-500/20 text-white border border-purple-500/30":"text-white/50 hover:bg-white/5"}`}><span className={ch.generated?"text-green-400":""}>{ch.generated?"✓ ":""}</span>{ch.number}. {ch.title}</button>)}</div></div></div><div className="lg:col-span-2">{book.chapters?.[selCh]&&<Card><div className="flex items-start justify-between mb-5 gap-4"><div><h2 className="text-white text-lg font-bold">Ch. {book.chapters?.[selCh].number}: {book.chapters?.[selCh].title}</h2><p className="text-white/35 text-sm mt-1">{book.chapters?.[selCh].description}</p></div>{!isBuilding&&<div className="flex gap-2 shrink-0"><button onClick={()=>genChapterIllustration(selCh)} disabled={busyCh!==null||quotaHit||isBuilding||busy} className="bg-white/5 border border-white/10 text-white/60 px-3 py-2 rounded-xl font-medium text-sm hover:bg-white/10 disabled:opacity-40 flex items-center gap-1.5" title="Generate chapter illustration">🖼️</button><button onClick={()=>genChapter(selCh)} disabled={busyCh!==null||quotaHit||isBuilding} className="bg-gradient-to-r from-purple-500 to-pink-500 text-white px-4 py-2 rounded-xl font-medium text-sm hover:opacity-90 disabled:opacity-50 flex items-center gap-2">{busyCh===selCh?<><Spin size="h-4 w-4"/>Writing…</>:book.chapters?.[selCh].generated?"✍️ Rewrite":"✍️ Write"}</button></div>}</div>{book.chapters?.[selCh]?.illustration_url&&<div className="mb-4"><img src={book.chapters?.[selCh].illustration_url} alt={`Chapter ${book.chapters?.[selCh].number} illustration`} className="w-full rounded-xl max-h-48 object-cover border border-white/10"/><p className="text-white/20 text-xs mt-1 text-center italic">{book.chapters?.[selCh].illustration_prompt?.slice(0,80)}…</p></div>}{streamText&&busyCh===selCh?(
             <div className="rounded-xl border border-purple-500/30 bg-purple-500/5 p-4 max-h-[500px] overflow-y-auto">
               <div className="flex items-center gap-2 mb-3 pb-2 border-b border-white/10">
                 <Spin size="h-4 w-4"/>
                 <span className="text-purple-300 text-sm font-medium">Live writing — streaming from {getBackend()==="groq"?"Groq ⚡":getBackend()==="puter"?"Puter":"Gemini"}…</span>
-                <span className="text-white/30 text-xs ml-auto">{streamText.split(/\s+/).filter(Boolean).length} words</span>
+                <span className="text-white/30 text-xs ml-auto">{streamText.split(/\s+/).filter(Boolean).length} words{(book.chapters?.[selCh]?.target_words||0)>0?` / ${(book.chapters[selCh].target_words).toLocaleString()}`:""}</span>
               </div>
               <div className="text-white/70 text-sm leading-relaxed whitespace-pre-wrap font-serif">{streamText}<span className="inline-block w-2 h-4 bg-purple-400 animate-pulse ml-0.5"/></div>
+              <div className="mt-3 pt-3 border-t border-white/10"><WordGoalBar current={streamText.split(/\s+/).filter(Boolean).length} target={book.chapters?.[selCh]?.target_words||0} label="Chapter word progress"/></div>
             </div>
           ):book.chapters?.[selCh].content?<ChapterEditor book={book} chIdx={selCh} upd={upd}/>:<div className="text-center py-16 text-white/25"><div className="text-4xl mb-3">✍️</div><p>{isBuilding?"Generating…":"Click Write to generate"}</p></div>}</Card>}</div></div>}
 
@@ -4640,6 +4657,7 @@ function TranslatePanel({book,upd,quotaHit,bump,handleErr,flash}){
   const [targetLang,setTargetLang]=useState("Spanish");
   const [translating,setTranslating]=useState(false);
   const [progress,setProgress]=useState("");
+  const [transPct,setTransPct]=useState(0);
   const [done,setDone]=useState(false);
   const [error,setError]=useState("");
 
@@ -4655,7 +4673,7 @@ function TranslatePanel({book,upd,quotaHit,bump,handleErr,flash}){
         if(quotaBlocked()){setError("Daily quota hit — translation paused. Resume tomorrow.");break;}
         const ch=toTranslate[i];
         const chIdx=chapters.findIndex(c=>c.number===ch.number);
-        setProgress(`Translating chapter ${i+1}/${toTranslate.length}…`);
+        setProgress(`Translating chapter ${i+1}/${toTranslate.length}…`);setTransPct(Math.round((i+1)/toTranslate.length*100));
         const translated=await callAI(
           `You are a professional literary translator. Translate this chapter into ${targetLang}.\n\n`+
           `Rules:\n• Preserve the author's voice, sentence rhythm, and style\n• Keep character names as-is\n• Keep all emotional beats intact\n• Natural ${targetLang} — not word-for-word literal translation\n• Return ONLY the translated text — no preamble\n\n`+
@@ -4666,14 +4684,14 @@ function TranslatePanel({book,upd,quotaHit,bump,handleErr,flash}){
         chapters[chIdx]={...chapters[chIdx],content:translated};
       }
       // Update title & subtitle
-      setProgress("Translating title…");
+      setProgress("Translating title…");setTransPct(95);
       const titleRaw=await callAI(`Translate this book title and subtitle to ${targetLang}. Return ONLY JSON: {"title":"","subtitle":""}.\nTitle: ${book.title}\nSubtitle: ${book.subtitle||""}`,0.3);
       bump();
       const tm=titleRaw.match(/\{[\s\S]*\}/);
       let titles={title:book.title,subtitle:book.subtitle};if(tm){try{titles=JSON.parse(tm[0]);}catch(pe){/* keep defaults */}}
       const wc=chapters.reduce((a,c)=>a+(c.content?c.content.split(/\s+/).length:0),0);
       upd({chapters,word_count:wc,title:titles.title||book.title,subtitle:titles.subtitle||book.subtitle,writing_language:targetLang});
-      setDone(true);setProgress("");
+      setDone(true);setProgress("");setTransPct(0);
       flash(`Book translated to ${targetLang}! 🌍`);
     }catch(e){setError(errMsg(e));}finally{setTranslating(false);}
   };
@@ -4715,12 +4733,13 @@ function TranslatePanel({book,upd,quotaHit,bump,handleErr,flash}){
             <div><p className="text-white/70 text-sm">Chapters to translate</p><p className="text-white/30 text-xs">API calls: {(book.chapters||[]).filter(c=>c.content).length + 1}</p></div>
             <span className="text-white text-2xl font-bold">{(book.chapters||[]).filter(c=>c.content).length}</span>
           </div>
-          {translating&&<div className="text-center py-4"><Spin/><p className="text-purple-300 text-sm mt-2">{progress}</p></div>}
+          {translating&&<div className="py-4"><div className="flex items-center gap-2 mb-3"><Spin size="h-4 w-4"/><p className="text-purple-300 text-sm">{progress}</p></div>{transPct>0&&<div className="h-2 bg-white/10 rounded-full overflow-hidden"><div className="h-full bg-gradient-to-r from-blue-500 to-cyan-500 rounded-full transition-all" style={{width:transPct+"%"}}/></div>}</div>}
           <button onClick={translate} disabled={translating||quotaHit} className="w-full bg-gradient-to-r from-blue-500 to-cyan-500 text-white py-3 rounded-xl font-semibold hover:opacity-90 disabled:opacity-50 flex items-center justify-center gap-2">
             {translating?<><Spin size="h-4 w-4"/>Translating…</>:`🌍 Translate to ${targetLang}`}
           </button>
         </div>
       </Card>
+      {readingMode&&<BookReader book={book} onClose={()=>setReadingMode(false)}/>}
     </div>
   );
 }
@@ -4883,6 +4902,157 @@ const setMangaProjects=v=>{try{localStorage.setItem(MANGA_KEY,JSON.stringify(v))
 const getMangaProject=id=>getMangaProjects().find(p=>p.id===id)||null;
 const saveMangaProject=p=>{const all=getMangaProjects();const i=all.findIndex(x=>x.id===p.id);if(i>-1)all[i]=p;else all.unshift(p);setMangaProjects(all);};
 const deleteMangaProject=id=>setMangaProjects(getMangaProjects().filter(p=>p.id!==id));
+
+// ══════════════════════════════════════════════════════════════════════════════
+// 📖 BOOK READER — Full-book read mode with chapter navigation
+// ══════════════════════════════════════════════════════════════════════════════
+function BookReader({book,onClose}){
+  const [chIdx,setChIdx]=useState(0);
+  const [showTOC,setShowTOC]=useState(false);
+  const chapters=(book.chapters||[]).filter(c=>c.generated);
+  const ch=chapters[chIdx];
+  const totalWords=chapters.reduce((a,c)=>a+(c.content?c.content.split(/\s+/).filter(Boolean).length:0),0);
+  const readMin=Math.ceil(totalWords/200);
+
+  const printBook=()=>{
+    const win=window.open("","_blank");
+    if(!win)return;
+    const html=`<!DOCTYPE html><html><head><title>${book.title}</title><style>
+      body{font-family:Georgia,serif;max-width:700px;margin:40px auto;padding:0 20px;line-height:1.8;color:#222;}
+      h1{font-size:2em;text-align:center;margin-bottom:5px;}
+      h2{font-size:1.3em;margin-top:40px;border-bottom:1px solid #ccc;padding-bottom:5px;}
+      .subtitle{text-align:center;color:#666;font-style:italic;margin-bottom:30px;}
+      .author{text-align:center;color:#999;margin-bottom:40px;}
+      p{text-indent:1.5em;margin:0 0 0.8em;}
+      p:first-of-type{text-indent:0;}
+      .chapter-break{page-break-before:always;}
+      @media print{.chapter-break{page-break-before:always;}}
+    </style></head><body>
+    <h1>${book.title}</h1>
+    ${book.subtitle?`<p class="subtitle">${book.subtitle}</p>`:""}
+    <p class="author">${getAuthorProfile()?.name||"Unknown Author"}</p>
+    ${chapters.map((c,i)=>`<div class="${i>0?'chapter-break':''}"><h2>Chapter ${c.number}: ${c.title}</h2>${(c.content||"").split('\n').map(p=>`<p>${p.replace(/</g,'&lt;')}</p>`).join('')}</div>`).join('')}
+    </body></html>`;
+    win.document.write(html);
+    win.document.close();
+    setTimeout(()=>win.print(),500);
+  };
+
+  if(chapters.length===0)return <div className="fixed inset-0 bg-slate-900 z-[9990] flex items-center justify-center"><div className="text-center"><p className="text-white/40 text-lg mb-4">No chapters written yet.</p><button onClick={onClose} className="bg-purple-500 text-white px-6 py-2 rounded-xl">Go Back</button></div></div>;
+
+  return(
+    <div className="fixed inset-0 bg-slate-900 z-[9990] flex flex-col">
+      {/* Reader header */}
+      <div className="flex items-center justify-between px-4 py-3 border-b border-white/10 bg-slate-800/80 backdrop-blur">
+        <button onClick={onClose} className="text-white/40 hover:text-white text-sm flex items-center gap-2">✕ Close Reader</button>
+        <div className="text-white/30 text-sm hidden sm:block">{book.title}</div>
+        <div className="flex gap-2">
+          <button onClick={()=>setShowTOC(!showTOC)} className="text-white/40 hover:text-white text-sm px-3 py-1 rounded-lg bg-white/5">📑 TOC</button>
+          <button onClick={printBook} className="text-white/40 hover:text-white text-sm px-3 py-1 rounded-lg bg-white/5">🖨️ Print</button>
+        </div>
+      </div>
+      {/* TOC sidebar */}
+      {showTOC&&<div className="absolute left-0 top-12 bottom-0 w-64 bg-slate-800 border-r border-white/10 overflow-y-auto z-10 p-3">
+        <p className="text-white/30 text-xs uppercase tracking-wider mb-2">Chapters ({chapters.length})</p>
+        {chapters.map((c,i)=><button key={i} onClick={()=>{setChIdx(i);setShowTOC(false);}} className={`w-full text-left px-3 py-2 rounded-lg text-sm mb-1 ${i===chIdx?"bg-purple-500/20 text-white border border-purple-500/30":"text-white/50 hover:bg-white/5"}`}>{c.number}. {c.title}</button>)}
+      </div>}
+      {/* Reading area */}
+      <div className="flex-1 overflow-y-auto" onClick={()=>showTOC&&setShowTOC(false)}>
+        <div className="max-w-2xl mx-auto px-6 py-12">
+          <h2 className="text-white text-2xl font-bold mb-1">Chapter {ch.number}: {ch.title}</h2>
+          <p className="text-white/20 text-xs mb-8">{ch.content.split(/\s+/).filter(Boolean).length.toLocaleString()} words · ~{Math.ceil(ch.content.split(/\s+/).filter(Boolean).length/200)} min read</p>
+          <div className="text-white/75 text-base leading-relaxed whitespace-pre-wrap font-serif">{ch.content}</div>
+          {/* Prev/Next nav */}
+          <div className="flex justify-between mt-12 pt-6 border-t border-white/10">
+            <button onClick={()=>setChIdx(Math.max(0,chIdx-1))} disabled={chIdx===0} className="text-white/50 hover:text-white text-sm disabled:opacity-30">← Previous</button>
+            <span className="text-white/20 text-xs">{chIdx+1} / {chapters.length}</span>
+            <button onClick={()=>setChIdx(Math.min(chapters.length-1,chIdx+1))} disabled={chIdx===chapters.length-1} className="text-white/50 hover:text-white text-sm disabled:opacity-30">Next →</button>
+          </div>
+        </div>
+      </div>
+      {/* Progress bar */}
+      <div className="h-1 bg-white/5"><div className="h-full bg-gradient-to-r from-purple-500 to-pink-500 transition-all" style={{width:`${((chIdx+1)/chapters.length)*100}%`}}/></div>
+      <div className="text-center py-2 text-white/20 text-xs">{readMin>0?`${Math.floor(readMin/60)>0?Math.floor(readMin/60)+"h ":""}${readMin%60}m total read time`:""}</div>
+    </div>
+  );
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// 📄 PER-CHAPTER EXPORT — Download a single chapter as TXT
+// ══════════════════════════════════════════════════════════════════════════════
+function downloadChapterTxt(book,chIdx){
+  const ch=book.chapters?.[chIdx];
+  if(!ch||!ch.content)return;
+  const text=`${book.title}\n${book.subtitle?book.subtitle+"\n":""}\nChapter ${ch.number}: ${ch.title}\n\n${ch.content}\n`;
+  const blob=new Blob([text],{type:"text/plain"});
+  const a=document.createElement("a");
+  a.href=URL.createObjectURL(blob);
+  a.download=`${book.title.replace(/[^a-z0-9]/gi,"_")}_Ch${ch.number}.txt`;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// 🔍 SEARCH WITHIN BOOK — Search across all chapter contents
+// ══════════════════════════════════════════════════════════════════════════════
+function InBookSearch({book,onJump}){
+  const [q,setQ]=useState("");
+  const [results,setResults]=useState(null);
+  const doSearch=query=>{
+    if(!query.trim()){setResults(null);return;}
+    const lower=query.toLowerCase();
+    const found=(book.chapters||[]).map((ch,i)=>{if(!ch.content)return null;const idx=ch.content.toLowerCase().indexOf(lower);if(idx<0)return null;const start=Math.max(0,idx-60);const end=Math.min(ch.content.length,idx+lower.length+60);return{chIdx:i,snippet:ch.content.slice(start,end),highlight:ch.content.slice(idx,idx+lower.length),before:ch.content.slice(start,idx),after:ch.content.slice(idx+lower.length,end)};}).filter(Boolean);
+    setResults(found);
+  };
+  useEffect(()=>{const t=setTimeout(()=>doSearch(q),250);return()=>clearTimeout(t);},[q]);
+  return (
+    <div className="mb-4">
+      <input type="text" value={q} onChange={e=>setQ(e.target.value)} placeholder="🔍 Search within book…" className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-2 text-white text-sm placeholder-white/30 focus:outline-none focus:border-purple-500/50"/>
+      {results&&results.length>0&&<div className="mt-2 space-y-2 max-h-60 overflow-y-auto">{results.map((r,i)=><button key={i} onClick={()=>onJump(r.chIdx)} className="w-full text-left bg-white/5 border border-white/10 rounded-lg p-3 hover:bg-white/10 transition-colors"><p className="text-white/40 text-xs mb-1">Ch. {book.chapters[r.chIdx].number}: {book.chapters[r.chIdx].title}</p><p className="text-white/60 text-sm">…{r.before}<mark className="bg-amber-500/30 text-amber-200 rounded px-0.5">{r.highlight}</mark>{r.after}…</p></button>)}</div>}
+      {results&&results.length===0&&q.trim()&&<p className="text-white/30 text-sm mt-2">No matches found.</p>}
+    </div>
+  );
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// 📦 SERIES EXPORT — Export all books in a series as JSON
+// ══════════════════════════════════════════════════════════════════════════════
+function exportSeriesBooks(series){
+  const books=getBooks().filter(b=>b.series_id===series.id);
+  const allContent=books.map(b=>{
+    const chaps=(b.chapters||[]).filter(c=>c.generated);
+    return `════════════════════════════════════════════════════\n\n${b.series_name||""} — Book ${b.series_number||"?"}\n\n${b.title}\n${b.subtitle||""}\n\n════════════════════════════════════════════════════\n\n${chaps.map(c=>`Chapter ${c.number}: ${c.title}\n\n${c.content||""}\n`).join('\n\n')}`;
+  }).join('\n\n');
+  const blob=new Blob([allContent],{type:"text/plain"});
+  const a=document.createElement("a");
+  a.href=URL.createObjectURL(blob);
+  a.download=`${series.name.replace(/[^a-z0-9]/gi,"_")}_Complete_Series.txt`;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// 📊 WORD GOAL PROGRESS — Live progress bar during chapter writing
+// ══════════════════════════════════════════════════════════════════════════════
+function WordGoalBar({current,target,label}){
+  const pct=target>0?Math.min(100,Math.round(current/target*100)):0;
+  const isShort=target>0&&current<target*0.6;
+  const isGood=target>0&&current>=target*0.9;
+  return(
+    <div className="flex items-center gap-3">
+      <div className="flex-1">
+        <div className="flex justify-between text-xs mb-1">
+          <span className="text-white/30">{label||"Word progress"}</span>
+          <span className={isShort?"text-amber-400":isGood?"text-green-400":"text-white/40"}>{current.toLocaleString()} / {target>0?target.toLocaleString():"?"} words</span>
+        </div>
+        <div className="h-2 bg-white/10 rounded-full overflow-hidden">
+          <div className={`h-full rounded-full transition-all ${isShort?"bg-amber-500":isGood?"bg-green-500":"bg-gradient-to-r from-purple-500 to-pink-500"}`} style={{width:`${pct}%`}}/>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 
 // ══════════════════════════════════════════════════════════════════════════════
 // 🤖 BOOKFORGE HELP BOT — In-app chatbot with Axel escalation
@@ -5092,6 +5262,7 @@ function App(){
   const [showSettings,setShowSettings]=useState(false);
   const [homeTab,setHomeTab]=useState("library");
   const [retryToasts,setRetryToasts]=useState([]);
+  const [readingMode,setReadingMode]=useState(false);
   useEffect(()=>{migrateBooks();
     // Hide loading screen once React has mounted
     const el=document.getElementById("loading");
