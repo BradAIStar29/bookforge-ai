@@ -2225,11 +2225,30 @@ function SeriesPage({navigate,onSettings}){
   const [showCreate,setShowCreate]=useState(false);
   const [viewBible,setViewBible]=useState(null);
   const [form,setForm]=useState({name:"",concept:"",genre:"",audience:"",book_count:3,tone:""});
+  const [seriesTitles,setSeriesTitles]=useState(null);
+  const [suggestingSeriesTitles,setSuggestingSeriesTitles]=useState(false);
+  const [seriesTitleError,setSeriesTitleError]=useState("");
   const [loading,setLoading]=useState(false);
   const [loadStep,setLoadStep]=useState("");
   const [error,setError]=useState("");
 
   const reload=()=>{const s=getSeries();setSeriesList(s);};
+
+  const suggestSeriesTitles=async()=>{
+    if(!hasCredentials()){onSettings();return;}
+    if(!form.genre){setSeriesTitleError("Pick a genre first.");return;}
+    setSuggestingSeriesTitles(true);setSeriesTitleError("");
+    try{
+      const result=await suggestTitles(form.genre,form.audience,form.concept);
+      setSeriesTitles(result.titles||[]);
+    }catch(e){setSeriesTitleError(errMsg(e));}
+    finally{setSuggestingSeriesTitles(false);}
+  };
+
+  const useSeriesTitle=t=>{
+    setForm(f=>({...f,name:t.title,concept:t.why?`${t.why} ${form.concept||""}`.trim():form.concept}));
+    setSeriesTitles(null);
+  };
 
   const createSeries=async()=>{
     if(!hasCredentials()){onSettings();return;}
@@ -2326,7 +2345,25 @@ function SeriesPage({navigate,onSettings}){
           {error&&<div className="bg-red-500/20 border border-red-500/30 text-red-300 rounded-xl p-4 mb-4 text-sm">{error}</div>}
           <div className="space-y-4">
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <div><label className="text-white/60 text-sm font-medium block mb-2">Series Name *</label><input value={form.name} onChange={e=>setForm({...form,name:e.target.value})} placeholder='E.g. "The Rival Hearts Series"' className="w-full bg-white/10 border border-white/20 rounded-xl px-4 py-3 text-white placeholder-white/25 focus:outline-none focus:border-cyan-500 text-sm"/></div>
+              <div><label className="text-white/60 text-sm font-medium block mb-2">Series Name *</label>
+            <div className="flex gap-2 mb-2">
+              <button onClick={suggestSeriesTitles} disabled={suggestingSeriesTitles||!form.genre} className="text-xs px-3 py-1.5 rounded-lg bg-cyan-500/20 border border-cyan-500/30 text-cyan-300 hover:bg-cyan-500/30 transition-all disabled:opacity-40 flex items-center gap-1.5">
+                {suggestingSeriesTitles?<><Spin size="h-3 w-3"/>Suggesting…</>:"✨ AI Suggest Titles"}
+              </button>
+            </div>
+            {seriesTitleError&&<div className="bg-red-500/15 border border-red-500/30 text-red-300 rounded-lg p-2 mb-2 text-xs">{seriesTitleError}</div>}
+            {seriesTitles&&(
+              <div className="bg-cyan-500/5 border border-cyan-500/20 rounded-xl p-3 mb-2 space-y-2 max-h-60 overflow-y-auto">
+                <p className="text-cyan-300 text-xs font-medium mb-1">Tap a title for your series:</p>
+                {seriesTitles.map((t,i)=>(
+                  <button key={i} onClick={()=>useSeriesTitle(t)} className="w-full text-left p-2.5 rounded-lg bg-white/5 hover:bg-cyan-500/10 border border-white/10 hover:border-cyan-500/30 transition-all">
+                    <p className="text-white text-sm font-medium">{t.title}</p>
+                    {t.why&&<p className="text-white/40 text-xs mt-0.5">{t.why}</p>}
+                  </button>
+                ))}
+              </div>
+            )}
+            <input value={form.name} onChange={e=>setForm({...form,name:e.target.value})} placeholder='E.g. "The Rival Hearts Series"' className="w-full bg-white/10 border border-white/20 rounded-xl px-4 py-3 text-white placeholder-white/25 focus:outline-none focus:border-cyan-500 text-sm"/></div>
               <div><label className="text-white/60 text-sm font-medium block mb-2">Number of Books *</label><select value={form.book_count} onChange={e=>setForm({...form,book_count:Number(e.target.value)})} className="w-full bg-white/10 border border-white/20 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-cyan-500 text-sm">{[2,3,4,5,6,7,8,9,10].map(n=><option key={n} value={n}>{n} Books</option>)}</select></div>
             </div>
             <div><label className="text-white/60 text-sm font-medium block mb-2">Series Concept *</label><textarea rows={3} value={form.concept} onChange={e=>setForm({...form,concept:e.target.value})} placeholder='E.g. "Standalone gay romance novels set in a competitive sports world, each book a different couple"' className="w-full bg-white/10 border border-white/20 rounded-xl px-4 py-3 text-white placeholder-white/25 focus:outline-none focus:border-cyan-500 resize-none text-sm"/></div>
@@ -2495,6 +2532,35 @@ function HomePage({navigate,onSettings}){
 // ══════════════════════════════════════════════════════════════════════════════
 // CREATE PAGE
 // ══════════════════════════════════════════════════════════════════════════════
+
+// ── AI Title & Story Premise Generator ────────────────────────────────────────
+async function suggestTitles(genre, audience, keywords){
+  const kwCtx=keywords?`\nAdditional keywords/themes: ${keywords}`:"";
+  const raw=await callAI(
+    `You are a bestselling book title strategist. Generate 8 compelling, commercially viable book titles for a ${genre||"Fiction"} book targeting ${audience||"General Adults"}.${kwCtx}\n\nRules:\n• Each title must be 2-8 words — punchy, memorable, and genre-appropriate\n• Include keyword-rich phrases that would rank well on Amazon search\n• Vary the style: some mysterious, some direct, some evocative\n• For romance/LGBT+: emotionally charged, chemistry-implying\n• For thriller/mystery: tension-building, intrigue-evoking\n• For self-help/nonfiction: benefit-driven, promise-making\n• For fantasy/sci-fi: world-building, epic-sounding\n• NO generic titles like "The Journey" or "A New Beginning"\n\nRespond ONLY with valid JSON:\n{"titles":[{"title":"The Actual Title","subtitle":"Optional subtitle","why":"One sentence on why this title works commercially"}]}`,
+    0.9
+  );
+  trackUsage();
+  const match=raw.match(/\{[\s\S]*\}/);
+  if(!match)throw{code:"PARSE",msg:"Could not parse title suggestions."};
+  let result;try{result=JSON.parse(match[0]);}catch(pe){throw{code:"PARSE",msg:"AI returned malformed JSON — please retry."};}
+  return result;
+}
+
+async function generateStoryPremise(title, genre, audience, subtitle){
+  const subCtx=subtitle?`\nSubtitle: ${subtitle}`:"";
+  const raw=await callAI(
+    `You are a master storyteller and bestselling author. Based on this title, generate a compelling story premise that could become a full book.\n\nTitle: "${title}"${subCtx}\nGenre: ${genre||"Fiction"}\nAudience: ${audience||"General Adults"}\n\nCreate a rich, commercially compelling story premise. Respond ONLY with valid JSON:\n{"title":"${title.replace(/"/g,'\\"')}","subtitle":"a sharp, keyword-rich subtitle","description":"3-4 paragraph story synopsis covering setup, conflict, stakes, and emotional core. Make it vivid and specific — not generic.","topic":"a 1-2 sentence pitch that could be used as the book concept","themes":["core theme 1","theme 2","theme 3"],"estimated_word_count":50000}`,
+    0.85
+  );
+  trackUsage();
+  const match=raw.match(/\{[\s\S]*\}/);
+  if(!match)throw{code:"PARSE",msg:"Could not parse story premise."};
+  let result;try{result=JSON.parse(match[0]);}catch(pe){throw{code:"PARSE",msg:"AI returned malformed JSON — please retry."};}
+  return result;
+}
+
+
 function CreatePage({navigate,onSettings}){
   const [step,setStep]=useState(1);
   const [loading,setLoading]=useState(false);
@@ -2503,6 +2569,11 @@ function CreatePage({navigate,onSettings}){
   const [mode,setMode]=useState("idea"); // "idea" | "import"
   const [importText,setImportText]=useState("");
   const [form,setForm]=useState({topic:"",genre:"",audience:"",language:"English",style:"",nonfiction_mode:false,book_length:"standard",custom_chapters_min:12,custom_chapters_max:15,custom_words_min:2500,custom_words_max:3500});
+  const [titleSuggestions,setTitleSuggestions]=useState(null);
+  const [pendingPremise,setPendingPremise]=useState(null);
+  const [suggestingTitles,setSuggestingTitles]=useState(false);
+  const [generatingPremise,setGeneratingPremise]=useState(false);
+  const [titleError,setTitleError]=useState("");
 
   const voiceProfile=getVoiceProfile();
 
@@ -2513,6 +2584,36 @@ function CreatePage({navigate,onSettings}){
     return ctx;
   };
 
+  const suggestBookTitles=async()=>{
+    if(!hasCredentials()){onSettings();return;}
+    if(!form.genre){setTitleError("Pick a genre first so the AI knows what kind of titles to suggest.");return;}
+    setSuggestingTitles(true);setTitleError("");
+    try{
+      const result=await suggestTitles(form.genre,form.audience,form.topic);
+      setTitleSuggestions(result.titles||[]);
+    }catch(e){setTitleError(errMsg(e));}
+    finally{setSuggestingTitles(false);}
+  };
+
+  const useTitle=async(t)=>{
+    // Generate a story premise from the selected title
+    setGeneratingPremise(true);setTitleError("");
+    try{
+      const premise=await generateStoryPremise(t.title,form.genre,form.audience,t.subtitle);
+      // Fill in the form with the generated premise
+      setForm(f=>({...f,topic:premise.topic||(`Title: ${t.title}. ${premise.description?.slice(0,300)||""}`)}));
+      // If genre/audience not set, fill from premise
+      setTitleSuggestions(null);
+      // Store the premise for outline generation
+      setPendingPremise(premise);
+    }catch(e){
+      // If premise generation fails, just use the title as the topic
+      setForm(f=>({...f,topic:`Title: ${t.title}${t.subtitle?` — ${t.subtitle}`:""}. ${t.why||""}`}));
+      setTitleSuggestions(null);
+    }
+    finally{setGeneratingPremise(false);}
+  };
+
   const generate=async()=>{
     if(!hasCredentials()){onSettings();return;}
     if(mode==="idea"&&(!form.topic||!form.genre||!form.audience)){setError("Fill in topic, genre and audience.");return;}
@@ -2520,6 +2621,8 @@ function CreatePage({navigate,onSettings}){
     setLoading(true);setError("");
     try{
       const styleCtx=buildStyleCtx();
+      // If we have a pending premise from AI title generator, inject it into the prompt
+      const premiseCtx=pendingPremise?`\n\nAI-GENERATED PREMISE (use this as the foundation):\nTitle: ${pendingPremise.title}\nSubtitle: ${pendingPremise.subtitle||""}\nDescription: ${pendingPremise.description||""}\nThemes: ${(pendingPremise.themes||[]).join(", ")}\nUse this title and description as the foundation for the outline. Expand it into a full chapter-by-chapter plan.`:"";
       const langNote=form.language!=="English"?`\nWrite in: ${form.language}`:"";
       const _bl=BOOK_LENGTHS.find(x=>x.id===form.book_length)||BOOK_LENGTHS[0];
       const _chMin=form.book_length==="custom"?form.custom_chapters_min:_bl.chapters_min;
@@ -2533,13 +2636,13 @@ function CreatePage({navigate,onSettings}){
       if(mode==="import"){
         prompt=`You are a professional book editor. Analyze this draft/notes and build a polished book outline from it.\n\nDRAFT/NOTES:\n${importText.slice(0,6000)}\n\nGenre: ${form.genre||"Fiction"}\nAudience: ${form.audience||"General Adults"}${styleCtx}${langNote}\n\n${form.nonfiction_mode?"Include exercises/reflections/action-steps fields per chapter.":""}\n\nRespond ONLY with valid JSON:\n{"title":"","subtitle":"","description":"","themes":[""],"tone_notes":"describe the intended emotional register and prose style","estimated_word_count":50000,"writing_language":"${form.language}","chapters":[{"number":1,"title":"","description":"","opening_hook":"how this chapter should open — first line or image","${form.nonfiction_mode?"exercise":"notes"}":""}]}`;
       } else {
-        prompt=`You are a bestselling author. Create a detailed, commercially compelling book outline.\nTopic: ${form.topic}\nGenre: ${form.genre}\nAudience: ${form.audience}${styleCtx}${langNote}\n${form.nonfiction_mode?"Nonfiction mode: include exercises, reflections, and action steps per chapter.":""}\n\nRULES:\n${lengthNote.slice(2)}${wordsNote}\n• Chapter titles must be SPECIFIC and evocative — never generic (e.g. not "Chapter 1: The Beginning")\n• Subtitle must be a compelling, keyword-rich phrase (not just a restatement of the title)\n• Themes must be 3-5 specific thematic elements (e.g. "loss and redemption", "the cost of ambition")\n• Each chapter description must be 2-3 sentences with a clear narrative purpose — never generic (e.g. not "Chapter 1: The Beginning")\n• Each chapter description must be 2-3 sentences with clear conflict or stakes\n• Subtitle must be sharp, benefit-driven, or intriguing\n• Target ~${Math.round(50000/13)} words per chapter\n• No filler chapters — every chapter must earn its place\n\nRespond ONLY with valid JSON:\n{"title":"","subtitle":"","description":"","themes":[""],"tone_notes":"describe the intended emotional register and prose style","estimated_word_count":50000,"writing_language":"${form.language}","chapters":[{"number":1,"title":"","description":"","opening_hook":"how this chapter should open — first line or image","target_words":${_twTarget},"${form.nonfiction_mode?"exercise":"notes"}":""}]}`;
+        prompt=`You are a bestselling author. Create a detailed, commercially compelling book outline.\nTopic: ${form.topic}\nGenre: ${form.genre}\nAudience: ${form.audience}${styleCtx}${langNote}${premiseCtx}\n${form.nonfiction_mode?"Nonfiction mode: include exercises, reflections, and action steps per chapter.":""}\n\nRULES:\n${lengthNote.slice(2)}${wordsNote}\n• Chapter titles must be SPECIFIC and evocative — never generic (e.g. not "Chapter 1: The Beginning")\n• Subtitle must be a compelling, keyword-rich phrase (not just a restatement of the title)\n• Themes must be 3-5 specific thematic elements (e.g. "loss and redemption", "the cost of ambition")\n• Each chapter description must be 2-3 sentences with a clear narrative purpose — never generic (e.g. not "Chapter 1: The Beginning")\n• Each chapter description must be 2-3 sentences with clear conflict or stakes\n• Subtitle must be sharp, benefit-driven, or intriguing\n• Target ~${Math.round(50000/13)} words per chapter\n• No filler chapters — every chapter must earn its place\n\nRespond ONLY with valid JSON:\n{"title":"","subtitle":"","description":"","themes":[""],"tone_notes":"describe the intended emotional register and prose style","estimated_word_count":50000,"writing_language":"${form.language}","chapters":[{"number":1,"title":"","description":"","opening_hook":"how this chapter should open — first line or image","target_words":${_twTarget},"${form.nonfiction_mode?"exercise":"notes"}":""}]}`;
       }
       const raw=await callAI(prompt);
       trackUsage();
       const match=raw.match(/\{[\s\S]*\}/);if(!match)throw{code:"PARSE"};
       let _ol;try{_ol=JSON.parse(match[0]);}catch(pe){throw{code:"PARSE",msg:"AI returned malformed JSON — please retry."};}
-setOutline(_ol);setStep(2);
+setOutline(_ol);setPendingPremise(null);setStep(2);
     }catch(e){setError(errMsg(e));}finally{setLoading(false);}
   };
 
@@ -2579,7 +2682,27 @@ setOutline(_ol);setStep(2);
           </div>
           <div className="space-y-5">
             {mode==="idea"?(
-              <div><label className="text-white/70 text-sm font-medium block mb-2">Topic / Story Idea *</label><textarea rows={4} placeholder='E.g. "Two gay college athletes fall in love across rival teams during championship season"' value={form.topic} onChange={e=>setForm({...form,topic:e.target.value})} className="w-full bg-white/10 border border-white/20 rounded-xl px-4 py-3 text-white placeholder-white/25 focus:outline-none focus:border-purple-500 resize-none text-sm"/>
+              <div><label className="text-white/70 text-sm font-medium block mb-2">Topic / Story Idea *</label>
+            <div className="flex gap-2 mb-2">
+              <button onClick={suggestBookTitles} disabled={suggestingTitles||!form.genre} className="text-xs px-3 py-1.5 rounded-lg bg-cyan-500/20 border border-cyan-500/30 text-cyan-300 hover:bg-cyan-500/30 transition-all disabled:opacity-40 flex items-center gap-1.5">
+                {suggestingTitles?<><Spin size="h-3 w-3"/>Suggesting…</>:"✨ AI Suggest Titles"}
+              </button>
+              {pendingPremise&&<span className="text-xs text-green-400 flex items-center gap-1">✓ AI premise ready</span>}
+            </div>
+            {titleError&&<div className="bg-red-500/15 border border-red-500/30 text-red-300 rounded-lg p-2 mb-2 text-xs">{titleError}</div>}
+            {titleSuggestions&&(
+              <div className="bg-cyan-500/5 border border-cyan-500/20 rounded-xl p-3 mb-2 space-y-2 max-h-72 overflow-y-auto">
+                <p className="text-cyan-300 text-xs font-medium mb-1">Tap a title to generate a story premise and start your book:</p>
+                {generatingPremise&&<div className="text-center py-4"><Spin/><p className="text-cyan-300 text-xs mt-2">Generating story premise…</p></div>}
+                {!generatingPremise&&titleSuggestions.map((t,i)=>(
+                  <button key={i} onClick={()=>useTitle(t)} className="w-full text-left p-3 rounded-lg bg-white/5 hover:bg-cyan-500/10 border border-white/10 hover:border-cyan-500/30 transition-all">
+                    <p className="text-white text-sm font-medium">{t.title}{t.subtitle?<span className="text-white/50 font-normal">: {t.subtitle}</span>:""}</p>
+                    {t.why&&<p className="text-white/40 text-xs mt-1">{t.why}</p>}
+                  </button>
+                ))}
+              </div>
+            )}
+            <textarea rows={4} placeholder='E.g. "Two gay college athletes fall in love across rival teams during championship season"' value={form.topic} onChange={e=>setForm({...form,topic:e.target.value})} className="w-full bg-white/10 border border-white/20 rounded-xl px-4 py-3 text-white placeholder-white/25 focus:outline-none focus:border-purple-500 resize-none text-sm"/>
             <div className="flex flex-wrap gap-2 mt-2">
               {['A second-chance romance at a coastal B&B','A detective haunted by the case that got away','A self-help book on building unshakeable morning habits','A cozy mystery in a Scottish castle','An enemies-to-lovers billionaire romance','A spiritual memoir of finding purpose after loss'].map(s=>(
                 <button key={s} onClick={()=>setForm(f=>({...f,topic:s}))} className="text-xs px-2.5 py-1 rounded-lg bg-white/5 border border-white/10 text-white/40 hover:text-white/70 hover:bg-white/10 transition-all text-left">{s}</button>
@@ -4982,11 +5105,10 @@ function MangaCreateWizard({navigate, onSettings, onBack, onCreated}){
   const [error, setError] = useState("");
   const [usage, setUsage] = useState(getUsage());
 
-  const key = getKey();
-
+  
   const runResearch = async () => {
-    if(!key){ onSettings(); return; }
-    if(getUsage() >= DAILY_LIMIT){ setError("Daily quota reached."); return; }
+    if(!hasCredentials()){ onSettings(); return; }
+    if(quotaBlocked()){ setError("Daily quota reached."); return; }
     setResearchLoading(true); setError("");
     try{
       const data = await runMangaResearch(() => { trackUsage(); setUsage(getUsage()); }, MANGA_GENRES.find(g=>g.id===genre)?.label || genre);
@@ -4996,8 +5118,8 @@ function MangaCreateWizard({navigate, onSettings, onBack, onCreated}){
   };
 
   const create = async () => {
-    if(!key){ onSettings(); return; }
-    if(getUsage() >= DAILY_LIMIT){ setError("Daily quota reached."); return; }
+    if(!hasCredentials()){ onSettings(); return; }
+    if(quotaBlocked()){ setError("Daily quota reached."); return; }
     setStep(4); setGenerating(true); setGenStatus("🧠 Crafting series concept…"); setError("");
     try{
       const concept = await generateMangaConcept(
