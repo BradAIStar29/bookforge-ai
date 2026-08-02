@@ -252,6 +252,34 @@ function buildRTF(book){
   return body;
 }
 
+// Export a single book as JSON backup (all data: chapters, SEO, review, cover, etc.)
+function downloadBookJSON(book){
+  const blob=new Blob([JSON.stringify(book,null,2)],{type:"application/json"});
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement("a");
+  a.href=url;a.download=`${book.title.replace(/[^a-z0-9]/gi,"_")}_backup.json`;
+  document.body.appendChild(a);a.click();a.remove();
+  URL.revokeObjectURL(url);
+}
+
+// Import a book from JSON backup
+function importBookJSON(file){
+  return new Promise((resolve,reject)=>{
+    const reader=new FileReader();
+    reader.onload=()=>{
+      try{
+        const book=JSON.parse(reader.result);
+        if(!book.title||!book.chapters)throw new Error("Invalid book backup");
+        book.id="bk_"+Date.now();
+        book.created_date=new Date().toISOString();
+        resolve(book);
+      }catch(e){reject(e);}
+    };
+    reader.onerror=()=>reject(new Error("Failed to read file"));
+    reader.readAsText(file);
+  });
+}
+
 function buildEPUB(book){
   // RETURNS A PROMISE → resolves to a .epub Blob (real EPUB3 ZIP format)
   // Uses JSZip (MIT, loaded on demand). Zero cost, works in all browsers.
@@ -2013,7 +2041,7 @@ function CreatePage({navigate,onSettings}){
       if(mode==="import"){
         prompt=`You are a professional book editor. Analyze this draft/notes and build a polished book outline from it.\n\nDRAFT/NOTES:\n${importText.slice(0,6000)}\n\nGenre: ${form.genre||"Fiction"}\nAudience: ${form.audience||"General Adults"}${styleCtx}${langNote}\n\n${form.nonfiction_mode?"Include exercises/reflections/action-steps fields per chapter.":""}\n\nRespond ONLY with valid JSON:\n{"title":"","subtitle":"","description":"","themes":[""],"tone_notes":"describe the intended emotional register and prose style","estimated_word_count":50000,"writing_language":"${form.language}","chapters":[{"number":1,"title":"","description":"","opening_hook":"how this chapter should open — first line or image","${form.nonfiction_mode?"exercise":"notes"}":""}]}`;
       } else {
-        prompt=`You are a bestselling author. Create a detailed, commercially compelling book outline.\nTopic: ${form.topic}\nGenre: ${form.genre}\nAudience: ${form.audience}${styleCtx}${langNote}\n${form.nonfiction_mode?"Nonfiction mode: include exercises, reflections, and action steps per chapter.":""}\n\nRULES:\n${lengthNote.slice(2)}${wordsNote}\n• Chapter titles must be SPECIFIC and evocative — never generic (e.g. not "Chapter 1: The Beginning")\n• Each chapter description must be 2-3 sentences with clear conflict or stakes\n• Subtitle must be sharp, benefit-driven, or intriguing\n• Target ~${Math.round(50000/13)} words per chapter\n• No filler chapters — every chapter must earn its place\n\nRespond ONLY with valid JSON:\n{"title":"","subtitle":"","description":"","themes":[""],"tone_notes":"describe the intended emotional register and prose style","estimated_word_count":50000,"writing_language":"${form.language}","chapters":[{"number":1,"title":"","description":"","opening_hook":"how this chapter should open — first line or image","target_words":${_twTarget},"${form.nonfiction_mode?"exercise":"notes"}":""}]}`;
+        prompt=`You are a bestselling author. Create a detailed, commercially compelling book outline.\nTopic: ${form.topic}\nGenre: ${form.genre}\nAudience: ${form.audience}${styleCtx}${langNote}\n${form.nonfiction_mode?"Nonfiction mode: include exercises, reflections, and action steps per chapter.":""}\n\nRULES:\n${lengthNote.slice(2)}${wordsNote}\n• Chapter titles must be SPECIFIC and evocative — never generic (e.g. not "Chapter 1: The Beginning")\n• Subtitle must be a compelling, keyword-rich phrase (not just a restatement of the title)\n• Themes must be 3-5 specific thematic elements (e.g. "loss and redemption", "the cost of ambition")\n• Each chapter description must be 2-3 sentences with a clear narrative purpose — never generic (e.g. not "Chapter 1: The Beginning")\n• Each chapter description must be 2-3 sentences with clear conflict or stakes\n• Subtitle must be sharp, benefit-driven, or intriguing\n• Target ~${Math.round(50000/13)} words per chapter\n• No filler chapters — every chapter must earn its place\n\nRespond ONLY with valid JSON:\n{"title":"","subtitle":"","description":"","themes":[""],"tone_notes":"describe the intended emotional register and prose style","estimated_word_count":50000,"writing_language":"${form.language}","chapters":[{"number":1,"title":"","description":"","opening_hook":"how this chapter should open — first line or image","target_words":${_twTarget},"${form.nonfiction_mode?"exercise":"notes"}":""}]}`;
       }
       const raw=await callGemini(prompt);
       trackUsage();
@@ -2242,6 +2270,19 @@ function ChapterEditor({book,chIdx,upd}){
   const wordCount=draft.trim()?draft.trim().split(/\s+/).length:0;
 
   useEffect(()=>{setDraft(ch?.content||"");setEditing(false);setSelPara(null);},[chIdx,ch?.content]);
+  const autoSaveRef=useRef(null);
+  useEffect(()=>{
+    if(!editing||draft===(ch?.content||""))return;
+    clearTimeout(autoSaveRef.current);
+    autoSaveRef.current=setTimeout(()=>{
+      const chapters=[...(book.chapters||[])];
+      if(!chapters[chIdx])return;
+      chapters[chIdx]={...chapters[chIdx],content:draft};
+      const wc=chapters.reduce((a,c)=>a+(c.content?c.content.split(/\s+/).length:0),0);
+      updateBook(book.id,{chapters,word_count:wc});
+    },4000);
+    return()=>clearTimeout(autoSaveRef.current);
+  },[draft,editing]);
 
   const save=()=>{
     const chapters=[...(book.chapters||[])];
@@ -2455,7 +2496,7 @@ function EditorPage({bookId,navigate,onSettings}){
       // SEO
       if(!getBook(bookId)?.seo_done){
       log("🔍 Generating SEO…");setTab(3);
-      try{const raw=await callGemini(`You are an Amazon KDP bestseller SEO strategist. Generate complete publishing metadata.\nTitle: "${outline.title||b.title}"\nGenre: ${b.genre}\nAudience: ${b.target_audience}\nDescription: ${outline.description||''}\n\nRespond ONLY valid JSON (no markdown): {"seo_title":"MAX 60 CHARS — pack the top keyword first","seo_description":"150-200 words — compelling blurb ending with a call to action","primary_keywords":["2-4 word phrase","2-4 word phrase","2-4 word phrase","2-4 word phrase","2-4 word phrase","2-4 word phrase","2-4 word phrase"],"bisac_categories":["CAT1","CAT2"],"back_cover_copy":"","author_bio_template":""}`);bump();const match=raw.match(/\{[\s\S]*\}/);if(match){let seo;try{seo=JSON.parse(match[0]);}catch(pe){throw{code:"PARSE",msg:"AI returned malformed JSON — please retry."};}updateBook(bookId,{seo_title:seo.seo_title||"",seo_description:seo.seo_description||"",seo_keywords:(seo.primary_keywords||[]).join(", "),notes:JSON.stringify(seo),seo_done:true});setBook(getBook(bookId));}}catch(e){if(e?.code==="QUOTA"){setQuotaHit(true);upd({auto_build:false,build_step:""});setIsBuilding(false);return;}}} // end seo_done if
+      try{const raw=await callGemini(`You are an Amazon KDP bestseller SEO strategist. Generate complete publishing metadata.\n\nRULES:\n• Title MUST be 50-60 characters\n• Keywords must be 2-4 word long-tail phrases\n\nTitle: "${outline.title||b.title}"\nGenre: ${b.genre}\nAudience: ${b.target_audience}\nDescription: ${outline.description||''}\n\nRespond ONLY valid JSON (no markdown): {"seo_title":"MAX 60 CHARS — pack the top keyword first","seo_description":"150-200 words — compelling blurb ending with a call to action","primary_keywords":["2-4 word phrase","2-4 word phrase","2-4 word phrase","2-4 word phrase","2-4 word phrase","2-4 word phrase","2-4 word phrase"],"bisac_categories":["CAT1","CAT2"],"back_cover_copy":"","author_bio_template":""}`);bump();const match=raw.match(/\{[\s\S]*\}/);if(match){let seo;try{seo=JSON.parse(match[0]);}catch(pe){throw{code:"PARSE",msg:"AI returned malformed JSON — please retry."};}updateBook(bookId,{seo_title:seo.seo_title||"",seo_description:seo.seo_description||"",seo_keywords:(seo.primary_keywords||[]).join(", "),notes:JSON.stringify(seo),seo_done:true});setBook(getBook(bookId));}}catch(e){if(e?.code==="QUOTA"){setQuotaHit(true);upd({auto_build:false,build_step:""});setIsBuilding(false);return;}}} // end seo_done if
       if(getUsage()>=DAILY_LIMIT){upd({auto_build:false,build_step:""});setIsBuilding(false);return;}
       // Cover
       if(!getBook(bookId)?.cover_done){
@@ -2703,7 +2744,7 @@ function EditorPage({bookId,navigate,onSettings}){
     finally{setBusy(false);setBusyStep("");}
   };
 
-const genSEO=async()=>{if(quotaHit||isBuilding)return;setBusy(true);setError("");try{const outline=(()=>{try{return JSON.parse(book.outline||"{}");}catch{return {};}})();const raw=await callGemini(`You are a top-tier Amazon KDP bestseller strategist with 15+ years optimizing book discoverability.\n\nBook Details:\nTitle: "${outline.title||book.title}"\nGenre: ${book.genre}\nAudience: ${book.target_audience}\nDescription: ${outline.description||''}\n\nGenerate complete publishing metadata. Respond ONLY with valid JSON (no markdown, no code blocks):\n{"seo_title":"Exact-match keyword-rich title for KDP (max 200 chars)","seo_description":"400-word Amazon description with hook, 3 bullet points using • , social proof, call to action","primary_keywords":["7 long-tail exact-match Amazon search phrases readers actually type"],"backend_keywords":"up to 7 extra search terms space-separated for Amazon backend field (no repeats from primary)","bisac_categories":["Primary BISAC category path","Secondary BISAC category path"],"back_cover_copy":"3-paragraph back cover blurb: hook sentence, escalating tension or benefit, cliffhanger or promise","author_bio_template":"Professional 3rd-person author bio template 80 words","recommended_price_usd":4.99,"price_rationale":"One sentence pricing strategy","comp_titles":["3 comparable bestselling books Author — Title format"],"hook_line":"One irresistible sentence for social media"}`);bump();const match=raw.match(/\{[\s\S]*\}/);if(!match)throw{code:"PARSE"};let seo;try{seo=JSON.parse(match[0]);}catch(pe){throw{code:"PARSE",msg:"AI returned malformed SEO JSON — please retry."};}upd({seo_title:seo.seo_title||"",seo_description:seo.seo_description||"",seo_keywords:(seo.primary_keywords||[]).join(", "),notes:JSON.stringify(seo)});flash("SEO generated! 🔍");}catch(e){handleErr(e);}finally{setBusy(false);}};
+const genSEO=async()=>{if(quotaHit||isBuilding)return;setBusy(true);setError("");try{const outline=(()=>{try{return JSON.parse(book.outline||"{}");}catch{return {};}})();const raw=await callGemini(`You are a top-tier Amazon KDP bestseller strategist with 15+ years optimizing book discoverability.\n\nBook Details:\nTitle: "${outline.title||book.title}"\nGenre: ${book.genre}\nAudience: ${book.target_audience}\nDescription: ${outline.description||''}\n\nGenerate complete publishing metadata.\n\nRULES:\n• Title MUST be 50-60 characters (KDP SERP truncates at ~60)\n• Keywords must be 2-4 word long-tail phrases (not single words)\n• Description must follow Amazons format: hook, bullet benefits, story overview, CTA\n• Include 7 backend keywords\n\nRespond ONLY with valid JSON (no markdown, no code blocks):\n{"seo_title":"Optimized KDP title (50-60 characters max for best Amazon SERP display - keyword-rich but natural)","seo_description":"400-word Amazon description with hook, 3 bullet points using • , social proof, call to action","primary_keywords":["7 long-tail exact-match Amazon search phrases readers actually type"],"backend_keywords":"up to 7 extra search terms space-separated for Amazon backend field (no repeats from primary)","bisac_categories":["Primary BISAC category path","Secondary BISAC category path"],"back_cover_copy":"3-paragraph back cover blurb: hook sentence, escalating tension or benefit, cliffhanger or promise","author_bio_template":"Professional 3rd-person author bio template 80 words","recommended_price_usd":4.99,"price_rationale":"One sentence pricing strategy","comp_titles":["3 comparable bestselling books Author — Title format"],"hook_line":"One irresistible sentence for social media"}`);bump();const match=raw.match(/\{[\s\S]*\}/);if(!match)throw{code:"PARSE"};let seo;try{seo=JSON.parse(match[0]);}catch(pe){throw{code:"PARSE",msg:"AI returned malformed SEO JSON — please retry."};}upd({seo_title:seo.seo_title||"",seo_description:seo.seo_description||"",seo_keywords:(seo.primary_keywords||[]).join(", "),notes:JSON.stringify(seo)});flash("SEO generated! 🔍");}catch(e){handleErr(e);}finally{setBusy(false);}};
 
   const genAltTitles=async()=>{
     if(quotaHit||isBuilding||busy)return;setBusy(true);setError("");
@@ -2873,7 +2914,56 @@ const genSEO=async()=>{if(quotaHit||isBuilding)return;setBusy(true);setError("")
         )}
 
         {/* OUTLINE */}
-        {tab===0&&<div className="max-w-3xl mx-auto"><Card>{book.series_name&&<div className="mb-3"><SeriesBibleInline bookId={bookId}/></div>}<div className="flex items-center gap-3 flex-wrap mb-1"><h2 className="text-white text-xl font-bold">{book.title}</h2>{book.book_length&&book.book_length!=="standard"&&(<span className="text-xs px-2 py-0.5 rounded-full bg-purple-500/20 border border-purple-500/30 text-purple-300 font-medium">{(BOOK_LENGTHS.find(x=>x.id===book.book_length)||{label:"Standard"}).label}</span>)}{book.length_words_min&&book.length_words_max&&(<span className="text-xs text-white/25">{book.length_words_min.toLocaleString()}–{book.length_words_max.toLocaleString()} words/ch</span>)}</div>{book.subtitle&&<p className="text-purple-300 mt-1 mb-4 text-sm">{book.subtitle}</p>}<p className="text-white/60 text-sm leading-relaxed mb-6">{book.description}</p>{book.chapters?.length>0&&<><p className="text-white/40 text-xs uppercase tracking-wider mb-3">Chapters ({book.chapters.length})</p><div className="space-y-2">{book.chapters.map((ch,i)=><div key={i} className={`rounded-xl p-3 border flex gap-3 items-start ${ch.generated?"bg-green-500/10 border-green-500/20":"bg-white/5 border-white/10"}`}><span className={`font-bold text-sm min-w-[24px] ${ch.generated?"text-green-400":"text-purple-400"}`}>{ch.generated?"✓":ch.number+"."}</span><div className="flex-1"><p className="text-white text-sm font-medium">{ch.title}</p><p className="text-white/35 text-xs mt-0.5">{ch.description}</p>{ch.content&&<div className="flex items-center gap-3 mt-1.5"><span className="text-green-400/70 text-xs">{ch.content.split(/\s+/).length.toLocaleString()} words</span><span className="text-white/20 text-xs">~{Math.ceil(ch.content.split(/\s+/).length/200)} min read</span></div>}{ch.opening_hook&&!ch.content&&<p className="text-purple-300/50 text-xs mt-1 italic">Hook: {ch.opening_hook.slice(0,80)}…</p>}</div>{ch.generated?<span className="text-green-400/50 text-xs shrink-0">✅ Done</span>:<span className="text-white/20 text-xs shrink-0">Pending</span>}</div>)}</div><div className="mt-5 bg-white/5 rounded-xl p-4"><div className="flex justify-between text-xs text-white/40 mb-2"><span>Progress</span><span>{book.chapters.filter(c=>c.generated).length}/{book.chapters.length} chapters</span></div><div className="h-2 bg-white/10 rounded-full overflow-hidden"><div className="h-full bg-gradient-to-r from-purple-500 to-pink-500 rounded-full" style={{width:`${(book.chapters.filter(c=>c.generated).length/book.chapters.length)*100}%`}}/></div></div></>}{(!book.chapters||book.chapters.length===0)&&isBuilding&&<div className="text-center py-8 text-white/30"><Spin/><p className="mt-3 text-sm">Generating outline…</p></div>}</Card></div>}
+        {tab===0&&<div className="max-w-3xl mx-auto"><Card>{book.series_name&&<div className="mb-3"><SeriesBibleInline bookId={bookId}/></div>}<div className="flex items-center gap-3 flex-wrap mb-1"><h2 className="text-white text-xl font-bold">{book.title}</h2>{book.book_length&&book.book_length!=="standard"&&(<span className="text-xs px-2 py-0.5 rounded-full bg-purple-500/20 border border-purple-500/30 text-purple-300 font-medium">{(BOOK_LENGTHS.find(x=>x.id===book.book_length)||{label:"Standard"}).label}</span>)}{book.length_words_min&&book.length_words_max&&(<span className="text-xs text-white/25">{book.length_words_min.toLocaleString()}–{book.length_words_max.toLocaleString()} words/ch</span>)}</div>{book.subtitle&&<p className="text-purple-300 mt-1 mb-4 text-sm">{book.subtitle}</p>}<p className="text-white/60 text-sm leading-relaxed mb-6">{book.description}</p>{book.chapters?.length>0&&<>{
+  (()=>{
+    const gen=book.chapters.filter(c=>c.generated);
+    const totalWords=gen.reduce((s,c)=>s+(c.content?c.content.trim().split(/\s+/).length:0),0);
+    const totalTarget=book.chapters.reduce((s,c)=>s+(c.target_words||0),0);
+    const pct=totalTarget>0?Math.round(totalWords/totalTarget*100):null;
+    const readMin=Math.ceil(totalWords/200);
+    const readH=Math.floor(readMin/60);const readM=readMin%60;
+    const avgWords=gen.length>0?Math.round(totalWords/gen.length):0;
+    return(
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-6">
+        <div className="rounded-xl bg-white/5 border border-white/10 p-3">
+          <p className="text-white/30 text-xs">Total Words</p>
+          <p className="text-white text-lg font-bold mt-1">{totalWords.toLocaleString()}</p>
+        </div>
+        <div className="rounded-xl bg-white/5 border border-white/10 p-3">
+          <p className="text-white/30 text-xs">Chapters Done</p>
+          <p className="text-white text-lg font-bold mt-1">{gen.length}/{book.chapters.length}</p>
+        </div>
+        <div className="rounded-xl bg-white/5 border border-white/10 p-3">
+          <p className="text-white/30 text-xs">Avg Words/Ch</p>
+          <p className="text-white text-lg font-bold mt-1">{avgWords.toLocaleString()}</p>
+        </div>
+        <div className="rounded-xl bg-white/5 border border-white/10 p-3">
+          <p className="text-white/30 text-xs">Read Time</p>
+          <p className="text-white text-lg font-bold mt-1">{readH>0?`${readH}h ${readM}m`:`${readM}m`}</p>
+        </div>
+        {pct!==null&&(
+          <div className="col-span-2 sm:col-span-4">
+            <div className="flex items-center justify-between mb-1">
+              <span className="text-white/30 text-xs">Progress toward target</span>
+              <span className="text-white/50 text-xs font-medium">{pct}%</span>
+            </div>
+            <div className="h-2 rounded-full bg-white/5 overflow-hidden">
+              <div className="h-full rounded-full bg-gradient-to-r from-purple-500 to-green-500" style={{width:Math.min(pct,100)+"%"}}/>
+            </div>
+            <p className="text-white/20 text-xs mt-1">{totalWords.toLocaleString()} / {totalTarget.toLocaleString()} words</p>
+          </div>
+        )}
+      </div>
+    );
+  })()
+}<p className="text-white/40 text-xs uppercase tracking-wider mb-3">Chapters ({book.chapters.length})</p><div className="space-y-2">{book.chapters.map((ch,i)=><div key={i} className={`rounded-xl p-3 border flex gap-3 items-start ${ch.generated?"bg-green-500/10 border-green-500/20":"bg-white/5 border-white/10"}`}><span className={`font-bold text-sm min-w-[24px] ${ch.generated?"text-green-400":"text-purple-400"}`}>{ch.generated?"✓":ch.number+"."}</span><div className="flex-1"><p className="text-white text-sm font-medium">{ch.title}</p><p className="text-white/35 text-xs mt-0.5">{ch.description}</p>{ch.content&&<div className="flex items-center gap-3 mt-1.5"><span className="text-green-400/70 text-xs">{ch.content.split(/\s+/).length.toLocaleString()} words</span><span className="text-white/20 text-xs">~{Math.ceil(ch.content.split(/\s+/).length/200)} min read</span></div>}{ch.opening_hook&&!ch.content&&<p className="text-purple-300/50 text-xs mt-1 italic">Hook: {ch.opening_hook.slice(0,80)}…</p>}</div>{ch.generated?(()=>{
+  const wc=ch.content?ch.content.trim().split(/\s+/).length:0;
+  const tw=ch.target_words||0;
+  const isShort=tw>0&&wc<tw*0.6;
+  return isShort
+    ?<span className="text-amber-400/70 text-xs shrink-0">⚠️ Short ({wc.toLocaleString()}/{tw.toLocaleString()})</span>
+    :<span className="text-green-400/50 text-xs shrink-0">✅ Done</span>;
+})():<span className="text-white/20 text-xs shrink-0">Pending</span>}</div>)}</div><div className="mt-5 bg-white/5 rounded-xl p-4"><div className="flex justify-between text-xs text-white/40 mb-2"><span>Progress</span><span>{book.chapters.filter(c=>c.generated).length}/{book.chapters.length} chapters</span></div><div className="h-2 bg-white/10 rounded-full overflow-hidden"><div className="h-full bg-gradient-to-r from-purple-500 to-pink-500 rounded-full" style={{width:`${(book.chapters.filter(c=>c.generated).length/book.chapters.length)*100}%`}}/></div></div></>}{(!book.chapters||book.chapters.length===0)&&isBuilding&&<div className="text-center py-8 text-white/30"><Spin/><p className="mt-3 text-sm">Generating outline…</p></div>}<div className="mt-5 flex items-center gap-3 pt-4 border-t border-white/10"><button onClick={()=>downloadBookJSON(book)} className="text-xs px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-white/60 hover:bg-white/10 hover:text-white/90 transition-all flex items-center gap-2">💾 Export Backup (JSON)</button><label className="text-xs px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-white/60 hover:bg-white/10 hover:text-white/90 transition-all flex items-center gap-2 cursor-pointer">📥 Import Backup<input type="file" accept=".json" className="hidden" onChange={async(e)=>{const file=e.target.files?.[0];if(!file)return;try{const imported=await importBookJSON(file);const books=JSON.parse(localStorage.getItem("bfai_books")||"[]");books.unshift(imported);localStorage.setItem("bfai_books",JSON.stringify(books));alert("Imported \""+imported.title+"\" successfully!");window.location.reload();}catch(err){alert("Import failed: "+err.message);}}}/></label></div></Card></div>}
 
         {/* CHAPTERS */}
         {tab===1&&<div className="grid grid-cols-1 lg:grid-cols-3 gap-5"><div className="lg:col-span-1"><div className="bg-white/5 border border-white/10 rounded-2xl p-4 sticky top-24"><div className="flex items-center justify-between mb-3"><h3 className="text-white font-semibold text-sm">Chapters</h3>{!isBuilding&&<button onClick={async()=>{for(const i of (book.chapters||[]).map((_,i)=>i).filter(i=>!(book.chapters?.[i]?.generated))){if(quotaHit)break;await genChapter(i);}}} disabled={busy||busyCh!==null||quotaHit||isBuilding} className="text-xs bg-purple-500/20 text-purple-300 border border-purple-500/30 px-3 py-1.5 rounded-lg hover:bg-purple-500/30 disabled:opacity-40">Write All</button>}</div><div className="space-y-1">{(book.chapters||[]).map((ch,i)=><button key={i} onClick={()=>setSelCh(i)} className={`w-full text-left px-3 py-2 rounded-lg text-sm transition-all ${selCh===i?"bg-purple-500/20 text-white border border-purple-500/30":"text-white/50 hover:bg-white/5"}`}><span className={ch.generated?"text-green-400":""}>{ch.generated?"✓ ":""}</span>{ch.number}. {ch.title}</button>)}</div></div></div><div className="lg:col-span-2">{book.chapters?.[selCh]&&<Card><div className="flex items-start justify-between mb-5 gap-4"><div><h2 className="text-white text-lg font-bold">Ch. {book.chapters?.[selCh].number}: {book.chapters?.[selCh].title}</h2><p className="text-white/35 text-sm mt-1">{book.chapters?.[selCh].description}</p></div>{!isBuilding&&<div className="flex gap-2 shrink-0"><button onClick={()=>genChapterIllustration(selCh)} disabled={busyCh!==null||quotaHit||isBuilding||busy} className="bg-white/5 border border-white/10 text-white/60 px-3 py-2 rounded-xl font-medium text-sm hover:bg-white/10 disabled:opacity-40 flex items-center gap-1.5" title="Generate chapter illustration">🖼️</button><button onClick={()=>genChapter(selCh)} disabled={busyCh!==null||quotaHit||isBuilding} className="bg-gradient-to-r from-purple-500 to-pink-500 text-white px-4 py-2 rounded-xl font-medium text-sm hover:opacity-90 disabled:opacity-50 flex items-center gap-2">{busyCh===selCh?<><Spin size="h-4 w-4"/>Writing…</>:book.chapters?.[selCh].generated?"✍️ Rewrite":"✍️ Write"}</button></div>}</div>{book.chapters?.[selCh]?.illustration_url&&<div className="mb-4"><img src={book.chapters?.[selCh].illustration_url} alt={`Chapter ${book.chapters?.[selCh].number} illustration`} className="w-full rounded-xl max-h-48 object-cover border border-white/10"/><p className="text-white/20 text-xs mt-1 text-center italic">{book.chapters?.[selCh].illustration_prompt?.slice(0,80)}…</p></div>}{book.chapters?.[selCh].content?<ChapterEditor book={book} chIdx={selCh} upd={upd}/>:<div className="text-center py-16 text-white/25"><div className="text-4xl mb-3">✍️</div><p>{isBuilding?"Generating…":"Click Write to generate"}</p></div>}</Card>}</div></div>}
