@@ -96,6 +96,66 @@ function setGroqRate(headers){
 
 
 
+
+// ── Smart Model Selector ─────────────────────────────────────────────────────
+// Automatically picks the best free model for each task type on each backend
+const TASK_MODELS={
+  // Task types: creative (long chapters), structured (JSON/SEO), short (metadata/titles), reasoning (outlines), multilingual (translations)
+  groq:{
+    creative:"openai/gpt-oss-120b",      // 120B params, best prose quality, 500 tok/s
+    structured:"openai/gpt-oss-120b",    // Good at JSON following
+    short:"openai/gpt-oss-20b",          // 1000 tok/s — fast for metadata
+    reasoning:"openai/gpt-oss-120b",      // Best reasoning for outlines
+    multilingual:"qwen/qwen3.6-27b",      // Strong multilingual
+  },
+  puter:{
+    creative:"openai/gpt-5.6-sol",       // Flagship — best creative writing
+    structured:"openai/gpt-5.6-terra",   // Mid-tier — good JSON, cost-effective
+    short:"openai/gpt-5.6-luna",         // Smallest — fast for short tasks
+    reasoning:"openai/gpt-5.6-sol",      // Best reasoning
+    multilingual:"qwen/qwen3.7-max",      // Best multilingual
+  },
+  gemini:{
+    creative:"gemini-2.5-flash",        // Only model available
+    structured:"gemini-2.5-flash",
+    short:"gemini-2.5-flash",
+    reasoning:"gemini-2.5-flash",
+    multilingual:"gemini-2.5-flash",
+  }
+};
+
+// Get the best model for a task on the current backend
+const getBestModel=(task="creative")=>{
+  const backend=getBackend();
+  const models=TASK_MODELS[backend]||TASK_MODELS.gemini;
+  return models[task]||models.creative;
+};
+
+// Check if auto-model selection is enabled (default: true)
+const getAutoModel=()=>ls.get("bfai_auto_model",true);
+const setAutoModel=v=>ls.set("bfai_auto_model",v);
+
+// Auto-detect task type from prompt content
+const detectTask=(prompt)=>{
+  const p=(prompt||"").toLowerCase();
+  if(p.includes("write chapter")||p.includes("rewrite only")||p.includes("rewrite this paragraph")||p.includes("rewrite paragraph")||p.includes("manuscript")||p.includes("prose")||p.includes("novel")||p.includes("creative writing"))return"creative";
+  if(p.includes("translat")||p.includes("spanish")||p.includes("french")||p.includes("german")||p.includes("italian")||p.includes("portuguese")||p.includes("dutch")||p.includes("translate this"))return"multilingual";
+  if(p.includes("valid json")||p.includes("respond only")||p.includes("respond only with")||p.includes("json:")||p.includes('json: {')||p.includes("json object"))return"structured";
+  if(p.includes("seo")||p.includes("metadata")||p.includes("keywords")||p.includes("image prompt")||p.includes("cover image")||p.includes("illustration")||p.includes("image generation prompt")||p.includes("stable diffusion"))return"short";
+  if(p.includes("outline")||p.includes("series")||p.includes("bestseller")||p.includes("competitive")||p.includes("market research")||p.includes("book plan")||p.includes("plot events"))return"reasoning";
+  if(p.length>2000)return"creative"; // Long prompts are almost always chapter writing
+  return"structured"; // Default for shorter prompts (likely JSON/metadata)
+};
+
+// Resolve which model to use: auto-selected by task detection, or user's manual choice
+const resolveModel=(prompt,opts={})=>{
+  if(!getAutoModel())return null; // null = use user's manual choice
+  if(opts.task)return getBestModel(opts.task);
+  const task=detectTask(prompt);
+  return getBestModel(task);
+};
+
+
 const getBooks=()=>ls.get("bfai_books",[]);
 const setBooks=b=>ls.set("bfai_books",b);
 const getBook=id=>getBooks().find(b=>b.id===id)||null;
@@ -111,6 +171,14 @@ const getUsage=()=>{const today=new Date().toISOString().split("T")[0];const d=l
 const trackUsage=()=>{const today=new Date().toISOString().split("T")[0];const d=ls.get("bfai_usage",{});const c=(d.date===today?d.count:0)+1;ls.set("bfai_usage",{date:today,count:c});return c;};
 // Quota check — Puter mode has no daily limit
 const quotaBlocked=()=>getBackend()!=="puter"&&getBackend()!=="groq"&&getUsage()>=DAILY_LIMIT;
+// Unified credential check — returns true if the current backend has valid credentials
+const hasCredentials=()=>{
+  const b=getBackend();
+  if(b==="gemini")return!!getKey();
+  if(b==="groq")return!!getGroqKey();
+  if(b==="puter")return typeof puter!=="undefined";
+  return false;
+};
 // ── Languages ─────────────────────────────────────────────────────────────────
 const LANGUAGES=["English","Spanish","French","German","Italian","Portuguese","Dutch","Russian","Japanese","Korean","Chinese (Simplified)","Arabic","Hindi","Turkish","Polish","Swedish","Norwegian","Danish","Finnish","Greek","Hebrew","Indonesian","Malay","Thai","Vietnamese","Ukrainian","Czech","Hungarian","Romanian","Bulgarian","Croatian","Slovak"];
 
@@ -287,7 +355,7 @@ async function callGemini(prompt,temperature=0.85,opts={}){
 // ── Puter.js AI call (free, no API key needed) ──
 async function callPuter(prompt,temperature=0.85,opts={}){
   if(typeof puter==="undefined")throw{code:"PUTER_NOT_LOADED"};
-  const model=getPuterTextModel();
+  const model=resolveModel(prompt,opts)||getPuterTextModel();
   const maxRetries=opts.maxRetries??2;
   let lastErr=null;
   for(let attempt=0;attempt<=maxRetries;attempt++){
@@ -352,7 +420,7 @@ async function callPuter(prompt,temperature=0.85,opts={}){
 async function callGroq(prompt,temperature=0.85,opts={}){
   const key=getGroqKey();
   if(!key)throw{code:"NO_KEY",msg:"Groq API key missing — add one in Settings."};
-  const model=getGroqModel();
+  const model=resolveModel(prompt,opts)||getGroqModel();
   
   let retries=0;
   let controller,timeout;
@@ -871,7 +939,7 @@ function SettingsModal({onClose}){
     if(!draft.trim())return;
     setTestStatus("testing");
     try{
-      const r=await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${draft.trim()}`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({contents:[{parts:[{text:"Reply with just the word OK"}]}],generationConfig:{maxOutputTokens:5}})});
+      const r=await fetch(`${GEMINI_URL}?key=${draft.trim()}`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({contents:[{parts:[{text:"Reply with just the word OK"}]}],generationConfig:{maxOutputTokens:5}})});
       if(r.ok)setTestStatus("ok");
       else{const err=await r.json();setTestStatus("fail");}
     }catch(e){setTestStatus("fail");}
@@ -983,6 +1051,17 @@ function SettingsModal({onClose}){
           {sTab==="build"&&(
             <div className="space-y-5">
               <div><h3 className="text-white font-bold text-lg mb-1">🔧 Build Settings</h3><p className="text-white/40 text-sm">Control how auto-build handles quality gates.</p></div>
+              <div className="bg-cyan-500/10 border border-cyan-500/20 rounded-xl p-4">
+                <div className="flex items-center justify-between gap-4">
+                  <div>
+                    <p className="text-cyan-300 font-medium text-sm">🧠 Smart Model Selection</p>
+                    <p className="text-white/40 text-xs mt-1">Auto-picks the best model for each task type — chapters use the flagship, metadata uses the fast model, translations use multilingual.</p>
+                  </div>
+                  <button onClick={()=>{setAutoModel(!getAutoModel());}} className="w-12 h-6 rounded-full transition-colors shrink-0" style={{background:getAutoModel()?"#06b6d4":"rgba(255,255,255,0.1)"}}>
+                    <div className="w-5 h-5 rounded-full bg-white transition-transform" style={{transform:getAutoModel()?"translateX(24px)":"translateX(2px)"}}/>
+                  </button>
+                </div>
+              </div>
               <div className="bg-white/5 border border-white/10 rounded-xl p-4">
                 <div className="flex items-center justify-between gap-4">
                   <div>
@@ -1113,7 +1192,7 @@ function ReviewPanel({book,onApply,onSettings}){
   const [improving,setImproving]=useState(false);
   const [error,setError]=useState("");
   const [applied,setApplied]=useState({});
-  const run=async()=>{if(!getKey()){onSettings();return;}setLoading(true);setError("");try{const r=await runReviewAgent(book);setReview(r);updateBook(book.id,{review:r,review_done:true});}catch(e){setError(errMsg(e));}finally{setLoading(false);}};
+  const run=async()=>{if(!hasCredentials()){onSettings();return;}setLoading(true);setError("");try{const r=await runReviewAgent(book);setReview(r);updateBook(book.id,{review:r,review_done:true});}catch(e){setError(errMsg(e));}finally{setLoading(false);}};
   const applyTitle=t=>{const parts=t.split(":");const title=parts[0].trim();const subtitle=parts.slice(1).join(":").trim();onApply({title,subtitle:subtitle||book.subtitle});setApplied(a=>({...a,title:true}));};
   const applyKeywords=kws=>{onApply({seo_keywords:kws.join(", ")});setApplied(a=>({...a,kws:true}));};
   const applySEO=d=>{onApply({seo_description:d});setApplied(a=>({...a,seo:true}));};
@@ -1121,7 +1200,7 @@ function ReviewPanel({book,onApply,onSettings}){
   const hasImprovements=!!(review&&(review.title_suggestions?.length||review.subtitle_suggestion||review.keyword_suggestions?.length||review.seo_rewrite));
   const improveBook=async()=>{
     if(!review||!hasImprovements||improving)return;
-    if(!getKey()){onSettings();return;}
+    if(!hasCredentials()){onSettings();return;}
     setImproving(true);setError("");
     const oldScore=review.overall_score;
     try{
@@ -1204,7 +1283,7 @@ function CompetitorPanel({book,onSettings}){
   const [loading,setLoading]=useState(false);
   const [error,setError]=useState("");
   const run=async()=>{
-    if(!getKey()){onSettings();return;}
+    if(!hasCredentials()){onSettings();return;}
     setLoading(true);setLoadStep("Building your series world bible…");setError("");
     try{
       const raw=await callAI(
@@ -1268,7 +1347,7 @@ function HookPanel({book,onSettings}){
   const [loading,setLoading]=useState(false);
   const [error,setError]=useState("");
   const run=async()=>{
-    if(!getKey()){onSettings();return;}
+    if(!hasCredentials()){onSettings();return;}
     setLoading(true);setError("");
     try{
       const outline=(()=>{try{return JSON.parse(book.outline||"{}");}catch{return {};}})();
@@ -1496,7 +1575,7 @@ function WritingQualityPanel({book,onSettings,onApply}){
   // Apply all rewrite_examples across all scored chapters, then re-run manuscript check
   const improveWriting = async()=>{
     if(!hasRewrites||improving)return;
-    if(!getKey()){onSettings();return;}
+    if(!hasCredentials()){onSettings();return;}
     setImproving(true);setError("");
     const oldScore=manuscript?.overall_human_score||avgHuman||0;
     try{
@@ -1523,7 +1602,7 @@ function WritingQualityPanel({book,onSettings,onApply}){
   };
 
   const scoreChapter = async(idx) => {
-    if(!getKey()){onSettings();return;}
+    if(!hasCredentials()){onSettings();return;}
     const ch = book.chapters?.[idx];
     if(!ch?.content){setError("Write this chapter first.");return;}
     setLoadingCh(idx);setError("");
@@ -1540,7 +1619,7 @@ function WritingQualityPanel({book,onSettings,onApply}){
   };
 
   const scoreAll = async() => {
-    if(!getKey()){onSettings();return;}
+    if(!hasCredentials()){onSettings();return;}
     setError("");
     const unscored=(book.chapters||[]).map((ch,idx)=>({ch,idx})).filter(({ch,idx})=>ch.content&&!chScores[idx]);
     const toScore=unscored.length>0?unscored:(book.chapters||[]).map((ch,idx)=>({ch,idx})).filter(({ch})=>ch.content);
@@ -1559,7 +1638,7 @@ function WritingQualityPanel({book,onSettings,onApply}){
   };
 
   const runMsCheck = async() => {
-    if(!getKey()){onSettings();return;}
+    if(!hasCredentials()){onSettings();return;}
     setLoadingMs(true);setError("");
     try{
       const result = await runManuscriptHumanCheck(book);
@@ -1707,7 +1786,7 @@ function ChapterQualityPanel({book,onSettings}){
   const [loading,setLoading]=useState(null);
   const [error,setError]=useState("");
   const scoreChapter=async(idx)=>{
-    if(!getKey()){onSettings();return;}
+    if(!hasCredentials()){onSettings();return;}
     const ch=book.chapters?.[idx];
     if(!ch?.content){setError("Write the chapter first before scoring.");return;}
     setLoading(idx);setError("");
@@ -1792,7 +1871,7 @@ function CharactersPanel({book,onSettings}){
   const reload=()=>setCharsState(getCharacters(book.id));
 
   const autoExtract=async()=>{
-    if(!getKey()){onSettings();return;}
+    if(!hasCredentials()){onSettings();return;}
     const written=(book.chapters||[]).filter(c=>c.content);
     if(!written.length){setError("Write at least one chapter first.");return;}
     setLoading(true);setError("");
@@ -2157,7 +2236,7 @@ function SeriesPage({navigate,onSettings}){
   const reload=()=>{const s=getSeries();setSeriesList(s);};
 
   const createSeries=async()=>{
-    if(!getKey()){onSettings();return;}
+    if(!hasCredentials()){onSettings();return;}
     if(!form.name||!form.concept||!form.genre||!form.audience){setError("Fill in all fields.");return;}
     setLoading(true);setError("");
     try{
@@ -2439,7 +2518,7 @@ function CreatePage({navigate,onSettings}){
   };
 
   const generate=async()=>{
-    if(!getKey()){onSettings();return;}
+    if(!hasCredentials()){onSettings();return;}
     if(mode==="idea"&&(!form.topic||!form.genre||!form.audience)){setError("Fill in topic, genre and audience.");return;}
     if(mode==="import"&&!importText.trim()){setError("Paste your draft or notes first.");return;}
     setLoading(true);setError("");
@@ -2906,7 +2985,7 @@ function EditorPage({bookId,navigate,onSettings}){
           const charCtx=chars.length?`\n\nESTABLISHED CHARACTERS (maintain exact consistency):\n${chars.map(c=>`${c.name} [${c.role||""}]: ${c.appearance||""} — ${c.personality||""}`).join("\n")}`:"";
           const langNote=b.writing_language&&b.writing_language!=="English"?`\n\nWRITE IN: ${b.writing_language}`:"";
           const nonfictionNote=b.nonfiction_mode?"\n\nNONFICTION MODE: End the chapter with a clearly marked Exercise, Reflection question, and Action Step.":"";
-          const content=await callAIStream(`Write Chapter ${chapters[i].number}: "${chapters[i].title}" for a ${b.genre} book titled "${outline.title}".${seriesCtx}${voiceCtx}${charCtx}${langNote}${nonfictionNote}\n\nChapter: ${chapters[i].description}\nPrevious: ${prev}\nAudience: ${b.target_audience}\n\n${(()=>{const tw=ch?.target_words||3800;return `${Math.round(tw*0.75).toLocaleString()}–${tw.toLocaleString()} words`;})()}. Match genre tone precisely.\n\nSTRUCTURE:\n• 3-5 distinct scenes per chapter, separated by: ⁂\n• Each scene has a clear goal → obstacle → outcome\n• Chapter must END on a hook, unresolved tension, or revelation that forces reading on\n• DO NOT wrap up cleanly — the best chapters end mid-breath\n\nWRITING RULES — violating these will get this chapter rejected:\n• NEVER start a sentence with 'He/She/They couldn't help but', 'In that moment', 'It dawned on', 'Something about the way', 'A wave of', 'A surge of'\n• NEVER state emotions directly ('he felt sad', 'warmth spread through her') — express through physical action, dialogue, or specific sensory detail\n• NEVER use em-dashes for dramatic effect more than once per page\n• VARY sentence length violently: one-word sentences. Fragments. Then a long, breathing sentence that winds through a scene and refuses to end neatly.\n• Dialogue must be messy and human: people talk past each other, leave things half-said, interrupt, change subject\n• Use SPECIFIC details: not 'the coffee shop smelled like coffee' but the burnt-sugar smell of the espresso machine at 6am, the sticky ring on the table from someone's iced latte\n• No clean emotional resolutions — conflict leaves residue\n• Character psychology must be specific, not convenient\n• Read like a novel — no chapter summaries, no scene headers, no markdown`,0.85,{onStream:t=>{setBuildStep(`Ch.${i+1}/${chapters.length}: ${t.split(/\s+/).filter(Boolean).length} words streamed…`)}});
+          const content=await callAIStream(`Write Chapter ${chapters[i].number}: "${chapters[i].title}" for a ${b.genre} book titled "${outline.title}".${seriesCtx}${voiceCtx}${charCtx}${langNote}${nonfictionNote}\n\nChapter: ${chapters[i].description}\nPrevious: ${prev}\nAudience: ${b.target_audience}\n\n${(()=>{const tw=ch?.target_words||3800;return `${Math.round(tw*0.75).toLocaleString()}–${tw.toLocaleString()} words`;})()}. Match genre tone precisely.\n\nSTRUCTURE:\n• 3-5 distinct scenes per chapter, separated by: ⁂\n• Each scene has a clear goal → obstacle → outcome\n• Chapter must END on a hook, unresolved tension, or revelation that forces reading on\n• DO NOT wrap up cleanly — the best chapters end mid-breath\n\nWRITING RULES — violating these will get this chapter rejected:\n• NEVER start a sentence with 'He/She/They couldn't help but', 'In that moment', 'It dawned on', 'Something about the way', 'A wave of', 'A surge of'\n• NEVER state emotions directly ('he felt sad', 'warmth spread through her') — express through physical action, dialogue, or specific sensory detail\n• NEVER use em-dashes for dramatic effect more than once per page\n• VARY sentence length violently: one-word sentences. Fragments. Then a long, breathing sentence that winds through a scene and refuses to end neatly.\n• Dialogue must be messy and human: people talk past each other, leave things half-said, interrupt, change subject\n• Use SPECIFIC details: not 'the coffee shop smelled like coffee' but the burnt-sugar smell of the espresso machine at 6am, the sticky ring on the table from someone's iced latte\n• No clean emotional resolutions — conflict leaves residue\n• Character psychology must be specific, not convenient\n• Read like a novel — no chapter summaries, no scene headers, no markdown`,0.85,{task:"creative",onStream:t=>{setBuildStep(`Ch.${i+1}/${chapters.length}: ${t.split(/\s+/).filter(Boolean).length} words streamed…`)}});
           setStreamText(null);
           bump();chapters[i]={...chapters[i],content,generated:true};
           const wc=chapters.reduce((a,c)=>a+(c.content?c.content.split(/\s+/).length:0),0);
@@ -3076,7 +3155,7 @@ function EditorPage({bookId,navigate,onSettings}){
       const charCtx=chars.length?`\n\nCHARACTERS:\n${chars.map(c=>`${c.name}: ${c.appearance||""} — ${c.personality||""}`).join("\n")}`:"";
       const langNote=book.writing_language&&book.writing_language!=="English"?`\n\nWRITE IN: ${book.writing_language}`:"";
       const nfNote=book.nonfiction_mode?"\n\nEnd with: Exercise, Reflection, Action Step.":"";
-      const content=await callAIStream(`Write Chapter ${ch.number}: "${ch.title}" for a ${book.genre} book titled "${outline.title}".${seriesCtx}${voiceCtx}${charCtx}${langNote}${nfNote}\n\nDesc: ${ch.description}\nPrevious: ${prev}\nAudience: ${book.target_audience}\n\n${(()=>{const tw=chapters[i]?.target_words||3800;return `${Math.round(tw*0.75).toLocaleString()}–${tw.toLocaleString()} words`;})()}. Match genre tone.\n\nSTRUCTURE:\n• 3-5 distinct scenes per chapter, separated by: ⁂\n• Each scene has a clear goal → obstacle → outcome\n• Chapter must END on a hook, unresolved tension, or revelation that forces reading on\n• DO NOT wrap up cleanly — the best chapters end mid-breath\n\nWRITING RULES — violating these will get this chapter rejected:\n• NEVER start a sentence with 'He/She/They couldn't help but', 'In that moment', 'It dawned on', 'Something about the way', 'A wave of', 'A surge of'\n• NEVER state emotions directly ('he felt sad', 'warmth spread through her') — express through physical action, dialogue, or specific sensory detail\n• NEVER use em-dashes for dramatic effect more than once per page\n• VARY sentence length violently: one-word sentences. Fragments. Then a long, breathing sentence that winds through a scene and refuses to end neatly.\n• Dialogue must be messy and human: people talk past each other, leave things half-said, interrupt, change subject\n• Use SPECIFIC details: not 'the coffee shop smelled like coffee' but the burnt-sugar smell of the espresso machine at 6am, the sticky ring on the table from someone's iced latte\n• No clean emotional resolutions — conflict leaves residue\n• Character psychology must be specific, not convenient\n• Read like a novel — no chapter summaries, no scene headers, no markdown`,0.85,{onStream:t=>setStreamText(t)});
+      const content=await callAIStream(`Write Chapter ${ch.number}: "${ch.title}" for a ${book.genre} book titled "${outline.title}".${seriesCtx}${voiceCtx}${charCtx}${langNote}${nfNote}\n\nDesc: ${ch.description}\nPrevious: ${prev}\nAudience: ${book.target_audience}\n\n${(()=>{const tw=chapters[i]?.target_words||3800;return `${Math.round(tw*0.75).toLocaleString()}–${tw.toLocaleString()} words`;})()}. Match genre tone.\n\nSTRUCTURE:\n• 3-5 distinct scenes per chapter, separated by: ⁂\n• Each scene has a clear goal → obstacle → outcome\n• Chapter must END on a hook, unresolved tension, or revelation that forces reading on\n• DO NOT wrap up cleanly — the best chapters end mid-breath\n\nWRITING RULES — violating these will get this chapter rejected:\n• NEVER start a sentence with 'He/She/They couldn't help but', 'In that moment', 'It dawned on', 'Something about the way', 'A wave of', 'A surge of'\n• NEVER state emotions directly ('he felt sad', 'warmth spread through her') — express through physical action, dialogue, or specific sensory detail\n• NEVER use em-dashes for dramatic effect more than once per page\n• VARY sentence length violently: one-word sentences. Fragments. Then a long, breathing sentence that winds through a scene and refuses to end neatly.\n• Dialogue must be messy and human: people talk past each other, leave things half-said, interrupt, change subject\n• Use SPECIFIC details: not 'the coffee shop smelled like coffee' but the burnt-sugar smell of the espresso machine at 6am, the sticky ring on the table from someone's iced latte\n• No clean emotional resolutions — conflict leaves residue\n• Character psychology must be specific, not convenient\n• Read like a novel — no chapter summaries, no scene headers, no markdown`,0.85,{task:"creative",onStream:t=>setStreamText(t)});
       bump();const chapters=[...(book.chapters||[])];chapters[idx]={...chapters[idx],content,generated:true};
       const wc=chapters.reduce((a,c)=>a+(c.content?c.content.split(/\s+/).length:0),0);
       // If all chapters now done + pipeline already ran → auto-stamp build_complete

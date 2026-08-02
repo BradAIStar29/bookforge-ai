@@ -150,6 +150,64 @@ function setGroqRate(headers) {
   } catch (e) {
   }
 }
+const TASK_MODELS = {
+  // Task types: creative (long chapters), structured (JSON/SEO), short (metadata/titles), reasoning (outlines), multilingual (translations)
+  groq: {
+    creative: "openai/gpt-oss-120b",
+    // 120B params, best prose quality, 500 tok/s
+    structured: "openai/gpt-oss-120b",
+    // Good at JSON following
+    short: "openai/gpt-oss-20b",
+    // 1000 tok/s — fast for metadata
+    reasoning: "openai/gpt-oss-120b",
+    // Best reasoning for outlines
+    multilingual: "qwen/qwen3.6-27b"
+    // Strong multilingual
+  },
+  puter: {
+    creative: "openai/gpt-5.6-sol",
+    // Flagship — best creative writing
+    structured: "openai/gpt-5.6-terra",
+    // Mid-tier — good JSON, cost-effective
+    short: "openai/gpt-5.6-luna",
+    // Smallest — fast for short tasks
+    reasoning: "openai/gpt-5.6-sol",
+    // Best reasoning
+    multilingual: "qwen/qwen3.7-max"
+    // Best multilingual
+  },
+  gemini: {
+    creative: "gemini-2.5-flash",
+    // Only model available
+    structured: "gemini-2.5-flash",
+    short: "gemini-2.5-flash",
+    reasoning: "gemini-2.5-flash",
+    multilingual: "gemini-2.5-flash"
+  }
+};
+const getBestModel = (task = "creative") => {
+  const backend = getBackend();
+  const models = TASK_MODELS[backend] || TASK_MODELS.gemini;
+  return models[task] || models.creative;
+};
+const getAutoModel = () => ls.get("bfai_auto_model", true);
+const setAutoModel = (v) => ls.set("bfai_auto_model", v);
+const detectTask = (prompt) => {
+  const p = (prompt || "").toLowerCase();
+  if (p.includes("write chapter") || p.includes("rewrite only") || p.includes("rewrite this paragraph") || p.includes("rewrite paragraph") || p.includes("manuscript") || p.includes("prose") || p.includes("novel") || p.includes("creative writing")) return "creative";
+  if (p.includes("translat") || p.includes("spanish") || p.includes("french") || p.includes("german") || p.includes("italian") || p.includes("portuguese") || p.includes("dutch") || p.includes("translate this")) return "multilingual";
+  if (p.includes("valid json") || p.includes("respond only") || p.includes("respond only with") || p.includes("json:") || p.includes("json: {") || p.includes("json object")) return "structured";
+  if (p.includes("seo") || p.includes("metadata") || p.includes("keywords") || p.includes("image prompt") || p.includes("cover image") || p.includes("illustration") || p.includes("image generation prompt") || p.includes("stable diffusion")) return "short";
+  if (p.includes("outline") || p.includes("series") || p.includes("bestseller") || p.includes("competitive") || p.includes("market research") || p.includes("book plan") || p.includes("plot events")) return "reasoning";
+  if (p.length > 2e3) return "creative";
+  return "structured";
+};
+const resolveModel = (prompt, opts = {}) => {
+  if (!getAutoModel()) return null;
+  if (opts.task) return getBestModel(opts.task);
+  const task = detectTask(prompt);
+  return getBestModel(task);
+};
 const getBooks = () => ls.get("bfai_books", []);
 const setBooks = (b) => ls.set("bfai_books", b);
 const getBook = (id) => getBooks().find((b) => b.id === id) || null;
@@ -183,6 +241,13 @@ const trackUsage = () => {
   return c;
 };
 const quotaBlocked = () => getBackend() !== "puter" && getBackend() !== "groq" && getUsage() >= DAILY_LIMIT;
+const hasCredentials = () => {
+  const b = getBackend();
+  if (b === "gemini") return !!getKey();
+  if (b === "groq") return !!getGroqKey();
+  if (b === "puter") return typeof puter !== "undefined";
+  return false;
+};
 const LANGUAGES = ["English", "Spanish", "French", "German", "Italian", "Portuguese", "Dutch", "Russian", "Japanese", "Korean", "Chinese (Simplified)", "Arabic", "Hindi", "Turkish", "Polish", "Swedish", "Norwegian", "Danish", "Finnish", "Greek", "Hebrew", "Indonesian", "Malay", "Thai", "Vietnamese", "Ukrainian", "Czech", "Hungarian", "Romanian", "Bulgarian", "Croatian", "Slovak"];
 const RETRY_DELAYS_MS = [2e3, 5e3];
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -367,7 +432,7 @@ async function callGemini(prompt, temperature = 0.85, opts = {}) {
 }
 async function callPuter(prompt, temperature = 0.85, opts = {}) {
   if (typeof puter === "undefined") throw { code: "PUTER_NOT_LOADED" };
-  const model = getPuterTextModel();
+  const model = resolveModel(prompt, opts) || getPuterTextModel();
   const maxRetries = opts.maxRetries ?? 2;
   let lastErr = null;
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
@@ -424,7 +489,7 @@ async function callPuter(prompt, temperature = 0.85, opts = {}) {
 async function callGroq(prompt, temperature = 0.85, opts = {}) {
   const key = getGroqKey();
   if (!key) throw { code: "NO_KEY", msg: "Groq API key missing \u2014 add one in Settings." };
-  const model = getGroqModel();
+  const model = resolveModel(prompt, opts) || getGroqModel();
   let retries = 0;
   let controller, timeout;
   while (retries <= 2) {
@@ -950,7 +1015,7 @@ function SettingsModal({ onClose }) {
     if (!draft.trim()) return;
     setTestStatus("testing");
     try {
-      const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${draft.trim()}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ contents: [{ parts: [{ text: "Reply with just the word OK" }] }], generationConfig: { maxOutputTokens: 5 } }) });
+      const r = await fetch(`${GEMINI_URL}?key=${draft.trim()}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ contents: [{ parts: [{ text: "Reply with just the word OK" }] }], generationConfig: { maxOutputTokens: 5 } }) });
       if (r.ok) setTestStatus("ok");
       else {
         const err = await r.json();
@@ -973,7 +1038,9 @@ function SettingsModal({ onClose }) {
     const r = await testConnection();
     setTestResult(r);
     setTestingConn(false);
-  }, disabled: testingConn, className: `w-full py-3 rounded-xl font-semibold transition-all mb-4 ${testingConn ? "bg-white/10 text-white/50" : testResult?.ok ? "bg-green-500/20 text-green-300 border border-green-500/30" : testResult ? "bg-red-500/20 text-red-300 border border-red-500/30" : "bg-gradient-to-r from-purple-500 to-pink-500 text-white hover:opacity-90"}` }, testingConn ? "\u23F3 Testing\u2026" : "\u{1F50C} Test Connection"), testResult && /* @__PURE__ */ React.createElement("div", { className: `mb-4 p-3 rounded-xl text-sm ${testResult.ok ? "bg-green-500/10 text-green-300" : "bg-red-500/10 text-red-300"}` }, testResult.msg)), getBackend() === "puter" && /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "bg-purple-500/10 border border-purple-500/20 rounded-xl p-4 mb-4" }, /* @__PURE__ */ React.createElement("p", { className: "text-purple-300 text-sm font-medium mb-1" }, "\u{1F381} Puter.js = Free, no API key!"), /* @__PURE__ */ React.createElement("p", { className: "text-white/40 text-xs leading-relaxed" }, "Access 400+ AI models (GPT-5.5, Claude Opus 5, Gemini 3.6, and more) for free. Uses Puter's user-pays model \u2014 your users cover their own AI costs via their Puter account. ", /* @__PURE__ */ React.createElement("a", { href: "https://puter.com", target: "_blank", rel: "noopener noreferrer", className: "text-purple-400 underline" }, "Create a free Puter account \u2192"))), /* @__PURE__ */ React.createElement("label", { className: "text-white/60 text-sm font-medium block mb-2" }, "Text Generation Model"), /* @__PURE__ */ React.createElement("select", { value: getPuterTextModel(), onChange: (e) => setPuterTextModel(e.target.value), className: "w-full bg-white/10 border border-white/20 rounded-xl px-4 py-3 text-white text-sm mb-2 focus:outline-none focus:border-purple-500" }, PUTER_TEXT_MODELS.map((m) => /* @__PURE__ */ React.createElement("option", { key: m.id, value: m.id, className: "bg-gray-800" }, m.label, " \u2014 ", m.desc))), /* @__PURE__ */ React.createElement("label", { className: "text-white/60 text-sm font-medium block mb-2 mt-4" }, "Cover Image Model"), /* @__PURE__ */ React.createElement("select", { value: getPuterImageModel(), onChange: (e) => setPuterImageModel(e.target.value), className: "w-full bg-white/10 border border-white/20 rounded-xl px-4 py-3 text-white text-sm mb-2 focus:outline-none focus:border-purple-500" }, PUTER_IMAGE_MODELS.map((m) => /* @__PURE__ */ React.createElement("option", { key: m.id, value: m.id, className: "bg-gray-800" }, m.label, " \u2014 ", m.desc))), /* @__PURE__ */ React.createElement("p", { className: "text-white/35 text-xs mt-3" }, "\u2139\uFE0F The first time you generate, a Puter login window may appear. Sign in once \u2014 it's free and stores nothing in BookForge.")), getBackend() === "groq" && /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "bg-orange-500/10 border border-orange-500/20 rounded-xl p-4 mb-4" }, /* @__PURE__ */ React.createElement("p", { className: "text-orange-300 text-sm font-medium mb-1" }, "\u26A1 Groq = Blazing Fast (500+ tokens/sec)"), /* @__PURE__ */ React.createElement("p", { className: "text-white/40 text-xs leading-relaxed" }, "Get a free API key from GroqCloud. Rate limits are generous \u2014 30 req/min, 14,400 req/day on the free tier. ", /* @__PURE__ */ React.createElement("a", { href: "https://console.groq.com/keys", target: "_blank", rel: "noopener noreferrer", className: "text-orange-400 underline" }, "Get a free Groq API key \u2192"))), /* @__PURE__ */ React.createElement("label", { className: "text-white/60 text-sm font-medium block mb-2" }, "Groq API Key"), /* @__PURE__ */ React.createElement("input", { type: "password", placeholder: "gsk_...", value: groqKeyDraft, onChange: (e) => setGroqKeyDraft(e.target.value), onKeyDown: (e) => e.key === "Enter" && saveGroqKey(), className: "w-full bg-white/10 border border-white/20 rounded-xl px-4 py-3 text-white placeholder-white/30 focus:outline-none focus:border-orange-500 mb-4 font-mono text-sm" }), /* @__PURE__ */ React.createElement("div", { className: "flex gap-2 mb-4" }, /* @__PURE__ */ React.createElement("button", { onClick: saveGroqKey, disabled: !groqKeyDraft.trim(), className: `flex-1 py-3 rounded-xl font-semibold transition-all ${groqKeySaved ? "bg-green-500 text-white" : "bg-gradient-to-r from-orange-500 to-pink-500 text-white hover:opacity-90 disabled:opacity-50"}` }, groqKeySaved ? "\u2705 Saved!" : "Save Groq Key")), /* @__PURE__ */ React.createElement("label", { className: "text-white/60 text-sm font-medium block mb-2" }, "Text Generation Model"), /* @__PURE__ */ React.createElement("select", { value: getGroqModel(), onChange: (e) => setGroqModel(e.target.value), className: "w-full bg-white/10 border border-white/20 rounded-xl px-4 py-3 text-white text-sm mb-2 focus:outline-none focus:border-orange-500" }, GROQ_MODELS.map((m) => /* @__PURE__ */ React.createElement("option", { key: m.id, value: m.id, className: "bg-gray-800" }, m.label, " \u2014 ", m.desc))), /* @__PURE__ */ React.createElement("p", { className: "text-white/35 text-xs mt-3" }, "\u2139\uFE0F Groq is text-only \u2014 cover images still use Pollinations.ai (free, no key)."))), sTab === "voice" && /* @__PURE__ */ React.createElement(VoiceTrainingPanel, { onClose }), sTab === "author" && /* @__PURE__ */ React.createElement("div", { className: "space-y-4" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("h3", { className: "text-white font-bold text-lg mb-1" }, "\u{1F464} Author Profile"), /* @__PURE__ */ React.createElement("p", { className: "text-white/40 text-sm" }, "Used for back-cover bio and author page.")), /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("label", { className: "text-white/60 text-sm font-medium block mb-2" }, "Author Name"), /* @__PURE__ */ React.createElement("input", { value: author.name || "", onChange: (e) => setAuthor({ ...author, name: e.target.value }), placeholder: "Your pen name or real name", className: "w-full bg-white/10 border border-white/20 rounded-xl px-4 py-3 text-white placeholder-white/20 focus:outline-none focus:border-purple-500 text-sm" })), /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("label", { className: "text-white/60 text-sm font-medium block mb-2" }, "Bio"), /* @__PURE__ */ React.createElement("textarea", { rows: 4, value: author.bio || "", onChange: (e) => setAuthor({ ...author, bio: e.target.value }), placeholder: "Your author bio \u2014 100-200 words works best", className: "w-full bg-white/10 border border-white/20 rounded-xl px-4 py-3 text-white placeholder-white/20 focus:outline-none focus:border-purple-500 resize-none text-sm" })), /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("label", { className: "text-white/60 text-sm font-medium block mb-2" }, "Website / Newsletter Link"), /* @__PURE__ */ React.createElement("input", { value: author.website || "", onChange: (e) => setAuthor({ ...author, website: e.target.value }), placeholder: "https://yourwebsite.com", className: "w-full bg-white/10 border border-white/20 rounded-xl px-4 py-3 text-white placeholder-white/20 focus:outline-none focus:border-purple-500 text-sm" })), /* @__PURE__ */ React.createElement("button", { onClick: saveAuthor, className: `w-full py-3 rounded-xl font-semibold transition-all ${authorSaved ? "bg-green-500 text-white" : "bg-gradient-to-r from-purple-500 to-pink-500 text-white hover:opacity-90"}` }, authorSaved ? "\u2705 Saved!" : "Save Author Profile")), sTab === "build" && /* @__PURE__ */ React.createElement("div", { className: "space-y-5" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("h3", { className: "text-white font-bold text-lg mb-1" }, "\u{1F527} Build Settings"), /* @__PURE__ */ React.createElement("p", { className: "text-white/40 text-sm" }, "Control how auto-build handles quality gates.")), /* @__PURE__ */ React.createElement("div", { className: "bg-white/5 border border-white/10 rounded-xl p-4" }, /* @__PURE__ */ React.createElement("div", { className: "flex items-center justify-between gap-4" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("p", { className: "text-white font-medium text-sm" }, "Auto-Correct on Gate Failure"), /* @__PURE__ */ React.createElement("p", { className: "text-white/40 text-xs mt-1" }, "When a quality gate fails at the end of auto-build, automatically apply AI suggestions and re-score. Disable if you prefer to review suggestions manually before applying.")), /* @__PURE__ */ React.createElement("button", { onClick: () => {
+  }, disabled: testingConn, className: `w-full py-3 rounded-xl font-semibold transition-all mb-4 ${testingConn ? "bg-white/10 text-white/50" : testResult?.ok ? "bg-green-500/20 text-green-300 border border-green-500/30" : testResult ? "bg-red-500/20 text-red-300 border border-red-500/30" : "bg-gradient-to-r from-purple-500 to-pink-500 text-white hover:opacity-90"}` }, testingConn ? "\u23F3 Testing\u2026" : "\u{1F50C} Test Connection"), testResult && /* @__PURE__ */ React.createElement("div", { className: `mb-4 p-3 rounded-xl text-sm ${testResult.ok ? "bg-green-500/10 text-green-300" : "bg-red-500/10 text-red-300"}` }, testResult.msg)), getBackend() === "puter" && /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "bg-purple-500/10 border border-purple-500/20 rounded-xl p-4 mb-4" }, /* @__PURE__ */ React.createElement("p", { className: "text-purple-300 text-sm font-medium mb-1" }, "\u{1F381} Puter.js = Free, no API key!"), /* @__PURE__ */ React.createElement("p", { className: "text-white/40 text-xs leading-relaxed" }, "Access 400+ AI models (GPT-5.5, Claude Opus 5, Gemini 3.6, and more) for free. Uses Puter's user-pays model \u2014 your users cover their own AI costs via their Puter account. ", /* @__PURE__ */ React.createElement("a", { href: "https://puter.com", target: "_blank", rel: "noopener noreferrer", className: "text-purple-400 underline" }, "Create a free Puter account \u2192"))), /* @__PURE__ */ React.createElement("label", { className: "text-white/60 text-sm font-medium block mb-2" }, "Text Generation Model"), /* @__PURE__ */ React.createElement("select", { value: getPuterTextModel(), onChange: (e) => setPuterTextModel(e.target.value), className: "w-full bg-white/10 border border-white/20 rounded-xl px-4 py-3 text-white text-sm mb-2 focus:outline-none focus:border-purple-500" }, PUTER_TEXT_MODELS.map((m) => /* @__PURE__ */ React.createElement("option", { key: m.id, value: m.id, className: "bg-gray-800" }, m.label, " \u2014 ", m.desc))), /* @__PURE__ */ React.createElement("label", { className: "text-white/60 text-sm font-medium block mb-2 mt-4" }, "Cover Image Model"), /* @__PURE__ */ React.createElement("select", { value: getPuterImageModel(), onChange: (e) => setPuterImageModel(e.target.value), className: "w-full bg-white/10 border border-white/20 rounded-xl px-4 py-3 text-white text-sm mb-2 focus:outline-none focus:border-purple-500" }, PUTER_IMAGE_MODELS.map((m) => /* @__PURE__ */ React.createElement("option", { key: m.id, value: m.id, className: "bg-gray-800" }, m.label, " \u2014 ", m.desc))), /* @__PURE__ */ React.createElement("p", { className: "text-white/35 text-xs mt-3" }, "\u2139\uFE0F The first time you generate, a Puter login window may appear. Sign in once \u2014 it's free and stores nothing in BookForge.")), getBackend() === "groq" && /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "bg-orange-500/10 border border-orange-500/20 rounded-xl p-4 mb-4" }, /* @__PURE__ */ React.createElement("p", { className: "text-orange-300 text-sm font-medium mb-1" }, "\u26A1 Groq = Blazing Fast (500+ tokens/sec)"), /* @__PURE__ */ React.createElement("p", { className: "text-white/40 text-xs leading-relaxed" }, "Get a free API key from GroqCloud. Rate limits are generous \u2014 30 req/min, 14,400 req/day on the free tier. ", /* @__PURE__ */ React.createElement("a", { href: "https://console.groq.com/keys", target: "_blank", rel: "noopener noreferrer", className: "text-orange-400 underline" }, "Get a free Groq API key \u2192"))), /* @__PURE__ */ React.createElement("label", { className: "text-white/60 text-sm font-medium block mb-2" }, "Groq API Key"), /* @__PURE__ */ React.createElement("input", { type: "password", placeholder: "gsk_...", value: groqKeyDraft, onChange: (e) => setGroqKeyDraft(e.target.value), onKeyDown: (e) => e.key === "Enter" && saveGroqKey(), className: "w-full bg-white/10 border border-white/20 rounded-xl px-4 py-3 text-white placeholder-white/30 focus:outline-none focus:border-orange-500 mb-4 font-mono text-sm" }), /* @__PURE__ */ React.createElement("div", { className: "flex gap-2 mb-4" }, /* @__PURE__ */ React.createElement("button", { onClick: saveGroqKey, disabled: !groqKeyDraft.trim(), className: `flex-1 py-3 rounded-xl font-semibold transition-all ${groqKeySaved ? "bg-green-500 text-white" : "bg-gradient-to-r from-orange-500 to-pink-500 text-white hover:opacity-90 disabled:opacity-50"}` }, groqKeySaved ? "\u2705 Saved!" : "Save Groq Key")), /* @__PURE__ */ React.createElement("label", { className: "text-white/60 text-sm font-medium block mb-2" }, "Text Generation Model"), /* @__PURE__ */ React.createElement("select", { value: getGroqModel(), onChange: (e) => setGroqModel(e.target.value), className: "w-full bg-white/10 border border-white/20 rounded-xl px-4 py-3 text-white text-sm mb-2 focus:outline-none focus:border-orange-500" }, GROQ_MODELS.map((m) => /* @__PURE__ */ React.createElement("option", { key: m.id, value: m.id, className: "bg-gray-800" }, m.label, " \u2014 ", m.desc))), /* @__PURE__ */ React.createElement("p", { className: "text-white/35 text-xs mt-3" }, "\u2139\uFE0F Groq is text-only \u2014 cover images still use Pollinations.ai (free, no key)."))), sTab === "voice" && /* @__PURE__ */ React.createElement(VoiceTrainingPanel, { onClose }), sTab === "author" && /* @__PURE__ */ React.createElement("div", { className: "space-y-4" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("h3", { className: "text-white font-bold text-lg mb-1" }, "\u{1F464} Author Profile"), /* @__PURE__ */ React.createElement("p", { className: "text-white/40 text-sm" }, "Used for back-cover bio and author page.")), /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("label", { className: "text-white/60 text-sm font-medium block mb-2" }, "Author Name"), /* @__PURE__ */ React.createElement("input", { value: author.name || "", onChange: (e) => setAuthor({ ...author, name: e.target.value }), placeholder: "Your pen name or real name", className: "w-full bg-white/10 border border-white/20 rounded-xl px-4 py-3 text-white placeholder-white/20 focus:outline-none focus:border-purple-500 text-sm" })), /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("label", { className: "text-white/60 text-sm font-medium block mb-2" }, "Bio"), /* @__PURE__ */ React.createElement("textarea", { rows: 4, value: author.bio || "", onChange: (e) => setAuthor({ ...author, bio: e.target.value }), placeholder: "Your author bio \u2014 100-200 words works best", className: "w-full bg-white/10 border border-white/20 rounded-xl px-4 py-3 text-white placeholder-white/20 focus:outline-none focus:border-purple-500 resize-none text-sm" })), /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("label", { className: "text-white/60 text-sm font-medium block mb-2" }, "Website / Newsletter Link"), /* @__PURE__ */ React.createElement("input", { value: author.website || "", onChange: (e) => setAuthor({ ...author, website: e.target.value }), placeholder: "https://yourwebsite.com", className: "w-full bg-white/10 border border-white/20 rounded-xl px-4 py-3 text-white placeholder-white/20 focus:outline-none focus:border-purple-500 text-sm" })), /* @__PURE__ */ React.createElement("button", { onClick: saveAuthor, className: `w-full py-3 rounded-xl font-semibold transition-all ${authorSaved ? "bg-green-500 text-white" : "bg-gradient-to-r from-purple-500 to-pink-500 text-white hover:opacity-90"}` }, authorSaved ? "\u2705 Saved!" : "Save Author Profile")), sTab === "build" && /* @__PURE__ */ React.createElement("div", { className: "space-y-5" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("h3", { className: "text-white font-bold text-lg mb-1" }, "\u{1F527} Build Settings"), /* @__PURE__ */ React.createElement("p", { className: "text-white/40 text-sm" }, "Control how auto-build handles quality gates.")), /* @__PURE__ */ React.createElement("div", { className: "bg-cyan-500/10 border border-cyan-500/20 rounded-xl p-4" }, /* @__PURE__ */ React.createElement("div", { className: "flex items-center justify-between gap-4" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("p", { className: "text-cyan-300 font-medium text-sm" }, "\u{1F9E0} Smart Model Selection"), /* @__PURE__ */ React.createElement("p", { className: "text-white/40 text-xs mt-1" }, "Auto-picks the best model for each task type \u2014 chapters use the flagship, metadata uses the fast model, translations use multilingual.")), /* @__PURE__ */ React.createElement("button", { onClick: () => {
+    setAutoModel(!getAutoModel());
+  }, className: "w-12 h-6 rounded-full transition-colors shrink-0", style: { background: getAutoModel() ? "#06b6d4" : "rgba(255,255,255,0.1)" } }, /* @__PURE__ */ React.createElement("div", { className: "w-5 h-5 rounded-full bg-white transition-transform", style: { transform: getAutoModel() ? "translateX(24px)" : "translateX(2px)" } })))), /* @__PURE__ */ React.createElement("div", { className: "bg-white/5 border border-white/10 rounded-xl p-4" }, /* @__PURE__ */ React.createElement("div", { className: "flex items-center justify-between gap-4" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("p", { className: "text-white font-medium text-sm" }, "Auto-Correct on Gate Failure"), /* @__PURE__ */ React.createElement("p", { className: "text-white/40 text-xs mt-1" }, "When a quality gate fails at the end of auto-build, automatically apply AI suggestions and re-score. Disable if you prefer to review suggestions manually before applying.")), /* @__PURE__ */ React.createElement("button", { onClick: () => {
     const v = !autoCorrect;
     setAutoCorrect2(v);
     setAutoCorrectSetting(v);
@@ -1049,7 +1116,7 @@ function ReviewPanel({ book, onApply, onSettings }) {
   const [error, setError] = useState("");
   const [applied, setApplied] = useState({});
   const run = async () => {
-    if (!getKey()) {
+    if (!hasCredentials()) {
       onSettings();
       return;
     }
@@ -1087,7 +1154,7 @@ function ReviewPanel({ book, onApply, onSettings }) {
   const hasImprovements = !!(review && (review.title_suggestions?.length || review.subtitle_suggestion || review.keyword_suggestions?.length || review.seo_rewrite));
   const improveBook = async () => {
     if (!review || !hasImprovements || improving) return;
-    if (!getKey()) {
+    if (!hasCredentials()) {
       onSettings();
       return;
     }
@@ -1130,7 +1197,7 @@ function CompetitorPanel({ book, onSettings }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const run = async () => {
-    if (!getKey()) {
+    if (!hasCredentials()) {
       onSettings();
       return;
     }
@@ -1176,7 +1243,7 @@ function HookPanel({ book, onSettings }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const run = async () => {
-    if (!getKey()) {
+    if (!hasCredentials()) {
       onSettings();
       return;
     }
@@ -1490,7 +1557,7 @@ function WritingQualityPanel({ book, onSettings, onApply }) {
   const totalRewrites = Object.values(chScores).reduce((a, s) => a + (s.rewrite_examples?.length || 0), 0);
   const improveWriting = async () => {
     if (!hasRewrites || improving) return;
-    if (!getKey()) {
+    if (!hasCredentials()) {
       onSettings();
       return;
     }
@@ -1522,7 +1589,7 @@ function WritingQualityPanel({ book, onSettings, onApply }) {
     }
   };
   const scoreChapter = async (idx) => {
-    if (!getKey()) {
+    if (!hasCredentials()) {
       onSettings();
       return;
     }
@@ -1547,7 +1614,7 @@ function WritingQualityPanel({ book, onSettings, onApply }) {
     }
   };
   const scoreAll = async () => {
-    if (!getKey()) {
+    if (!hasCredentials()) {
       onSettings();
       return;
     }
@@ -1576,7 +1643,7 @@ function WritingQualityPanel({ book, onSettings, onApply }) {
     setLoadingCh(null);
   };
   const runMsCheck = async () => {
-    if (!getKey()) {
+    if (!hasCredentials()) {
       onSettings();
       return;
     }
@@ -1614,7 +1681,7 @@ function ChapterQualityPanel({ book, onSettings }) {
   const [loading, setLoading] = useState(null);
   const [error, setError] = useState("");
   const scoreChapter = async (idx) => {
-    if (!getKey()) {
+    if (!hasCredentials()) {
       onSettings();
       return;
     }
@@ -1672,7 +1739,7 @@ function CharactersPanel({ book, onSettings }) {
   const [form, setForm] = useState({ name: "", role: "", age: "", appearance: "", personality: "", arc: "", notes: "" });
   const reload = () => setCharsState(getCharacters(book.id));
   const autoExtract = async () => {
-    if (!getKey()) {
+    if (!hasCredentials()) {
       onSettings();
       return;
     }
@@ -2031,7 +2098,7 @@ function SeriesPage({ navigate, onSettings }) {
     setSeriesList(s);
   };
   const createSeries = async () => {
-    if (!getKey()) {
+    if (!hasCredentials()) {
       onSettings();
       return;
     }
@@ -2216,7 +2283,7 @@ Additional style notes: ${form.style}`;
     return ctx;
   };
   const generate = async () => {
-    if (!getKey()) {
+    if (!hasCredentials()) {
       onSettings();
       return;
     }
@@ -2736,7 +2803,7 @@ WRITING RULES \u2014 violating these will get this chapter rejected:
 \u2022 Use SPECIFIC details: not 'the coffee shop smelled like coffee' but the burnt-sugar smell of the espresso machine at 6am, the sticky ring on the table from someone's iced latte
 \u2022 No clean emotional resolutions \u2014 conflict leaves residue
 \u2022 Character psychology must be specific, not convenient
-\u2022 Read like a novel \u2014 no chapter summaries, no scene headers, no markdown`, 0.85, { onStream: (t) => {
+\u2022 Read like a novel \u2014 no chapter summaries, no scene headers, no markdown`, 0.85, { task: "creative", onStream: (t) => {
             setBuildStep(`Ch.${i2 + 1}/${chapters.length}: ${t.split(/\s+/).filter(Boolean).length} words streamed\u2026`);
           } });
           setStreamText(null);
@@ -3134,7 +3201,7 @@ WRITING RULES \u2014 violating these will get this chapter rejected:
 \u2022 Use SPECIFIC details: not 'the coffee shop smelled like coffee' but the burnt-sugar smell of the espresso machine at 6am, the sticky ring on the table from someone's iced latte
 \u2022 No clean emotional resolutions \u2014 conflict leaves residue
 \u2022 Character psychology must be specific, not convenient
-\u2022 Read like a novel \u2014 no chapter summaries, no scene headers, no markdown`, 0.85, { onStream: (t) => setStreamText(t) });
+\u2022 Read like a novel \u2014 no chapter summaries, no scene headers, no markdown`, 0.85, { task: "creative", onStream: (t) => setStreamText(t) });
       bump();
       const chapters = [...book.chapters || []];
       chapters[idx] = { ...chapters[idx], content, generated: true };
