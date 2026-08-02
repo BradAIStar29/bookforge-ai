@@ -19,6 +19,42 @@ const STATUS_ICONS={idea:"💡",outlining:"📋",writing:"✍️",ready:"✅",pu
 const ls={get:(k,d)=>{try{const v=localStorage.getItem(k);return v===null?d:JSON.parse(v)}catch{return d}},set:(k,v)=>{try{localStorage.setItem(k,JSON.stringify(v))}catch(e){if(e.name==="QuotaExceededError"){alert("⚠️ Storage full! Export your books to free space.");}}}};
 const getKey=()=>localStorage.getItem("gemini_api_key")||"";
 const setKey=k=>localStorage.setItem("gemini_api_key",k.trim());
+
+// ── AI Backend selector (Gemini API key OR Puter.js free) ──
+const BACKENDS=[
+  {id:"gemini",label:"Gemini API Key",desc:"Bring your own free Google AI Studio key. 1,500 req/day."},
+  {id:"puter",label:"Puter.js (Free — No Key)",desc:"400+ models incl. GPT-5.5, Claude Opus 5, Gemini 3.6. User-pays model — you pay nothing."}
+];
+const getBackend=()=>localStorage.getItem("bfai_backend")||"gemini";
+const setBackend=b=>localStorage.setItem("bfai_backend",b);
+
+// Puter text model options
+const PUTER_TEXT_MODELS=[
+  {id:"google/gemini-3.6-flash",label:"Gemini 3.6 Flash",desc:"Google's latest — fast, great default"},
+  {id:"anthropic/claude-opus-5",label:"Claude Opus 5",desc:"Best for creative writing & long-form prose"},
+  {id:"openai/gpt-5.5",label:"GPT-5.5",desc:"OpenAI flagship — versatile, strong reasoning"},
+  {id:"x-ai/grok-4.5",label:"Grok 4.5",desc:"xAI — good for current events & edgy tone"},
+  {id:"deepseek/deepseek-v4-pro",label:"DeepSeek V4 Pro",desc:"Excellent reasoning & structure"},
+  {id:"meta-llama/llama-4-maverick",label:"Llama 4 Maverick",desc:"Meta's open-weight — solid all-rounder"},
+  {id:"mistralai/mistral-small-2603",label:"Mistral Small 4",desc:"European open-weight — efficient"},
+  {id:"qwen/qwen3.7-max",label:"Qwen 3.7 Max",desc:"Alibaba — strong multilingual support"}
+];
+const getPuterTextModel=()=>localStorage.getItem("bfai_puter_text_model")||"google/gemini-3.6-flash";
+const setPuterTextModel=m=>localStorage.setItem("bfai_puter_text_model",m);
+
+// Puter image model options
+const PUTER_IMAGE_MODELS=[
+  {id:"black-forest-labs/flux-2-pro",label:"FLUX.2 Pro",desc:"Best overall quality for book covers"},
+  {id:"openai/gpt-image-2",label:"GPT Image 2",desc:"OpenAI — great text rendering"},
+  {id:"google/gemini-3-pro-image-preview",label:"Gemini 3 Pro Image",desc:"Google — fast, vibrant"},
+  {id:"google/imagen-4.0",label:"Imagen 4.0",desc:"Google — photorealistic"},
+  {id:"stabilityai/stable-diffusion-3-medium",label:"Stable Diffusion 3",desc:"Open-source — reliable"},
+  {id:"bytedance-seed/seedream-4.0",label:"Seedream 4.0",desc:"ByteDance — artistic styles"},
+  {id:"ideogram/ideogram-3.0",label:"Ideogram 3.0",desc:"Best at rendering text on images"},
+  {id:"pollinations",label:"Pollinations.ai (current)",desc:"No Puter account needed — URL-based"}
+];
+const getPuterImageModel=()=>localStorage.getItem("bfai_puter_image_model")||"pollinations";
+const setPuterImageModel=m=>localStorage.setItem("bfai_puter_image_model",m);
 const getBooks=()=>ls.get("bfai_books",[]);
 const setBooks=b=>ls.set("bfai_books",b);
 const getBook=id=>getBooks().find(b=>b.id===id)||null;
@@ -32,6 +68,8 @@ const setNavState=n=>ls.set("bfai_nav",n);
 const updateBook=(id,upd)=>{const books=getBooks();const i=books.findIndex(b=>b.id===id);if(i===-1)return null;books[i]={...books[i],...upd};setBooks(books);return books[i];};
 const getUsage=()=>{const today=new Date().toISOString().split("T")[0];const d=ls.get("bfai_usage",{});return d.date===today?(d.count||0):0;};
 const trackUsage=()=>{const today=new Date().toISOString().split("T")[0];const d=ls.get("bfai_usage",{});const c=(d.date===today?d.count:0)+1;ls.set("bfai_usage",{date:today,count:c});return c;};
+// Quota check — Puter mode has no daily limit
+const quotaBlocked=()=>getBackend()!=="puter"&&getUsage()>=DAILY_LIMIT;
 // ── Languages ─────────────────────────────────────────────────────────────────
 const LANGUAGES=["English","Spanish","French","German","Italian","Portuguese","Dutch","Russian","Japanese","Korean","Chinese (Simplified)","Arabic","Hindi","Turkish","Polish","Swedish","Norwegian","Danish","Finnish","Greek","Hebrew","Indonesian","Malay","Thai","Vietnamese","Ukrainian","Czech","Hungarian","Romanian","Bulgarian","Croatian","Slovak"];
 
@@ -205,7 +243,61 @@ async function callGemini(prompt,temperature=0.85,opts={}){
   throw lastTransient||{code:"ERROR",msg:"Failed after retries."};
 }
 
+// ── Puter.js AI call (free, no API key needed) ──
+async function callPuter(prompt,temperature=0.85,opts={}){
+  if(typeof puter==="undefined")throw{code:"PUTER_NOT_LOADED"};
+  const model=getPuterTextModel();
+  const maxRetries=opts.maxRetries??2;
+  let lastErr=null;
+  for(let attempt=0;attempt<=maxRetries;attempt++){
+    try{
+      const resp=await puter.ai.chat(prompt,{model,temperature:Math.min(temperature,1)});
+      // Puter returns text directly or in message.content
+      let text="";
+      if(typeof resp==="string")text=resp;
+      else if(resp?.message?.content)text=typeof resp.message.content==="string"?resp.message.content:resp.message.content.map(p=>p.text||"").join("");
+      else if(resp?.text)text=resp.text;
+      else if(resp?.content)text=typeof resp.content==="string"?resp.content:JSON.stringify(resp.content);
+      else text=String(resp);
+      text=text.trim();
+      if(!text)throw{code:"EMPTY"};
+      trackUsage(); // still track for the daily counter
+      return text;
+    }catch(err){
+      // Don't retry our own explicit throws
+      if(err?.code==="EMPTY"&&attempt<maxRetries){
+        await sleep(RETRY_DELAYS_MS[attempt]||2000);
+        continue;
+      }
+      // Retry on network/timeout errors
+      const isTransient=err?.name==="AbortError"||err instanceof TypeError||(err?.message&&err.message.includes("network"));
+      if(isTransient&&attempt<maxRetries){
+        lastErr=err;
+        notifyRetry(attempt+2,maxRetries+1,"network");
+        await sleep(RETRY_DELAYS_MS[attempt]||2000);
+        continue;
+      }
+      // Puter auth needed
+      if(err?.message&&err.message.includes("auth"))throw{code:"PUTER_AUTH"};
+      throw{code:"PUTER_ERROR",msg:err?.message||String(err)};
+    }
+  }
+  throw lastErr||{code:"PUTER_ERROR",msg:"Failed after retries."};
+}
+
+// ── Unified AI call — routes to Gemini or Puter based on settings ──
+async function callAI(prompt,temperature=0.85,opts={}){
+  const backend=getBackend();
+  if(backend==="puter"){
+    return callPuter(prompt,temperature,opts);
+  }
+  return callGemini(prompt,temperature,opts);
+}
+
 const errMsg=e=>{
+  if(e?.code==="PUTER_NOT_LOADED")return "⚠️ Puter.js not loaded. Refresh the page or switch to Gemini API key mode.";
+  if(e?.code==="PUTER_AUTH")return "⚠️ Puter authentication needed. A login window should have appeared — please sign in to continue.";
+  if(e?.code==="PUTER_ERROR")return "⚠️ Puter AI error: "+(e?.msg||"unknown error");
   const c=e?.code||"ERROR";
   if(c==="NO_KEY"||c==="BAD_KEY")return"🔑 API key missing or invalid — check Settings.";
   if(c==="QUOTA")return"⏳ Daily Gemini limit reached. Resets at midnight Pacific Time. Progress saved!";
@@ -547,6 +639,7 @@ function SettingsModal({onClose}){
   const saveAuthor=()=>{setAuthorProfile(author);setAuthorSaved(true);setTimeout(()=>setAuthorSaved(false),2000);};
   const setAutoCorrectSetting=v=>{setAutoCorrect(v);};
   const [testStatus,setTestStatus]=useState(null); // null | "testing" | "ok" | "fail"
+  const [backendChanged,setBackendChanged]=useState(false); // null | "testing" | "ok" | "fail"
   const testKey=async()=>{
     if(!draft.trim())return;
     setTestStatus("testing");
@@ -576,14 +669,54 @@ function SettingsModal({onClose}){
         <div className="px-6 pb-6">
           {sTab==="api"&&(
             <div>
-              <label className="text-white/60 text-sm font-medium block mb-2">Gemini API Key</label>
-              <p className="text-white/35 text-xs mb-3">Stored only in your browser. Never sent anywhere except Google's API.</p>
-              <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noopener noreferrer" className="inline-block text-purple-400 text-xs underline mb-4 hover:text-purple-300">Get a free key at Google AI Studio →</a>
-              <input type="password" placeholder="AIza..." value={draft} onChange={e=>setDraft(e.target.value)} onKeyDown={e=>e.key==="Enter"&&save()} className="w-full bg-white/10 border border-white/20 rounded-xl px-4 py-3 text-white placeholder-white/30 focus:outline-none focus:border-purple-500 mb-4 font-mono text-sm"/>
-              <div className="flex gap-2">
-                <button onClick={testKey} disabled={!draft.trim()||testStatus==="testing"} className={`flex-1 py-3 rounded-xl font-semibold text-sm transition-all border ${testStatus==="ok"?"bg-green-500/20 border-green-500 text-green-400":testStatus==="fail"?"bg-red-500/20 border-red-500 text-red-400":testStatus==="testing"?"border-white/20 text-white/40":"border-white/20 text-white/60 hover:border-purple-400 hover:text-white"}`}>{testStatus==="testing"?"⏳ Testing…":testStatus==="ok"?"✅ Key works!":testStatus==="fail"?"❌ Invalid key":"🔬 Test Key"}</button>
-                <button onClick={save} disabled={!draft.trim()} className={`flex-1 py-3 rounded-xl font-semibold transition-all ${saved?"bg-green-500 text-white":"bg-gradient-to-r from-purple-500 to-pink-500 text-white hover:opacity-90 disabled:opacity-50"}`}>{saved?"✅ Saved!":"Save Key"}</button>
+              {/* Backend selector */}
+              <label className="text-white/60 text-sm font-medium block mb-2">AI Engine</label>
+              <p className="text-white/35 text-xs mb-3">Choose how BookForge generates text and images.</p>
+              <div className="grid grid-cols-2 gap-2 mb-5">
+                {BACKENDS.map(b=>{
+                  const sel=getBackend()===b.id;
+                  return (
+                    <button key={b.id} onClick={()=>{setBackend(b.id);setBackendChanged(true);setTimeout(()=>setBackendChanged(false),2000);}} className={`text-left p-3 rounded-xl border transition-all ${sel?"bg-purple-500/20 border-purple-500 text-white":"bg-white/5 border-white/10 text-white/60 hover:border-purple-400/50"}`}>
+                      <p className="text-sm font-semibold">{b.label}</p>
+                      <p className="text-xs text-white/35 mt-1">{b.desc}</p>
+                    </button>
+                  );
+                })}
               </div>
+              {backendChanged&&<p className="text-green-400 text-xs mb-3">✅ AI engine updated!</p>}
+
+              {/* Gemini API key (only show if gemini backend) */}
+              {getBackend()==="gemini"&&(
+                <div>
+                  <label className="text-white/60 text-sm font-medium block mb-2">Gemini API Key</label>
+                  <p className="text-white/35 text-xs mb-3">Stored only in your browser. Never sent anywhere except Google's API.</p>
+                  <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noopener noreferrer" className="inline-block text-purple-400 text-xs underline mb-4 hover:text-purple-300">Get a free key at Google AI Studio →</a>
+                  <input type="password" placeholder="AIza..." value={draft} onChange={e=>setDraft(e.target.value)} onKeyDown={e=>e.key==="Enter"&&save()} className="w-full bg-white/10 border border-white/20 rounded-xl px-4 py-3 text-white placeholder-white/30 focus:outline-none focus:border-purple-500 mb-4 font-mono text-sm"/>
+                  <div className="flex gap-2">
+                    <button onClick={testKey} disabled={!draft.trim()||testStatus==="testing"} className={`flex-1 py-3 rounded-xl font-semibold text-sm transition-all border ${testStatus==="ok"?"bg-green-500/20 border-green-500 text-green-400":testStatus==="fail"?"bg-red-500/20 border-red-500 text-red-400":testStatus==="testing"?"border-white/20 text-white/40":"border-white/20 text-white/60 hover:border-purple-400 hover:text-white"}`}>{testStatus==="testing"?"⏳ Testing…":testStatus==="ok"?"✅ Key works!":testStatus==="fail"?"❌ Invalid key":"🔬 Test Key"}</button>
+                    <button onClick={save} disabled={!draft.trim()} className={`flex-1 py-3 rounded-xl font-semibold transition-all ${saved?"bg-green-500 text-white":"bg-gradient-to-r from-purple-500 to-pink-500 text-white hover:opacity-90 disabled:opacity-50"}`}>{saved?"✅ Saved!":"Save Key"}</button>
+                  </div>
+                </div>
+              )}
+
+              {/* Puter.js model picker (only show if puter backend) */}
+              {getBackend()==="puter"&&(
+                <div>
+                  <div className="bg-purple-500/10 border border-purple-500/20 rounded-xl p-4 mb-4">
+                    <p className="text-purple-300 text-sm font-medium mb-1">🎁 Puter.js = Free, no API key!</p>
+                    <p className="text-white/40 text-xs leading-relaxed">Access 400+ AI models (GPT-5.5, Claude Opus 5, Gemini 3.6, and more) for free. Uses Puter's user-pays model — your users cover their own AI costs via their Puter account. <a href="https://puter.com" target="_blank" rel="noopener noreferrer" className="text-purple-400 underline">Create a free Puter account →</a></p>
+                  </div>
+                  <label className="text-white/60 text-sm font-medium block mb-2">Text Generation Model</label>
+                  <select value={getPuterTextModel()} onChange={e=>setPuterTextModel(e.target.value)} className="w-full bg-white/10 border border-white/20 rounded-xl px-4 py-3 text-white text-sm mb-2 focus:outline-none focus:border-purple-500">
+                    {PUTER_TEXT_MODELS.map(m=><option key={m.id} value={m.id} className="bg-gray-800">{m.label} — {m.desc}</option>)}
+                  </select>
+                  <label className="text-white/60 text-sm font-medium block mb-2 mt-4">Cover Image Model</label>
+                  <select value={getPuterImageModel()} onChange={e=>setPuterImageModel(e.target.value)} className="w-full bg-white/10 border border-white/20 rounded-xl px-4 py-3 text-white text-sm mb-2 focus:outline-none focus:border-purple-500">
+                    {PUTER_IMAGE_MODELS.map(m=><option key={m.id} value={m.id} className="bg-gray-800">{m.label} — {m.desc}</option>)}
+                  </select>
+                  <p className="text-white/35 text-xs mt-3">ℹ️ The first time you generate, a Puter login window may appear. Sign in once — it's free and stores nothing in BookForge.</p>
+                </div>
+              )}
             </div>
           )}
           {sTab==="voice"&&<VoiceTrainingPanel onClose={onClose}/>}
@@ -667,7 +800,7 @@ function Header({onBack,title,subtitle,onSettings,onTour,activeTab,setActiveTab}
 // ══════════════════════════════════════════════════════════════════════════════
 async function runReviewAgent(book){
   const outline=(()=>{try{return JSON.parse(book.outline||"{}");}catch{return {};}})();
-  const raw=await callGemini(
+  const raw=await callAI(
     `You are a professional book publishing strategist and Amazon KDP expert with deep knowledge of what makes books bestsellers.\n\n`+
     `Review this book for market-readiness and discoverability. Be critical, specific, and commercially minded.\n\n`+
     `Book Details:\nTitle: ${book.title}\nSubtitle: ${book.subtitle||"(none)"}\nGenre: ${book.genre}\n`+
@@ -797,7 +930,7 @@ function CompetitorPanel({book,onSettings}){
     if(!getKey()){onSettings();return;}
     setLoading(true);setLoadStep("Building your series world bible…");setError("");
     try{
-      const raw=await callGemini(
+      const raw=await callAI(
         `You are an Amazon KDP market research expert. Analyze the competitive landscape for this book.\n\n`+
         `Title: ${book.title}\nGenre: ${book.genre}\nAudience: ${book.target_audience}\nDescription: ${book.description}\n\n`+
         `Provide a detailed competitive analysis to help this book become a bestseller.\n\n`+
@@ -862,7 +995,7 @@ function HookPanel({book,onSettings}){
     setLoading(true);setError("");
     try{
       const outline=(()=>{try{return JSON.parse(book.outline||"{}");}catch{return {};}})();
-      const raw=await callGemini(
+      const raw=await callAI(
         `You are a bestselling author and master of book marketing copy. Generate high-converting hooks for this book.\n\n`+
         `Title: ${book.title}\nSubtitle: ${book.subtitle||""}\nGenre: ${book.genre}\nAudience: ${book.target_audience}\n`+
         `Description: ${outline.description||book.description}\nSEO Keywords: ${book.seo_keywords||""}\n\n`+
@@ -986,7 +1119,7 @@ async function analyzeChapterHumanness(chapterText, bookTitle, genre, chapterTit
   // Local AI-tell scan
   const localTells = AI_TELLS.filter(t => chapterText.toLowerCase().includes(t.toLowerCase()));
 
-  const raw = await callGemini(
+  const raw = await callAI(
     `You are a senior literary editor at a major publishing house with 20 years of experience spotting AI-generated fiction. You have read thousands of manuscripts and know exactly what separates authentic human prose from machine-generated text. You are RUTHLESS and STRICT — your job is to catch every AI tell before this book goes to market. A false PASS is a career-ending mistake.\n\n` +
     `Book: "${bookTitle}" (${genre})\nChapter: "${chapterTitle}"\n\n` +
     `CHAPTER SAMPLE:\n${sample}\n\n` +
@@ -1036,7 +1169,7 @@ async function runManuscriptHumanCheck(book){
   const sample = written.length <= 3 ? written : [written[0], written[Math.floor(written.length/2)], written[written.length-1]];
   const samples = sample.map(c=>c.content.slice(0,800)).join("\n\n---CHAPTER BREAK---\n\n");
 
-  const raw = await callGemini(
+  const raw = await callAI(
     `You are a senior literary editor at a major publishing house. You have 20 years of experience and you are STRICT about AI-generated writing. You know every pattern. Your reputation depends on catching AI prose before it reaches readers.\n\n` +
     `Book: "${book.title}" (${book.genre})\n\n` +
     `MANUSCRIPT SAMPLES (${sample.length} chapters sampled):\n${samples}\n\n` +
@@ -1135,7 +1268,7 @@ function WritingQualityPanel({book,onSettings,onApply}){
     const unscored=(book.chapters||[]).map((ch,idx)=>({ch,idx})).filter(({ch,idx})=>ch.content&&!chScores[idx]);
     const toScore=unscored.length>0?unscored:(book.chapters||[]).map((ch,idx)=>({ch,idx})).filter(({ch})=>ch.content);
     for(const {ch,idx} of toScore){
-      if(getUsage()>=DAILY_LIMIT){setError("Quota reached — scored what we could.");break;}
+      if(quotaBlocked()){setError("Quota reached — scored what we could.");break;}
       setLoadingCh(idx);
       try{
         const result = await analyzeChapterHumanness(ch.content, book.title, book.genre, ch.title);
@@ -1302,7 +1435,7 @@ function ChapterQualityPanel({book,onSettings}){
     if(!ch?.content){setError("Write the chapter first before scoring.");return;}
     setLoading(idx);setError("");
     try{
-      const raw=await callGemini(
+      const raw=await callAI(
         `You are a professional developmental editor. Score this chapter ruthlessly — commercial fiction standards.\n\n`+
         `Book: "${book.title}" (${book.genre})\nChapter ${ch.number}: "${ch.title}"\n\n`+
         `CHAPTER TEXT (first 3000 chars):\n${ch.content.slice(0,3000)}\n\n`+
@@ -1388,7 +1521,7 @@ function CharactersPanel({book,onSettings}){
     setLoading(true);setError("");
     try{
       const sample=written.slice(0,3).map(c=>c.content.slice(0,800)).join("\n---\n");
-      const raw=await callGemini(
+      const raw=await callAI(
         `You are a literary analyst. Extract all named characters from these chapters.\n\nBook: "${book.title}" (${book.genre})\n\nCHAPTER SAMPLES:\n${sample}\n\nRespond ONLY with valid JSON:\n{"characters":[{"name":"","role":"protagonist/antagonist/supporting","age":"","appearance":"physical description","personality":"key traits","arc":"their story role","notes":""}]}`,0.3
       );
       trackUsage();
@@ -1494,7 +1627,7 @@ function VoiceTrainingPanel({onClose}){
     if(!sample.trim()||sample.length<200){setError("Paste at least 200 characters of your writing.");return;}
     setLoading(true);setError("");
     try{
-      const raw=await callGemini(
+      const raw=await callAI(
         `You are a literary style analyst. Analyze this writing sample and extract the author's unique voice fingerprint.\n\nSAMPLE:\n${sample.slice(0,4000)}\n\nRespond ONLY with valid JSON:\n{"sentence_rhythm":"description of average sentence length, variation, fragments vs long","vocabulary_level":"simple/moderate/literary — with examples from text","pov_style":"first/third person, close/distant","emotional_tone":"how emotions are conveyed — direct/understated/theatrical","dialogue_style":"how dialogue sounds, tags used, realistic/stylized","genre_conventions":"genre-specific conventions this author uses","distinctive_patterns":["unique pattern 1","unique pattern 2"],"sample_analysis":"2-3 sentence summary of this author voice that AI should replicate"}`,0.2
       );
       trackUsage();
@@ -1564,7 +1697,7 @@ function QueuePage({navigate,onSettings}){
     while(true){
       const q=getQueue();
       if(q.length===0){addLog("✅ Queue complete!");break;}
-      if(getUsage()>=DAILY_LIMIT){addLog("⏳ Daily quota reached. Queue paused — will continue tomorrow.");break;}
+      if(quotaBlocked()){addLog("⏳ Daily quota reached. Queue paused — will continue tomorrow.");break;}
       const id=q[0];
       const book=getBook(id);
       if(!book){removeFromQueue(id);continue;}
@@ -1578,7 +1711,7 @@ function QueuePage({navigate,onSettings}){
         const chapters=[...(book.chapters||[])];
         // Write un-generated chapters
         for(let i=0;i<chapters.length;i++){
-          if(getUsage()>=DAILY_LIMIT)break;
+          if(quotaBlocked())break;
           if(chapters[i].generated)continue;
           addLog(`  ✍️ Ch.${i+1}/${chapters.length}: "${chapters[i].title}"`);
           const series=book.series_id?getSeriesById(book.series_id):null;
@@ -1593,7 +1726,7 @@ function QueuePage({navigate,onSettings}){
           const prev=prevChaps.length===0?"None":
             prevChaps.length<=2?prevChaps.map(c=>c.title).join(", "):
             prevChaps.slice(-3).map(c=>`Ch.${c.number} "${c.title}": ${(c.content||"").slice(0,200).replace(/\n/g," ")}…`).join("\n");
-          const content=await callGemini(
+          const content=await callAI(
             `Write Chapter ${chapters[i].number}: "${chapters[i].title}" for a ${book.genre} book titled "${outline.title||book.title}".${seriesCtx}${qVoiceCtx}${qCharCtx}${qLangNote}${qNfNote}\n`+
             `Chapter description: ${chapters[i].description}\nPrevious: ${prev}\nAudience: ${book.target_audience}\n\n`+
             `${(()=>{const tw=chapters[i]?.target_words||3800;const wMin=Math.round(tw*0.75);const wMax=tw;return `${wMin.toLocaleString()}–${wMax.toLocaleString()} words`;})()}. Match genre tone. Aim for the full word count.\n\nSTRUCTURE:\n• 3-5 distinct scenes per chapter, separated by: ⁂\n• Each scene has a clear goal → obstacle → outcome\n• Chapter must END on a hook, unresolved tension, or revelation that forces reading on\n• DO NOT wrap up cleanly — the best chapters end mid-breath\n\nWRITING RULES — violating these will get this chapter rejected:\n• NEVER start a sentence with 'He/She/They couldn't help but', 'In that moment', 'It dawned on', 'Something about the way', 'A wave of', 'A surge of'\n• NEVER state emotions directly ('he felt sad', 'warmth spread through her') — express through physical action, dialogue, or specific sensory detail\n• NEVER use em-dashes for dramatic effect more than once per page\n• VARY sentence length violently: one-word sentences. Fragments. Then a long, breathing sentence that winds through a scene and refuses to end neatly.\n• Dialogue must be messy and human: people talk past each other, leave things half-said, interrupt, change subject\n• Use SPECIFIC details: not 'the coffee shop smelled like coffee' but the burnt-sugar smell of the espresso machine at 6am, the sticky ring on the table from someone's iced latte\n• No clean emotional resolutions — conflict leaves residue\n• Character psychology must be specific, not convenient\n• Every scene must have a sensory anchor: a smell, a texture, a specific sound\n• Read like a published novel — no chapter summaries, no scene headers, no markdown`
@@ -1607,7 +1740,7 @@ function QueuePage({navigate,onSettings}){
         if(getUsage()<DAILY_LIMIT){
           // SEO
           addLog(`  🔍 Generating SEO…`);
-          const seoRaw=await callGemini(`Amazon KDP SEO. Title: ${book.title}\nGenre: ${book.genre}\nDesc: ${book.description}\nRespond ONLY JSON: {"seo_title":"","seo_description":"","primary_keywords":[""]}`);
+          const seoRaw=await callAI(`Amazon KDP SEO. Title: ${book.title}\nGenre: ${book.genre}\nDesc: ${book.description}\nRespond ONLY JSON: {"seo_title":"","seo_description":"","primary_keywords":[""]}`);
           trackUsage();
           const sm=seoRaw.match(/\{[\s\S]*\}/);
           if(sm){try{const seo=JSON.parse(sm[0]);updateBook(id,{seo_title:seo.seo_title||"",seo_description:seo.seo_description||"",seo_keywords:(seo.primary_keywords||[]).join(", "),seo_done:true});}catch(pe){addLog("⚠️ SEO parse failed — skipping SEO update");}}
@@ -1615,9 +1748,9 @@ function QueuePage({navigate,onSettings}){
         if(getUsage()<DAILY_LIMIT){
           // Cover
           addLog(`  🎨 Generating cover…`);
-          const cp=await callGemini(`Professional book cover image prompt for "${book.title}" (${book.genre}). Describe characters, setting, mood, lighting, art style. NO text. Return only the prompt.`);
+          const cp=await callAI(`Professional book cover image prompt for "${book.title}" (${book.genre}). Describe characters, setting, mood, lighting, art style. NO text. Return only the prompt.`);
           trackUsage();
-          const artUrl=`https://image.pollinations.ai/prompt/${encodeURIComponent(cp.trim()+". No text.")}?width=832&height=1216&model=flux&nologo=true&enhance=true&seed=${Date.now()}`;
+          const _artResult=await genCoverImage(cp.trim()+". No text.");const artUrl=_artResult.url;
           const finalUrl=await finalizeCoverImage(artUrl,outline.title||book.title,getAuthorProfile().name,book.subtitle);
           updateBook(id,{cover_art_url:artUrl,cover_image_url:finalUrl,cover_done:true});
         }
@@ -1751,7 +1884,7 @@ function SeriesPage({navigate,onSettings}){
     if(!form.name||!form.concept||!form.genre||!form.audience){setError("Fill in all fields.");return;}
     setLoading(true);setError("");
     try{
-      const raw=await callGemini(
+      const raw=await callAI(
         `You are a master series author and world-builder. Create a comprehensive ${form.book_count}-book series plan.\n`+
         `Series Name: "${form.name}"\nConcept: ${form.concept}\nGenre: ${form.genre}\nAudience: ${form.audience}\n`+
         (form.tone?`Tone/Style: ${form.tone}\n`:"")+
@@ -2043,7 +2176,7 @@ function CreatePage({navigate,onSettings}){
       } else {
         prompt=`You are a bestselling author. Create a detailed, commercially compelling book outline.\nTopic: ${form.topic}\nGenre: ${form.genre}\nAudience: ${form.audience}${styleCtx}${langNote}\n${form.nonfiction_mode?"Nonfiction mode: include exercises, reflections, and action steps per chapter.":""}\n\nRULES:\n${lengthNote.slice(2)}${wordsNote}\n• Chapter titles must be SPECIFIC and evocative — never generic (e.g. not "Chapter 1: The Beginning")\n• Subtitle must be a compelling, keyword-rich phrase (not just a restatement of the title)\n• Themes must be 3-5 specific thematic elements (e.g. "loss and redemption", "the cost of ambition")\n• Each chapter description must be 2-3 sentences with a clear narrative purpose — never generic (e.g. not "Chapter 1: The Beginning")\n• Each chapter description must be 2-3 sentences with clear conflict or stakes\n• Subtitle must be sharp, benefit-driven, or intriguing\n• Target ~${Math.round(50000/13)} words per chapter\n• No filler chapters — every chapter must earn its place\n\nRespond ONLY with valid JSON:\n{"title":"","subtitle":"","description":"","themes":[""],"tone_notes":"describe the intended emotional register and prose style","estimated_word_count":50000,"writing_language":"${form.language}","chapters":[{"number":1,"title":"","description":"","opening_hook":"how this chapter should open — first line or image","target_words":${_twTarget},"${form.nonfiction_mode?"exercise":"notes"}":""}]}`;
       }
-      const raw=await callGemini(prompt);
+      const raw=await callAI(prompt);
       trackUsage();
       const match=raw.match(/\{[\s\S]*\}/);if(!match)throw{code:"PARSE"};
       let _ol;try{_ol=JSON.parse(match[0]);}catch(pe){throw{code:"PARSE",msg:"AI returned malformed JSON — please retry."};}
@@ -2304,7 +2437,7 @@ function ChapterEditor({book,chIdx,upd}){
     try{
       const vp=getVoiceProfile();
       const voiceCtx=vp?.sample_analysis?`\nVOICE STYLE: ${vp.sample_analysis}\nMatch this style exactly.`:"";
-      const result=await callGemini(
+      const result=await callAI(
         `You are a master editor. Rewrite ONLY this paragraph to sound more human, specific, and vivid.\n`+
         `Book: "${book.title}" (${book.genre})\n`+
         `Chapter: "${ch?.title||""}"\n${voiceCtx}\n\n`+
@@ -2415,7 +2548,7 @@ function EditorPage({bookId,navigate,onSettings}){
 
   useEffect(()=>{
     const b=getBook(bookId);if(!b){navigate("home");return;}
-    setBook(b);if(getUsage()>=DAILY_LIMIT)setQuotaHit(true);
+    setBook(b);if(quotaBlocked())setQuotaHit(true);
     if(b.auto_build&&!buildRef.current){buildRef.current=true;runAutoBuild(b);}
     return()=>{buildRef.current=false;};
   },[bookId]);
@@ -2432,7 +2565,7 @@ function EditorPage({bookId,navigate,onSettings}){
     const series=getSeriesById(b.series_id);
     const seriesBibleCtx=series?buildSeriesContext(series):"";
     log(`📋 Generating outline for Book ${bp.number}: "${bp.title}"…`);
-    const raw=await callGemini(
+    const raw=await callAI(
       `You are a master series author. Generate a detailed chapter outline for Book ${bp.number} of the "${b.series_name}" series.\n\n`+
       `BOOK: "${bp.title}" — ${bp.subtitle||""}\nDescription: ${bp.description}\nConflict: ${bp.main_conflict||""}\nHook: ${bp.hook||""}\nCharacter Focus: ${bp.character_focus||""}\n`+
       `Genre: ${b.genre}\nAudience: ${b.target_audience}\n\n`+
@@ -2449,7 +2582,7 @@ function EditorPage({bookId,navigate,onSettings}){
   };
 
   const runAutoBuild=async(b)=>{
-    if(getUsage()>=DAILY_LIMIT){setQuotaHit(true);upd({auto_build:false});return;}
+    if(quotaBlocked()){setQuotaHit(true);upd({auto_build:false});return;}
     // Guard: if build is already fully complete and all chapters are written, don't re-run
     const allChaptersDone=(b.chapters||[]).length>0&&(b.chapters||[]).every(c=>c.generated);
     if(b.build_complete&&allChaptersDone){
@@ -2467,7 +2600,7 @@ function EditorPage({bookId,navigate,onSettings}){
       if(b.needs_outline&&b.book_plan){const result=await generateSeriesOutline(b);if(result){outline=result.outline;chapters=result.chapters;}else{upd({auto_build:false,build_step:""});setIsBuilding(false);return;}}
       const total=chapters.length;
       for(let i=0;i<total;i++){
-        if(!buildRef.current)break;if(getUsage()>=DAILY_LIMIT){setQuotaHit(true);break;}
+        if(!buildRef.current)break;if(quotaBlocked()){setQuotaHit(true);break;}
         if(chapters[i].generated){continue;} // resume-safe: skip chapters already written
         log(`✍️ Writing chapter ${i+1}/${total}: "${chapters[i].title}"…`);setTab(1);setSelCh(i);
         try{
@@ -2480,51 +2613,51 @@ function EditorPage({bookId,navigate,onSettings}){
           const charCtx=chars.length?`\n\nESTABLISHED CHARACTERS (maintain exact consistency):\n${chars.map(c=>`${c.name} [${c.role||""}]: ${c.appearance||""} — ${c.personality||""}`).join("\n")}`:"";
           const langNote=b.writing_language&&b.writing_language!=="English"?`\n\nWRITE IN: ${b.writing_language}`:"";
           const nonfictionNote=b.nonfiction_mode?"\n\nNONFICTION MODE: End the chapter with a clearly marked Exercise, Reflection question, and Action Step.":"";
-          const content=await callGemini(`Write Chapter ${chapters[i].number}: "${chapters[i].title}" for a ${b.genre} book titled "${outline.title}".${seriesCtx}${voiceCtx}${charCtx}${langNote}${nonfictionNote}\n\nChapter: ${chapters[i].description}\nPrevious: ${prev}\nAudience: ${b.target_audience}\n\n${(()=>{const tw=ch?.target_words||3800;return `${Math.round(tw*0.75).toLocaleString()}–${tw.toLocaleString()} words`;})()}. Match genre tone precisely.\n\nSTRUCTURE:\n• 3-5 distinct scenes per chapter, separated by: ⁂\n• Each scene has a clear goal → obstacle → outcome\n• Chapter must END on a hook, unresolved tension, or revelation that forces reading on\n• DO NOT wrap up cleanly — the best chapters end mid-breath\n\nWRITING RULES — violating these will get this chapter rejected:\n• NEVER start a sentence with 'He/She/They couldn't help but', 'In that moment', 'It dawned on', 'Something about the way', 'A wave of', 'A surge of'\n• NEVER state emotions directly ('he felt sad', 'warmth spread through her') — express through physical action, dialogue, or specific sensory detail\n• NEVER use em-dashes for dramatic effect more than once per page\n• VARY sentence length violently: one-word sentences. Fragments. Then a long, breathing sentence that winds through a scene and refuses to end neatly.\n• Dialogue must be messy and human: people talk past each other, leave things half-said, interrupt, change subject\n• Use SPECIFIC details: not 'the coffee shop smelled like coffee' but the burnt-sugar smell of the espresso machine at 6am, the sticky ring on the table from someone's iced latte\n• No clean emotional resolutions — conflict leaves residue\n• Character psychology must be specific, not convenient\n• Read like a novel — no chapter summaries, no scene headers, no markdown`);
+          const content=await callAI(`Write Chapter ${chapters[i].number}: "${chapters[i].title}" for a ${b.genre} book titled "${outline.title}".${seriesCtx}${voiceCtx}${charCtx}${langNote}${nonfictionNote}\n\nChapter: ${chapters[i].description}\nPrevious: ${prev}\nAudience: ${b.target_audience}\n\n${(()=>{const tw=ch?.target_words||3800;return `${Math.round(tw*0.75).toLocaleString()}–${tw.toLocaleString()} words`;})()}. Match genre tone precisely.\n\nSTRUCTURE:\n• 3-5 distinct scenes per chapter, separated by: ⁂\n• Each scene has a clear goal → obstacle → outcome\n• Chapter must END on a hook, unresolved tension, or revelation that forces reading on\n• DO NOT wrap up cleanly — the best chapters end mid-breath\n\nWRITING RULES — violating these will get this chapter rejected:\n• NEVER start a sentence with 'He/She/They couldn't help but', 'In that moment', 'It dawned on', 'Something about the way', 'A wave of', 'A surge of'\n• NEVER state emotions directly ('he felt sad', 'warmth spread through her') — express through physical action, dialogue, or specific sensory detail\n• NEVER use em-dashes for dramatic effect more than once per page\n• VARY sentence length violently: one-word sentences. Fragments. Then a long, breathing sentence that winds through a scene and refuses to end neatly.\n• Dialogue must be messy and human: people talk past each other, leave things half-said, interrupt, change subject\n• Use SPECIFIC details: not 'the coffee shop smelled like coffee' but the burnt-sugar smell of the espresso machine at 6am, the sticky ring on the table from someone's iced latte\n• No clean emotional resolutions — conflict leaves residue\n• Character psychology must be specific, not convenient\n• Read like a novel — no chapter summaries, no scene headers, no markdown`);
           bump();chapters[i]={...chapters[i],content,generated:true};
           const wc=chapters.reduce((a,c)=>a+(c.content?c.content.split(/\s+/).length:0),0);
           updateBook(bookId,{chapters:[...chapters],word_count:wc});setBook(getBook(bookId));
           if(b.series_id&&getUsage()<DAILY_LIMIT-2){try{
-            const evRaw=await callGemini(`List 2-3 key plot events from this chapter that matter for the series. ONLY valid JSON: {"events":["short event description"]}\nBook: "${outline.title||b.title}"\nChapter ${chapters[i].number}: "${chapters[i].title}"\nExcerpt: ${content.slice(0,600)}`,0.2);
+            const evRaw=await callAI(`List 2-3 key plot events from this chapter that matter for the series. ONLY valid JSON: {"events":["short event description"]}\nBook: "${outline.title||b.title}"\nChapter ${chapters[i].number}: "${chapters[i].title}"\nExcerpt: ${content.slice(0,600)}`,0.2);
             bump();const em=evRaw.match(/\{[\s\S]*\}/);
             if(em){let evD;try{evD=JSON.parse(em[0]);}catch(pe){evD={};}const sa=getSeries();const si=sa.findIndex(s=>s.id===b.series_id);
             if(si>-1){sa[si].plot_events=[...(sa[si].plot_events||[]),...(evD.events||[]).map(ev=>({book:`Book ${b.series_number||"?"}`,event:ev}))];setSeries(sa);}}
           }catch(evE){/* silent */}}
         }catch(e){if(e?.code==="QUOTA"){setQuotaHit(true);break;}log(`⚠️ Ch.${i+1} error — skipped`);}
       }
-      if(getUsage()>=DAILY_LIMIT){upd({auto_build:false,build_step:""});setIsBuilding(false);return;}
+      if(quotaBlocked()){upd({auto_build:false,build_step:""});setIsBuilding(false);return;}
       // SEO
       if(!getBook(bookId)?.seo_done){
       log("🔍 Generating SEO…");setTab(3);
-      try{const raw=await callGemini(`You are an Amazon KDP bestseller SEO strategist. Generate complete publishing metadata.\n\nRULES:\n• Title MUST be 50-60 characters\n• Keywords must be 2-4 word long-tail phrases\n\nTitle: "${outline.title||b.title}"\nGenre: ${b.genre}\nAudience: ${b.target_audience}\nDescription: ${outline.description||''}\n\nRespond ONLY valid JSON (no markdown): {"seo_title":"MAX 60 CHARS — pack the top keyword first","seo_description":"150-200 words — compelling blurb ending with a call to action","primary_keywords":["2-4 word phrase","2-4 word phrase","2-4 word phrase","2-4 word phrase","2-4 word phrase","2-4 word phrase","2-4 word phrase"],"bisac_categories":["CAT1","CAT2"],"back_cover_copy":"","author_bio_template":""}`);bump();const match=raw.match(/\{[\s\S]*\}/);if(match){let seo;try{seo=JSON.parse(match[0]);}catch(pe){throw{code:"PARSE",msg:"AI returned malformed JSON — please retry."};}updateBook(bookId,{seo_title:seo.seo_title||"",seo_description:seo.seo_description||"",seo_keywords:(seo.primary_keywords||[]).join(", "),notes:JSON.stringify(seo),seo_done:true});setBook(getBook(bookId));}}catch(e){if(e?.code==="QUOTA"){setQuotaHit(true);upd({auto_build:false,build_step:""});setIsBuilding(false);return;}}} // end seo_done if
-      if(getUsage()>=DAILY_LIMIT){upd({auto_build:false,build_step:""});setIsBuilding(false);return;}
+      try{const raw=await callAI(`You are an Amazon KDP bestseller SEO strategist. Generate complete publishing metadata.\n\nRULES:\n• Title MUST be 50-60 characters\n• Keywords must be 2-4 word long-tail phrases\n\nTitle: "${outline.title||b.title}"\nGenre: ${b.genre}\nAudience: ${b.target_audience}\nDescription: ${outline.description||''}\n\nRespond ONLY valid JSON (no markdown): {"seo_title":"MAX 60 CHARS — pack the top keyword first","seo_description":"150-200 words — compelling blurb ending with a call to action","primary_keywords":["2-4 word phrase","2-4 word phrase","2-4 word phrase","2-4 word phrase","2-4 word phrase","2-4 word phrase","2-4 word phrase"],"bisac_categories":["CAT1","CAT2"],"back_cover_copy":"","author_bio_template":""}`);bump();const match=raw.match(/\{[\s\S]*\}/);if(match){let seo;try{seo=JSON.parse(match[0]);}catch(pe){throw{code:"PARSE",msg:"AI returned malformed JSON — please retry."};}updateBook(bookId,{seo_title:seo.seo_title||"",seo_description:seo.seo_description||"",seo_keywords:(seo.primary_keywords||[]).join(", "),notes:JSON.stringify(seo),seo_done:true});setBook(getBook(bookId));}}catch(e){if(e?.code==="QUOTA"){setQuotaHit(true);upd({auto_build:false,build_step:""});setIsBuilding(false);return;}}} // end seo_done if
+      if(quotaBlocked()){upd({auto_build:false,build_step:""});setIsBuilding(false);return;}
       // Cover
       if(!getBook(bookId)?.cover_done){
       log("🎨 Generating cover…");setTab(2);
-      try{const aiPrompt=await callGemini(`Detailed image generation prompt for professional book cover.\nBook: "${outline.title}"\nGenre: ${b.genre}\nDesc: ${outline.description}\n\n- Describe specific characters (gender, age, look, ethnicity)\n- For gay/LGBT+ romance: two male characters, emotional interaction\n- Setting, mood, lighting, palette, art style\n- NO text or words\n- Commercial quality\nReturn ONLY the prompt.`);bump();const finalPrompt=aiPrompt.trim()+". No text, no words, no letters.";setLastAiPrompt(finalPrompt);const artUrl=`https://image.pollinations.ai/prompt/${encodeURIComponent(finalPrompt)}?width=832&height=1216&model=flux&nologo=true&enhance=true&seed=${Date.now()}`;const finalUrl=await finalizeCoverImage(artUrl,outline.title||b.title,getAuthorProfile().name,b.subtitle);updateBook(bookId,{cover_art_url:artUrl,cover_image_url:finalUrl,cover_done:true});setBook(getBook(bookId));}catch(e){if(e?.code==="QUOTA"){setQuotaHit(true);upd({auto_build:false,build_step:""});setIsBuilding(false);return;}}} // end cover_done if
-      if(getUsage()>=DAILY_LIMIT){upd({auto_build:false,build_step:""});setIsBuilding(false);return;}
+      try{const aiPrompt=await callAI(`Detailed image generation prompt for professional book cover.\nBook: "${outline.title}"\nGenre: ${b.genre}\nDesc: ${outline.description}\n\n- Describe specific characters (gender, age, look, ethnicity)\n- For gay/LGBT+ romance: two male characters, emotional interaction\n- Setting, mood, lighting, palette, art style\n- NO text or words\n- Commercial quality\nReturn ONLY the prompt.`);bump();const finalPrompt=aiPrompt.trim()+". No text, no words, no letters.";setLastAiPrompt(finalPrompt);const _artResult2=await genCoverImage(finalPrompt);const artUrl=_artResult2.url;const finalUrl=await finalizeCoverImage(artUrl,outline.title||b.title,getAuthorProfile().name,b.subtitle);updateBook(bookId,{cover_art_url:artUrl,cover_image_url:finalUrl,cover_done:true});setBook(getBook(bookId));}catch(e){if(e?.code==="QUOTA"){setQuotaHit(true);upd({auto_build:false,build_step:""});setIsBuilding(false);return;}}} // end cover_done if
+      if(quotaBlocked()){upd({auto_build:false,build_step:""});setIsBuilding(false);return;}
       // Review
       if(!getBook(bookId)?.review_done){
       log("🤖 Running Review Agent…");setTab(4);
       try{const freshBook=getBook(bookId);const review=await runReviewAgent(freshBook);updateBook(bookId,{review,status:review.verdict==="PASS"?"ready":"writing",review_done:true});setBook(getBook(bookId));log(review.verdict==="PASS"?`✅ Review passed! ${review.overall_score}/100`:`⚠️ Review: ${review.overall_score}/100 — see Review tab`);}catch(e){if(e?.code==="QUOTA"){setQuotaHit(true);}}
       } // end review_done if
-      if(getUsage()>=DAILY_LIMIT){upd({auto_build:false,build_step:""});setIsBuilding(false);return;}
+      if(quotaBlocked()){upd({auto_build:false,build_step:""});setIsBuilding(false);return;}
       // Competitor analysis
       if(!getBook(bookId)?.competitor_done){
       log("🔎 Running competitor analysis…");setTab(5);
       try{
         const freshBook=getBook(bookId);
-        const raw=await callGemini(`Amazon KDP market research expert. Analyze competitive landscape.\nTitle: ${freshBook.title}\nGenre: ${freshBook.genre}\nAudience: ${freshBook.target_audience}\nDesc: ${freshBook.description}\n\nRespond ONLY JSON: {"market_summary":"","positioning_statement":"","market_gaps":[""],"reader_pain_points":[""],"pricing_recommendation":{"launch_price":"","rationale":""},"ku_recommendation":{"enroll_in_ku":true,"rationale":""},"categories":{"primary":"","secondary":"","why":""},"launch_strategy":[""]}`,0.4);
+        const raw=await callAI(`Amazon KDP market research expert. Analyze competitive landscape.\nTitle: ${freshBook.title}\nGenre: ${freshBook.genre}\nAudience: ${freshBook.target_audience}\nDesc: ${freshBook.description}\n\nRespond ONLY JSON: {"market_summary":"","positioning_statement":"","market_gaps":[""],"reader_pain_points":[""],"pricing_recommendation":{"launch_price":"","rationale":""},"ku_recommendation":{"enroll_in_ku":true,"rationale":""},"categories":{"primary":"","secondary":"","why":""},"launch_strategy":[""]}`,0.4);
         bump();const match=raw.match(/\{[\s\S]*\}/);if(match){try{updateBook(bookId,{competitor_analysis:JSON.parse(match[0]),competitor_done:true});setBook(getBook(bookId));}catch(pe){throw{code:"PARSE",msg:"AI returned malformed competitor analysis JSON — please retry."};} }
       }catch(e){if(e?.code==="QUOTA"){setQuotaHit(true);}}
       } // end competitor_done if
-      if(getUsage()>=DAILY_LIMIT){upd({auto_build:false,build_step:""});setIsBuilding(false);return;}
+      if(quotaBlocked()){upd({auto_build:false,build_step:""});setIsBuilding(false);return;}
       // Hooks
       if(!getBook(bookId)?.hooks_done){
       log("🪝 Generating hooks…");setTab(6);
       try{
         const freshBook=getBook(bookId);const freshOutline=JSON.parse(freshBook.outline||"{}");
-        const raw=await callGemini(`Bestselling author and book marketer. Generate high-converting hooks.\nTitle: ${freshBook.title}\nGenre: ${freshBook.genre}\nAudience: ${freshBook.target_audience}\nDesc: ${freshOutline.description||freshBook.description}\n\nRespond ONLY JSON: {"opening_lines":[""],"back_cover_blurbs":[""],"tagline":"","social_media_hooks":[""],"email_subject_lines":[""],"series_read_order_page":"","amazon_a_plus_headline":""}`,0.9);
+        const raw=await callAI(`Bestselling author and book marketer. Generate high-converting hooks.\nTitle: ${freshBook.title}\nGenre: ${freshBook.genre}\nAudience: ${freshBook.target_audience}\nDesc: ${freshOutline.description||freshBook.description}\n\nRespond ONLY JSON: {"opening_lines":[""],"back_cover_blurbs":[""],"tagline":"","social_media_hooks":[""],"email_subject_lines":[""],"series_read_order_page":"","amazon_a_plus_headline":""}`,0.9);
         bump();const match=raw.match(/\{[\s\S]*\}/);if(match){try{updateBook(bookId,{hooks:JSON.parse(match[0]),auto_build:false,build_step:"",hooks_done:true});setBook(getBook(bookId));}catch(pe){throw{code:"PARSE",msg:"AI returned malformed hooks JSON — please retry."};} }
       }catch(e){if(e?.code==="QUOTA"){setQuotaHit(true);}}
       } // end hooks_done if
@@ -2585,7 +2718,7 @@ function EditorPage({bookId,navigate,onSettings}){
             if(writtenIdxs.length<=5){sampleIdxs.push(...writtenIdxs);}
             else{sampleIdxs.push(writtenIdxs[0],writtenIdxs[Math.floor(writtenIdxs.length*0.25)],writtenIdxs[Math.floor(writtenIdxs.length*0.5)],writtenIdxs[Math.floor(writtenIdxs.length*0.75)],writtenIdxs[writtenIdxs.length-1]);}
             for(const idx of sampleIdxs){
-              if(getUsage()>=DAILY_LIMIT)break;
+              if(quotaBlocked())break;
               try{
                 const res=await analyzeChapterHumanness(chaps[idx].content,curBook.title,curBook.genre,chaps[idx].title);
                 wqScores[idx]=res;
@@ -2649,7 +2782,7 @@ function EditorPage({bookId,navigate,onSettings}){
       const charCtx=chars.length?`\n\nCHARACTERS:\n${chars.map(c=>`${c.name}: ${c.appearance||""} — ${c.personality||""}`).join("\n")}`:"";
       const langNote=book.writing_language&&book.writing_language!=="English"?`\n\nWRITE IN: ${book.writing_language}`:"";
       const nfNote=book.nonfiction_mode?"\n\nEnd with: Exercise, Reflection, Action Step.":"";
-      const content=await callGemini(`Write Chapter ${ch.number}: "${ch.title}" for a ${book.genre} book titled "${outline.title}".${seriesCtx}${voiceCtx}${charCtx}${langNote}${nfNote}\n\nDesc: ${ch.description}\nPrevious: ${prev}\nAudience: ${book.target_audience}\n\n${(()=>{const tw=chapters[i]?.target_words||3800;return `${Math.round(tw*0.75).toLocaleString()}–${tw.toLocaleString()} words`;})()}. Match genre tone.\n\nSTRUCTURE:\n• 3-5 distinct scenes per chapter, separated by: ⁂\n• Each scene has a clear goal → obstacle → outcome\n• Chapter must END on a hook, unresolved tension, or revelation that forces reading on\n• DO NOT wrap up cleanly — the best chapters end mid-breath\n\nWRITING RULES — violating these will get this chapter rejected:\n• NEVER start a sentence with 'He/She/They couldn't help but', 'In that moment', 'It dawned on', 'Something about the way', 'A wave of', 'A surge of'\n• NEVER state emotions directly ('he felt sad', 'warmth spread through her') — express through physical action, dialogue, or specific sensory detail\n• NEVER use em-dashes for dramatic effect more than once per page\n• VARY sentence length violently: one-word sentences. Fragments. Then a long, breathing sentence that winds through a scene and refuses to end neatly.\n• Dialogue must be messy and human: people talk past each other, leave things half-said, interrupt, change subject\n• Use SPECIFIC details: not 'the coffee shop smelled like coffee' but the burnt-sugar smell of the espresso machine at 6am, the sticky ring on the table from someone's iced latte\n• No clean emotional resolutions — conflict leaves residue\n• Character psychology must be specific, not convenient\n• Read like a novel — no chapter summaries, no scene headers, no markdown`);
+      const content=await callAI(`Write Chapter ${ch.number}: "${ch.title}" for a ${book.genre} book titled "${outline.title}".${seriesCtx}${voiceCtx}${charCtx}${langNote}${nfNote}\n\nDesc: ${ch.description}\nPrevious: ${prev}\nAudience: ${book.target_audience}\n\n${(()=>{const tw=chapters[i]?.target_words||3800;return `${Math.round(tw*0.75).toLocaleString()}–${tw.toLocaleString()} words`;})()}. Match genre tone.\n\nSTRUCTURE:\n• 3-5 distinct scenes per chapter, separated by: ⁂\n• Each scene has a clear goal → obstacle → outcome\n• Chapter must END on a hook, unresolved tension, or revelation that forces reading on\n• DO NOT wrap up cleanly — the best chapters end mid-breath\n\nWRITING RULES — violating these will get this chapter rejected:\n• NEVER start a sentence with 'He/She/They couldn't help but', 'In that moment', 'It dawned on', 'Something about the way', 'A wave of', 'A surge of'\n• NEVER state emotions directly ('he felt sad', 'warmth spread through her') — express through physical action, dialogue, or specific sensory detail\n• NEVER use em-dashes for dramatic effect more than once per page\n• VARY sentence length violently: one-word sentences. Fragments. Then a long, breathing sentence that winds through a scene and refuses to end neatly.\n• Dialogue must be messy and human: people talk past each other, leave things half-said, interrupt, change subject\n• Use SPECIFIC details: not 'the coffee shop smelled like coffee' but the burnt-sugar smell of the espresso machine at 6am, the sticky ring on the table from someone's iced latte\n• No clean emotional resolutions — conflict leaves residue\n• Character psychology must be specific, not convenient\n• Read like a novel — no chapter summaries, no scene headers, no markdown`);
       bump();const chapters=[...(book.chapters||[])];chapters[idx]={...chapters[idx],content,generated:true};
       const wc=chapters.reduce((a,c)=>a+(c.content?c.content.split(/\s+/).length:0),0);
       // If all chapters now done + pipeline already ran → auto-stamp build_complete
@@ -2668,7 +2801,7 @@ function EditorPage({bookId,navigate,onSettings}){
     setBusy(true);setError("");
     try{
       // Generate image prompt from chapter content
-      const imgPrompt=await callGemini(
+      const imgPrompt=await callAI(
         `You are a book illustrator. Write a Stable Diffusion prompt for an illustration for this chapter.\n`+
         `Book: "${book.title}" (${book.genre})\n`+
         `Chapter: "${ch.title}"\n`+
@@ -2700,7 +2833,7 @@ function EditorPage({bookId,navigate,onSettings}){
       const seriesCtx=book.series_name?`\nSeries: ${book.series_name} (Book ${book.series_number||1})`:""
 
       setBusyStep("🧠 Building KDP title, keywords & BISAC categories…");
-      const raw1=await callGemini(
+      const raw1=await callAI(
         `You are a top Amazon KDP bestseller consultant. I need a COMPLETE Amazon product page package for this book.\n\nBook Title: "${outline.title||book.title}"\nSubtitle: "${outline.subtitle||book.subtitle||""}"\nGenre: ${book.genre}\nTarget Audience: ${book.target_audience}\nDescription: ${outline.description||book.description||""}\n${seriesCtx}\nHooks: ${book.hooks?(()=>{try{return JSON.stringify(JSON.parse(book.hooks)).slice(0,400);}catch{return "";}})():""}\nSEO keywords already found: ${book.seo_keywords||""}\n\nChapter Sample:\n${chapterSample}\n\nGenerate the COMPLETE KDP product page package. Respond ONLY with valid JSON (no markdown, no code blocks):\n{\n  "kdp_title": "Keyword-optimized book title for KDP (include 1-2 high-volume search terms naturally, max 200 chars)",\n  "kdp_subtitle": "Benefit-driven subtitle with top search keywords, max 200 chars",\n  "kdp_description_html": "Full Amazon book description in HTML (use <h2>, <b>, <p>, <ul><li> tags). Must be 3500-4000 chars. Structure: compelling 2-sentence hook → 3 bullet <li> points of what readers gain → story/content overview paragraph → who this book is for → final call to action. Use Amazon-specific formatting.",\n  "kdp_7_keywords": ["exact phrase 1","exact phrase 2","exact phrase 3","exact phrase 4","exact phrase 5","exact phrase 6","exact phrase 7"],\n  "kdp_bisac_1": "Full BISAC category path e.g. FICTION / Romance / Contemporary",\n  "kdp_bisac_2": "Second BISAC path",\n  "kdp_price_usd": 4.99,\n  "kdp_price_rationale": "One sentence pricing strategy with royalty math",\n  "kdp_author_bio": "Professional 3rd-person Amazon Author Central bio, 120-150 words, written as if the author is established",\n  "kdp_editorial_review": "A mock 4-5 star editorial review quote (for Amazon Editorial Reviews section), 60 words, from a fictional trade publication",\n  "kdp_series_info": "${book.series_name||"Standalone"}",\n  "kdp_territorial_rights": "worldwide",\n  "kdp_ai_disclosure": "This work was created with AI assistance. The author directed the creative vision, plot, characters, and content.",\n  "kdp_look_inside_hook": "The first 200-word excerpt optimized to hook readers in the Look Inside preview",\n  "kdp_a_plus_headline": "Amazon A+ Content headline (150 chars max)",\n  "kdp_a_plus_body": "Amazon A+ Content body paragraph (600 chars), emotionally engaging, uses lifestyle language",\n  "ai_search_keywords": ["8 discovery phrases optimized for AI search engines like ChatGPT, Perplexity, and Claude — conversational, question-based, or use-case phrasing e.g. best romance novel about second chances 2025"]\n}`
       );
       bump();
@@ -2711,7 +2844,7 @@ function EditorPage({bookId,navigate,onSettings}){
 
       // Build optimized KDP cover prompt
       setBusyStep("🎨 Generating KDP-optimized thumbnail prompt…");
-      const coverRaw=await callGemini(
+      const coverRaw=await callAI(
         `You are an Amazon KDP cover design expert. Generate a Pollinations.ai image prompt for a HIGH-CONVERTING Amazon thumbnail.\n\nBook: "${kdp.kdp_title}"\nGenre: ${book.genre}\nAudience: ${book.target_audience}\nBISAC: ${kdp.kdp_bisac_1}\nExisting cover URL: ${book.cover_image_url||"none"}\n\nAmazon thumbnail requirements:\n• Must look STUNNING at 160x250px (thumbnail size on search results)\n• Bold, high-contrast imagery that pops on white Amazon background\n• Strong focal point — single hero element or face\n• Genre visual language (romance: warm intimate tones; thriller: cold dark contrast; self-help: clean aspirational; fantasy: epic dramatic)\n• "Professional bestselling book cover" quality\n\nReturn ONLY the image prompt string — no JSON, no explanations.\nEnd with: "Amazon book cover, ultra-detailed, commercially published quality, no text no words no letters, portrait orientation 2:3 ratio"`
       );
       bump();
@@ -2726,7 +2859,7 @@ function EditorPage({bookId,navigate,onSettings}){
       let acx={};
       if(isAudio){
         setBusyStep("🎧 Building ACX/Audible product page…");
-        const acxRaw=await callGemini(
+        const acxRaw=await callAI(
           `You are an ACX (Audible Creation Exchange) publishing expert. Generate the complete Audible/ACX product page for this audiobook.\n\nBook: "${kdp.kdp_title}"\nGenre: ${book.genre}\nAudience: ${book.target_audience}\nRuntime estimate: ${Math.ceil(((book.chapters||[]).reduce((s,c)=>s+(c.content||"").split(/\s+/).length,0))/150)} minutes\n\nRespond ONLY with valid JSON:\n{"acx_title":"Audiobook title for ACX/Audible","acx_subtitle":"Audiobook subtitle","acx_description":"Audible product description 2000 chars — hook, what listeners experience, narrator style note, call to action","acx_keywords":["8 Audible search keywords"],"acx_categories":["Primary Audible category","Secondary"],"acx_narrator_direction":"2-sentence note to narrator on tone, pacing and emotion","acx_cover_prompt":"Pollinations.ai prompt for ACX square cover (3000x3000 required) — same art style as book cover but square crop"}`
         );
         bump();
@@ -2744,13 +2877,13 @@ function EditorPage({bookId,navigate,onSettings}){
     finally{setBusy(false);setBusyStep("");}
   };
 
-const genSEO=async()=>{if(quotaHit||isBuilding)return;setBusy(true);setError("");try{const outline=(()=>{try{return JSON.parse(book.outline||"{}");}catch{return {};}})();const raw=await callGemini(`You are a top-tier Amazon KDP bestseller strategist with 15+ years optimizing book discoverability.\n\nBook Details:\nTitle: "${outline.title||book.title}"\nGenre: ${book.genre}\nAudience: ${book.target_audience}\nDescription: ${outline.description||''}\n\nGenerate complete publishing metadata.\n\nRULES:\n• Title MUST be 50-60 characters (KDP SERP truncates at ~60)\n• Keywords must be 2-4 word long-tail phrases (not single words)\n• Description must follow Amazons format: hook, bullet benefits, story overview, CTA\n• Include 7 backend keywords\n\nRespond ONLY with valid JSON (no markdown, no code blocks):\n{"seo_title":"Optimized KDP title (50-60 characters max for best Amazon SERP display - keyword-rich but natural)","seo_description":"400-word Amazon description with hook, 3 bullet points using • , social proof, call to action","primary_keywords":["7 long-tail exact-match Amazon search phrases readers actually type"],"backend_keywords":"up to 7 extra search terms space-separated for Amazon backend field (no repeats from primary)","bisac_categories":["Primary BISAC category path","Secondary BISAC category path"],"back_cover_copy":"3-paragraph back cover blurb: hook sentence, escalating tension or benefit, cliffhanger or promise","author_bio_template":"Professional 3rd-person author bio template 80 words","recommended_price_usd":4.99,"price_rationale":"One sentence pricing strategy","comp_titles":["3 comparable bestselling books Author — Title format"],"hook_line":"One irresistible sentence for social media"}`);bump();const match=raw.match(/\{[\s\S]*\}/);if(!match)throw{code:"PARSE"};let seo;try{seo=JSON.parse(match[0]);}catch(pe){throw{code:"PARSE",msg:"AI returned malformed SEO JSON — please retry."};}upd({seo_title:seo.seo_title||"",seo_description:seo.seo_description||"",seo_keywords:(seo.primary_keywords||[]).join(", "),notes:JSON.stringify(seo)});flash("SEO generated! 🔍");}catch(e){handleErr(e);}finally{setBusy(false);}};
+const genSEO=async()=>{if(quotaHit||isBuilding)return;setBusy(true);setError("");try{const outline=(()=>{try{return JSON.parse(book.outline||"{}");}catch{return {};}})();const raw=await callAI(`You are a top-tier Amazon KDP bestseller strategist with 15+ years optimizing book discoverability.\n\nBook Details:\nTitle: "${outline.title||book.title}"\nGenre: ${book.genre}\nAudience: ${book.target_audience}\nDescription: ${outline.description||''}\n\nGenerate complete publishing metadata.\n\nRULES:\n• Title MUST be 50-60 characters (KDP SERP truncates at ~60)\n• Keywords must be 2-4 word long-tail phrases (not single words)\n• Description must follow Amazons format: hook, bullet benefits, story overview, CTA\n• Include 7 backend keywords\n\nRespond ONLY with valid JSON (no markdown, no code blocks):\n{"seo_title":"Optimized KDP title (50-60 characters max for best Amazon SERP display - keyword-rich but natural)","seo_description":"400-word Amazon description with hook, 3 bullet points using • , social proof, call to action","primary_keywords":["7 long-tail exact-match Amazon search phrases readers actually type"],"backend_keywords":"up to 7 extra search terms space-separated for Amazon backend field (no repeats from primary)","bisac_categories":["Primary BISAC category path","Secondary BISAC category path"],"back_cover_copy":"3-paragraph back cover blurb: hook sentence, escalating tension or benefit, cliffhanger or promise","author_bio_template":"Professional 3rd-person author bio template 80 words","recommended_price_usd":4.99,"price_rationale":"One sentence pricing strategy","comp_titles":["3 comparable bestselling books Author — Title format"],"hook_line":"One irresistible sentence for social media"}`);bump();const match=raw.match(/\{[\s\S]*\}/);if(!match)throw{code:"PARSE"};let seo;try{seo=JSON.parse(match[0]);}catch(pe){throw{code:"PARSE",msg:"AI returned malformed SEO JSON — please retry."};}upd({seo_title:seo.seo_title||"",seo_description:seo.seo_description||"",seo_keywords:(seo.primary_keywords||[]).join(", "),notes:JSON.stringify(seo)});flash("SEO generated! 🔍");}catch(e){handleErr(e);}finally{setBusy(false);}};
 
   const genAltTitles=async()=>{
     if(quotaHit||isBuilding||busy)return;setBusy(true);setError("");
     try{
       const outline=(()=>{try{return JSON.parse(book.outline||"{}");}catch{return {};}})();
-      const raw=await callGemini(`You are an Amazon KDP bestseller expert. Generate 5 KILLER alternative titles for this book.\nBook: "${book.title}"\nGenre: ${book.genre}\nAudience: ${book.target_audience}\nDescription: ${outline.description||book.description}\n\nRules:\n• Each title must be unique in approach (curiosity, benefit, transformation, emotional, bold claim)\n• For fiction: evocative, genre-appropriate, memorable\n• For nonfiction: benefit-driven, searchable on Amazon\n\nRespond ONLY with valid JSON: {"alternatives":[{"title":"","subtitle":"","rationale":"why this works on KDP"}]}`);
+      const raw=await callAI(`You are an Amazon KDP bestseller expert. Generate 5 KILLER alternative titles for this book.\nBook: "${book.title}"\nGenre: ${book.genre}\nAudience: ${book.target_audience}\nDescription: ${outline.description||book.description}\n\nRules:\n• Each title must be unique in approach (curiosity, benefit, transformation, emotional, bold claim)\n• For fiction: evocative, genre-appropriate, memorable\n• For nonfiction: benefit-driven, searchable on Amazon\n\nRespond ONLY with valid JSON: {"alternatives":[{"title":"","subtitle":"","rationale":"why this works on KDP"}]}`);
       bump();const m=raw.match(/\{[\s\S]*\}/);if(!m)throw{code:"PARSE"};
       let d;try{d=JSON.parse(m[0]);}catch(pe){throw{code:"PARSE",msg:"AI returned malformed titles JSON — please retry."};}
       setAltTitles(d.alternatives||[]);
@@ -2758,7 +2891,54 @@ const genSEO=async()=>{if(quotaHit||isBuilding)return;setBusy(true);setError("")
     }catch(e){handleErr(e);}finally{setBusy(false);}
   };
 
-  const genCover=async()=>{if(quotaHit||isBuilding)return;setBusy(true);setError("");try{let finalPrompt="";if(coverMode==="custom"&&customPrompt.trim()){finalPrompt=customPrompt.trim()+". Professional book cover, no text, no letters.";}else{const outline=(()=>{try{return JSON.parse(book.outline||"{}");}catch{return {};}})();const aiPrompt=await callGemini(`You are a professional book cover art director. Generate a detailed Pollinations.ai image prompt for a stunning, commercially competitive book cover.\n\nBook: "${outline.title}"\nGenre: ${book.genre}\nTarget Audience: ${book.target_audience}\nDescription: ${outline.description}\n\nCOVER REQUIREMENTS:\n• Describe EXACTLY what the illustration shows: subjects (age, gender, expression, pose, clothing), setting, foreground/background\n• For romance: two emotionally connected characters, chemistry visible in body language\n• For gay/LGBT+ romance: two male characters, intimate and emotionally charged interaction\n• For thriller/mystery: dark, cinematic, tense atmosphere with strong single focal point\n• For nonfiction/self-help: clean, bold, aspirational — minimalist design language\n• For fantasy/sci-fi: epic world-building detail, dramatic lighting, expansive scale\n\n• Color palette: specify 2-3 dominant colors that match the genre mood\n• Lighting: (e.g., "golden hour backlight", "neon noir", "cold winter morning", "dramatic studio")\n• Art style: (e.g., "painterly digital art", "photorealistic", "graphic novel ink", "watercolor", "CGI render")\n• Camera angle and composition (rule of thirds, centered, low angle)\n• Quality tags: masterpiece, award-winning book cover, professional commercial illustration, 4k detail\n\nCRITICAL RULES:\n• NO text, letters, words, numbers, watermarks of any kind\n• Portrait orientation optimized for book covers\n• Return ONLY the image prompt — no explanations, no JSON, just the prompt string.`);bump();finalPrompt=aiPrompt.trim()+". No text, no words, no letters.";setLastAiPrompt(finalPrompt);}const artUrl=`https://image.pollinations.ai/prompt/${encodeURIComponent(finalPrompt)}?width=832&height=1216&model=flux&nologo=true&enhance=true&seed=${Date.now()}`;const _ol=(()=>{try{return JSON.parse(book.outline||"{}");}catch{return {};}})();const finalUrl=await finalizeCoverImage(artUrl,_ol.title||book.title,getAuthorProfile().name,book.subtitle);upd({cover_art_url:artUrl,cover_image_url:finalUrl});flash(getAuthorProfile().name?"Cover generated! 🎨":"Cover generated! 🎨 (set your author name in Settings to replace the \"Author\" placeholder)");}catch(e){handleErr(e);}finally{setBusy(false);}};
+  // Generate a cover image URL — routes to Puter or Pollinations based on settings
+async function genCoverImage(prompt,opts={}){
+  const imgModel=getPuterImageModel();
+  const w=opts.width||832,h=opts.height||1216;
+  
+  if(imgModel==="pollinations"||getBackend()!=="puter"){
+    // Original Pollinations approach — URL-based, no Puter account needed
+    const url=`https://image.pollinations.ai/prompt/${encodeURIComponent(prompt.trim())}?width=${w}&height=${h}&model=flux&nologo=true&seed=${Date.now()}`;
+    return {url,method:"url"};
+  }
+  
+  // Puter.js image generation — returns an <img> element, convert to data URL
+  if(typeof puter==="undefined")throw{code:"PUTER_NOT_LOADED"};
+  const imgEl=await puter.ai.txt2img(prompt,{model:imgModel});
+  // Convert image element to canvas then data URL
+  const canvas=document.createElement("canvas");
+  canvas.width=w;canvas.height=h;
+  const ctx=canvas.getContext("2d");
+  // The returned element might be an <img> or already a data URL
+  let src="";
+  if(typeof imgEl==="string"){src=imgEl;}
+  else if(imgEl?.src){src=imgEl.src;}
+  else if(imgEl?.toString().startsWith("data:")){src=imgEl.toString();}
+  else{src=String(imgEl);}
+  
+  // If it's already a data URL, return directly
+  if(src.startsWith("data:")){
+    return {url:src,method:"data"};
+  }
+  
+  // Otherwise load the image and composite to our target size
+  return new Promise((resolve,reject)=>{
+    const img=new Image();
+    img.crossOrigin="anonymous";
+    img.onload=()=>{
+      // Cover-fit draw (crop to fill)
+      const scale=Math.max(w/img.width,h/img.height);
+      const sw=w/scale,sh=h/scale;
+      const sx=(img.width-sw)/2,sy=(img.height-sh)/2;
+      ctx.drawImage(img,sx,sy,sw,sh,0,0,w,h);
+      resolve({url:canvas.toDataURL("image/jpeg",0.9),method:"data"});
+    };
+    img.onerror=()=>reject(new Error("Puter image load failed"));
+    img.src=src;
+  });
+}
+
+const genCover=async()=>{if(quotaHit||isBuilding)return;setBusy(true);setError("");try{let finalPrompt="";if(coverMode==="custom"&&customPrompt.trim()){finalPrompt=customPrompt.trim()+". Professional book cover, no text, no letters.";}else{const outline=(()=>{try{return JSON.parse(book.outline||"{}");}catch{return {};}})();const aiPrompt=await callAI(`You are a professional book cover art director. Generate a detailed Pollinations.ai image prompt for a stunning, commercially competitive book cover.\n\nBook: "${outline.title}"\nGenre: ${book.genre}\nTarget Audience: ${book.target_audience}\nDescription: ${outline.description}\n\nCOVER REQUIREMENTS:\n• Describe EXACTLY what the illustration shows: subjects (age, gender, expression, pose, clothing), setting, foreground/background\n• For romance: two emotionally connected characters, chemistry visible in body language\n• For gay/LGBT+ romance: two male characters, intimate and emotionally charged interaction\n• For thriller/mystery: dark, cinematic, tense atmosphere with strong single focal point\n• For nonfiction/self-help: clean, bold, aspirational — minimalist design language\n• For fantasy/sci-fi: epic world-building detail, dramatic lighting, expansive scale\n\n• Color palette: specify 2-3 dominant colors that match the genre mood\n• Lighting: (e.g., "golden hour backlight", "neon noir", "cold winter morning", "dramatic studio")\n• Art style: (e.g., "painterly digital art", "photorealistic", "graphic novel ink", "watercolor", "CGI render")\n• Camera angle and composition (rule of thirds, centered, low angle)\n• Quality tags: masterpiece, award-winning book cover, professional commercial illustration, 4k detail\n\nCRITICAL RULES:\n• NO text, letters, words, numbers, watermarks of any kind\n• Portrait orientation optimized for book covers\n• Return ONLY the image prompt — no explanations, no JSON, just the prompt string.`);bump();finalPrompt=aiPrompt.trim()+". No text, no words, no letters.";setLastAiPrompt(finalPrompt);}const _artResult3=await genCoverImage(finalPrompt);const artUrl=_artResult3.url;const _ol=(()=>{try{return JSON.parse(book.outline||"{}");}catch{return {};}})();const finalUrl=await finalizeCoverImage(artUrl,_ol.title||book.title,getAuthorProfile().name,book.subtitle);upd({cover_art_url:artUrl,cover_image_url:finalUrl});flash(getAuthorProfile().name?"Cover generated! 🎨":"Cover generated! 🎨 (set your author name in Settings to replace the \"Author\" placeholder)");}catch(e){handleErr(e);}finally{setBusy(false);}};
 
   const newVariation=async()=>{if(!book?.cover_art_url&&!book?.cover_image_url)return;setBusy(true);try{const base=book.cover_art_url||book.cover_image_url;const u=new URL(base);u.searchParams.set("seed",Date.now().toString());const artUrl=u.toString();const _ol=(()=>{try{return JSON.parse(book.outline||"{}");}catch{return {};}})();const finalUrl=await finalizeCoverImage(artUrl,_ol.title||book.title,getAuthorProfile().name,book.subtitle);upd({cover_art_url:artUrl,cover_image_url:finalUrl});flash("New variation! 🎨");}catch(e){handleErr(e);}finally{setBusy(false);}};
 
@@ -3762,11 +3942,11 @@ function TranslatePanel({book,upd,quotaHit,bump,handleErr,flash}){
       const chapters=[...(book.chapters||[])];
       const toTranslate=chapters.filter(c=>c.content);
       for(let i=0;i<toTranslate.length;i++){
-        if(getUsage()>=DAILY_LIMIT){setError("Daily quota hit — translation paused. Resume tomorrow.");break;}
+        if(quotaBlocked()){setError("Daily quota hit — translation paused. Resume tomorrow.");break;}
         const ch=toTranslate[i];
         const chIdx=chapters.findIndex(c=>c.number===ch.number);
         setProgress(`Translating chapter ${i+1}/${toTranslate.length}…`);
-        const translated=await callGemini(
+        const translated=await callAI(
           `You are a professional literary translator. Translate this chapter into ${targetLang}.\n\n`+
           `Rules:\n• Preserve the author's voice, sentence rhythm, and style\n• Keep character names as-is\n• Keep all emotional beats intact\n• Natural ${targetLang} — not word-for-word literal translation\n• Return ONLY the translated text — no preamble\n\n`+
           `CHAPTER:\n${ch.content}`,
@@ -3777,7 +3957,7 @@ function TranslatePanel({book,upd,quotaHit,bump,handleErr,flash}){
       }
       // Update title & subtitle
       setProgress("Translating title…");
-      const titleRaw=await callGemini(`Translate this book title and subtitle to ${targetLang}. Return ONLY JSON: {"title":"","subtitle":""}.\nTitle: ${book.title}\nSubtitle: ${book.subtitle||""}`,0.3);
+      const titleRaw=await callAI(`Translate this book title and subtitle to ${targetLang}. Return ONLY JSON: {"title":"","subtitle":""}.\nTitle: ${book.title}\nSubtitle: ${book.subtitle||""}`,0.3);
       bump();
       const tm=titleRaw.match(/\{[\s\S]*\}/);
       let titles={title:book.title,subtitle:book.subtitle};if(tm){try{titles=JSON.parse(tm[0]);}catch(pe){/* keep defaults */}}
@@ -4105,7 +4285,7 @@ Respond ONLY with valid JSON:
   "recommended_chapter_length": "average panel count / word count per chapter",
   "monetization_tip": "Best platform and pricing strategy for this genre"
 }`;
-  const raw = await callGemini(prompt, 0.5);
+  const raw = await callAI(prompt, 0.5);
   bump();
   try{
     const m = raw.match(/\{[\s\S]*\}/);
@@ -4144,7 +4324,7 @@ Create a professional manga series concept. Respond ONLY with valid JSON:
   "chapter_structure": "How each chapter is structured (setup, escalation, cliffhanger format)",
   "recurring_themes": ["theme1","theme2","theme3"]
 }`;
-  const raw = await callGemini(prompt, 0.8);
+  const raw = await callAI(prompt, 0.8);
   bump();
   try{
     const m = raw.match(/\{[\s\S]*\}/);
@@ -4228,7 +4408,7 @@ FORMAT your response as ONLY valid JSON:
 }`;
 
     try{
-      const raw = await callGemini(prompt, 0.85);
+      const raw = await callAI(prompt, 0.85);
       bump();
       const m = raw.match(/\{[\s\S]*\}/);
       if(!m) throw {code:"PARSE", chapter: chNum};
@@ -4887,7 +5067,7 @@ function MangaEditorPage({projectId, navigate, onSettings}){
               )}
 
               {!writing ? (
-                <button onClick={writeChapters} disabled={getUsage()>=DAILY_LIMIT} className="w-full bg-gradient-to-r from-pink-500 to-purple-500 text-white py-4 rounded-xl font-semibold hover:opacity-90 disabled:opacity-40 text-base flex items-center justify-center gap-2">
+                <button onClick={writeChapters} disabled={quotaBlocked()} className="w-full bg-gradient-to-r from-pink-500 to-purple-500 text-white py-4 rounded-xl font-semibold hover:opacity-90 disabled:opacity-40 text-base flex items-center justify-center gap-2">
                   ✨ Write {chapterCount} Chapter{chapterCount!==1?"s":""}
                 </button>
               ) : (
