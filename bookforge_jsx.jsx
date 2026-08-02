@@ -1975,7 +1975,7 @@ function VoiceTrainingPanel({onClose}){
   const [saved,setSaved]=useState(false);
 
   const analyze=async()=>{
-    if(!getKey()){setError("Set your API key first.");return;}
+    if(!hasCredentials()){setError("Set your API key or enable Puter/Groq in Settings first.");return;}
     if(!sample.trim()||sample.length<200){setError("Paste at least 200 characters of your writing.");return;}
     setLoading(true);setError("");
     try{
@@ -5377,8 +5377,8 @@ function MangaEditorPage({projectId, navigate, onSettings}){
   const lastChNum = chapters.length > 0 ? Math.max(...chapters.map(c => c.number||0)) : 0;
 
   const writeChapters = async () => {
-    if(!getKey()){ onSettings(); return; }
-    if(getUsage() >= DAILY_LIMIT){ flash("Daily quota reached.", true); return; }
+    if(!hasCredentials()){ onSettings(); return; }
+    if(quotaBlocked()){ flash("Daily quota reached.", true); return; }
     cancelRef.current = false;
     setWriting(true); setWriteLog([]); setError("");
     try{
@@ -5633,7 +5633,7 @@ function MangaEditorPage({projectId, navigate, onSettings}){
                 <strong className="text-cyan-300">AI Memory:</strong> Full series bible + last {Math.min(3,chapters.length)} chapter summaries are injected into every generation. Characters, power systems, and arc stay consistent automatically.
               </div>
 
-              {getUsage() >= DAILY_LIMIT && (
+              {quotaBlocked() && (
                 <div className="bg-amber-500/20 border border-amber-500/30 text-amber-300 rounded-xl p-3 mb-4 text-sm">⏳ Daily quota reached — come back tomorrow to continue writing.</div>
               )}
 
