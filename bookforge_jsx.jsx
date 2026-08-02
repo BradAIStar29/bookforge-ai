@@ -368,7 +368,8 @@ async function callPuter(prompt,temperature=0.85,opts={}){
         // Puter returns an async iterable for streaming
         if(resp&&typeof resp[Symbol.asyncIterator]==="function"){
           for await(const part of resp){
-            const chunk=part?.text||part?.message?.content||"";
+            const raw=part?.text||part?.message?.content||"";
+            const chunk=typeof raw==="string"?raw:(Array.isArray(raw)?raw.map(p=>p?.text||"").join(""):"");
             if(chunk){
               fullText+=chunk;
               opts.onStream(fullText);
