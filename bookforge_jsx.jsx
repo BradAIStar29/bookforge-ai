@@ -23,7 +23,8 @@ const setKey=k=>localStorage.setItem("gemini_api_key",k.trim());
 // ── AI Backend selector (Gemini API key OR Puter.js free) ──
 const BACKENDS=[
   {id:"gemini",label:"Gemini API Key",desc:"Bring your own free Google AI Studio key. 1,500 req/day."},
-  {id:"puter",label:"Puter.js (Free — No Key)",desc:"400+ models incl. GPT-5.5, Claude Opus 5, Gemini 3.6. User-pays model — you pay nothing."}
+  {id:"puter",label:"Puter.js (Free — No Key)",desc:"400+ models incl. GPT-5.5, Claude Opus 5, Gemini 3.6. User-pays model — you pay nothing."},
+  {id:"groq",label:"Groq Turbo (⚡ Fastest)",desc:"500+ tokens/sec with Llama 4. Free API key, generous rate limits."}
 ];
 const getBackend=()=>localStorage.getItem("bfai_backend")||"gemini";
 const setBackend=b=>localStorage.setItem("bfai_backend",b);
@@ -55,6 +56,24 @@ const PUTER_IMAGE_MODELS=[
 ];
 const getPuterImageModel=()=>localStorage.getItem("bfai_puter_image_model")||"pollinations";
 const setPuterImageModel=m=>localStorage.setItem("bfai_puter_image_model",m);
+// ── Groq Models ──────────────────────────────────────────────────────────────────
+const GROQ_MODELS=[
+  {id:"llama-4-scout-17b-16e-instruct",label:"Llama 4 Scout 17B",desc:"Best for creative writing — rich prose"},
+  {id:"llama-4-maverick-17b-128e-instruct",label:"Llama 4 Maverick 17B",desc:"128-expert model — nuanced narratives"},
+  {id:"llama-3.3-70b-versatile",label:"Llama 3.3 70B Versatile",desc:"All-purpose — fast, reliable, great quality"},
+  {id:"llama-3.1-8b-instant",label:"Llama 3.1 8B Instant",desc:"Ultra-fast — draft outlines & metadata in seconds"},
+  {id:"mixtral-8x7b-32768",label:"Mixtral 8x7B",desc:"Mistral mixture-of-experts — long context (32K)"},
+  {id:"gemma2-9b-it",label:"Gemma 2 9B",desc:"Google's efficient model — quick + capable"},
+  {id:"deepseek-r1-distill-llama-70b",label:"DeepSeek R1 Distill 70B",desc:"Reasoning model — best for nonfiction & outlines"},
+  {id:"qwen-2.5-72b-instruct",label:"Qwen 2.5 72B",desc:"Alibaba's model — multilingual support"}
+];
+const getGroqKey=()=>localStorage.getItem("groq_api_key")||"";
+const setGroqKey=k=>localStorage.setItem("groq_api_key",k.trim());
+const getGroqModel=()=>localStorage.getItem("bfai_groq_model")||"llama-4-scout-17b-16e-instruct";
+const setGroqModel=m=>localStorage.setItem("bfai_groq_model",m);
+const GROQ_URL="https://api.groq.com/openai/v1/chat/completions";
+
+
 const getBooks=()=>ls.get("bfai_books",[]);
 const setBooks=b=>ls.set("bfai_books",b);
 const getBook=id=>getBooks().find(b=>b.id===id)||null;
@@ -69,7 +88,7 @@ const updateBook=(id,upd)=>{const books=getBooks();const i=books.findIndex(b=>b.
 const getUsage=()=>{const today=new Date().toISOString().split("T")[0];const d=ls.get("bfai_usage",{});return d.date===today?(d.count||0):0;};
 const trackUsage=()=>{const today=new Date().toISOString().split("T")[0];const d=ls.get("bfai_usage",{});const c=(d.date===today?d.count:0)+1;ls.set("bfai_usage",{date:today,count:c});return c;};
 // Quota check — Puter mode has no daily limit
-const quotaBlocked=()=>getBackend()!=="puter"&&getUsage()>=DAILY_LIMIT;
+const quotaBlocked=()=>getBackend()!=="puter"&&getBackend()!=="groq"&&getUsage()>=DAILY_LIMIT;
 // ── Languages ─────────────────────────────────────────────────────────────────
 const LANGUAGES=["English","Spanish","French","German","Italian","Portuguese","Dutch","Russian","Japanese","Korean","Chinese (Simplified)","Arabic","Hindi","Turkish","Polish","Swedish","Norwegian","Danish","Finnish","Greek","Hebrew","Indonesian","Malay","Thai","Vietnamese","Ukrainian","Czech","Hungarian","Romanian","Bulgarian","Croatian","Slovak"];
 
@@ -284,12 +303,92 @@ async function callPuter(prompt,temperature=0.85,opts={}){
   }
   throw lastErr||{code:"PUTER_ERROR",msg:"Failed after retries."};
 }
+// ── Groq API (OpenAI-compatible) ─────────────────────────────────────────────────
+async function callGroq(prompt,temperature=0.85,opts={}){
+  const key=getGroqKey();
+  if(!key)throw{code:"NO_KEY",msg:"Groq API key missing — add one in Settings."};
+  const model=getGroqModel();
+  
+  const controller=new AbortController();
+  const timeout=setTimeout(()=>controller.abort(),120000);
+  
+  let retries=0;
+  while(retries<=2){
+    try{
+      const resp=await fetch(GROQ_URL,{
+        method:"POST",
+        headers:{
+          "Content-Type":"application/json",
+          "Authorization":"Bearer "+key
+        },
+        signal:controller.signal,
+        body:JSON.stringify({
+          model:model,
+          messages:[{role:"user",content:prompt}],
+          temperature:temperature,
+          max_tokens:opts.max_tokens||32768
+        })
+      });
+      clearTimeout(timeout);
+      
+      if(!resp.ok){
+        const errBody=await resp.text().catch(()=>"");
+        if(resp.status===429){
+          // Rate limited — wait and retry
+          if(retries<2){
+            window.dispatchEvent(new CustomEvent("bfai:retry",{detail:{attempt:retries+1}}));
+            playRetryChime();
+            await sleep(RETRY_DELAYS_MS[retries]||5000);
+            retries++;
+            continue;
+          }
+          throw{code:"QUOTA",msg:"Groq rate limit reached. Wait a moment and try again."};
+        }
+        if(resp.status===401)throw{code:"BAD_KEY",msg:"Invalid Groq API key — check Settings."};
+        throw{code:"GROQ_ERROR",msg:"Groq API error ("+resp.status+"): "+errBody.slice(0,200)};
+      }
+      
+      const data=await resp.json();
+      const text=data?.choices?.[0]?.message?.content||"";
+      if(!text)throw{code:"EMPTY",msg:"Groq returned empty response — please retry."};
+      trackUsage();
+      return text;
+    }catch(e){
+      clearTimeout(timeout);
+      if(e?.name==="AbortError"){
+        if(retries<2){
+          window.dispatchEvent(new CustomEvent("bfai:retry",{detail:{attempt:retries+1}}));
+          playRetryChime();
+          await sleep(RETRY_DELAYS_MS[retries]||5000);
+          retries++;
+          continue;
+        }
+        throw{code:"TIMEOUT",msg:"Groq request timed out (120s). Retried 2x — please try again."};
+      }
+      if(e?.code==="QUOTA"||e?.code==="BAD_KEY"||e?.code==="EMPTY")throw e;
+      // Network errors — retry
+      if(retries<2&&(e?.message?.includes("fetch")||e?.message?.includes("network"))){
+        window.dispatchEvent(new CustomEvent("bfai:retry",{detail:{attempt:retries+1}}));
+        playRetryChime();
+        await sleep(RETRY_DELAYS_MS[retries]||5000);
+        retries++;
+        continue;
+      }
+      throw{code:"GROQ_ERROR",msg:e?.message||"Groq request failed"};
+    }
+  }
+  throw{code:"GROQ_ERROR",msg:"Groq request failed after retries."};
+}
+
 
 // ── Unified AI call — routes to Gemini or Puter based on settings ──
 async function callAI(prompt,temperature=0.85,opts={}){
   const backend=getBackend();
   if(backend==="puter"){
     return callPuter(prompt,temperature,opts);
+  }
+  if(backend==="groq"){
+    return callGroq(prompt,temperature,opts);
   }
   return callGemini(prompt,temperature,opts);
 }
@@ -298,6 +397,8 @@ const errMsg=e=>{
   if(e?.code==="PUTER_NOT_LOADED")return "⚠️ Puter.js not loaded. Refresh the page or switch to Gemini API key mode.";
   if(e?.code==="PUTER_AUTH")return "⚠️ Puter authentication needed. A login window should have appeared — please sign in to continue.";
   if(e?.code==="PUTER_ERROR")return "⚠️ Puter AI error: "+(e?.msg||"unknown error");
+  if(e?.code==="GROQ_ERROR")return "⚠️ Groq error: "+(e?.msg||"unknown error");
+  if(e?.code==="TIMEOUT")return "⏱️ "+(e?.msg||"Request timed out — please retry.");
   const c=e?.code||"ERROR";
   if(c==="NO_KEY"||c==="BAD_KEY")return"🔑 API key missing or invalid — check Settings.";
   if(c==="QUOTA")return"⏳ Daily Gemini limit reached. Resets at midnight Pacific Time. Progress saved!";
@@ -639,7 +740,10 @@ function SettingsModal({onClose}){
   const saveAuthor=()=>{setAuthorProfile(author);setAuthorSaved(true);setTimeout(()=>setAuthorSaved(false),2000);};
   const setAutoCorrectSetting=v=>{setAutoCorrect(v);};
   const [testStatus,setTestStatus]=useState(null); // null | "testing" | "ok" | "fail"
-  const [backendChanged,setBackendChanged]=useState(false); // null | "testing" | "ok" | "fail"
+  const [backendChanged,setBackendChanged]=useState(false);
+  const [groqKeyDraft,setGroqKeyDraft]=useState(getGroqKey());
+  const [groqKeySaved,setGroqKeySaved]=useState(false);
+  const saveGroqKey=()=>{setGroqKey(groqKeyDraft);setGroqKeySaved(true);setTimeout(()=>setGroqKeySaved(false),2000);}; // null | "testing" | "ok" | "fail"
   const testKey=async()=>{
     if(!draft.trim())return;
     setTestStatus("testing");
@@ -717,6 +821,26 @@ function SettingsModal({onClose}){
                   <p className="text-white/35 text-xs mt-3">ℹ️ The first time you generate, a Puter login window may appear. Sign in once — it's free and stores nothing in BookForge.</p>
                 </div>
               )}
+
+              {/* Groq API key (only show if groq backend) */}
+              {getBackend()==="groq"&&(
+                <div>
+                  <div className="bg-orange-500/10 border border-orange-500/20 rounded-xl p-4 mb-4">
+                    <p className="text-orange-300 text-sm font-medium mb-1">⚡ Groq = Blazing Fast (500+ tokens/sec)</p>
+                    <p className="text-white/40 text-xs leading-relaxed">Get a free API key from GroqCloud. Rate limits are generous — 30 req/min, 14,400 req/day on the free tier. <a href="https://console.groq.com/keys" target="_blank" rel="noopener noreferrer" className="text-orange-400 underline">Get a free Groq API key →</a></p>
+                  </div>
+                  <label className="text-white/60 text-sm font-medium block mb-2">Groq API Key</label>
+                  <input type="password" placeholder="gsk_..." value={groqKeyDraft} onChange={e=>setGroqKeyDraft(e.target.value)} onKeyDown={e=>e.key==="Enter"&&saveGroqKey()} className="w-full bg-white/10 border border-white/20 rounded-xl px-4 py-3 text-white placeholder-white/30 focus:outline-none focus:border-orange-500 mb-4 font-mono text-sm"/>
+                  <div className="flex gap-2 mb-4">
+                    <button onClick={saveGroqKey} disabled={!groqKeyDraft.trim()} className={`flex-1 py-3 rounded-xl font-semibold transition-all ${groqKeySaved?"bg-green-500 text-white":"bg-gradient-to-r from-orange-500 to-pink-500 text-white hover:opacity-90 disabled:opacity-50"}`}>{groqKeySaved?"✅ Saved!":"Save Groq Key"}</button>
+                  </div>
+                  <label className="text-white/60 text-sm font-medium block mb-2">Text Generation Model</label>
+                  <select value={getGroqModel()} onChange={e=>setGroqModel(e.target.value)} className="w-full bg-white/10 border border-white/20 rounded-xl px-4 py-3 text-white text-sm mb-2 focus:outline-none focus:border-orange-500">
+                    {GROQ_MODELS.map(m=><option key={m.id} value={m.id} className="bg-gray-800">{m.label} — {m.desc}</option>)}
+                  </select>
+                  <p className="text-white/35 text-xs mt-3">ℹ️ Groq is text-only — cover images still use Pollinations.ai (free, no key).</p>
+                </div>
+              )}
             </div>
           )}
           {sTab==="voice"&&<VoiceTrainingPanel onClose={onClose}/>}
@@ -780,6 +904,7 @@ function Header({onBack,title,subtitle,onSettings,onTour,activeTab,setActiveTab}
             <div className="w-10 h-1 bg-white/10 rounded-full overflow-hidden"><div className={`h-full rounded-full ${pct>=90?"bg-red-500":pct>=70?"bg-amber-500":"bg-green-500"}`} style={{width:`${pct}%`}}/></div>
           </div>
           {getBackend()==="puter"&&<span className="text-xs text-purple-400 font-medium px-2 py-1 bg-purple-500/10 rounded-lg border border-purple-500/20">⚡ Puter Free</span>}
+          {getBackend()==="groq"&&<span className="text-xs text-orange-400 font-medium px-2 py-1 bg-orange-500/10 rounded-lg border border-orange-500/20">⚡ Groq Turbo</span>}
           {qLen>0&&<div className="bg-cyan-500/20 border border-cyan-500/30 text-cyan-300 text-xs px-2.5 py-1.5 rounded-lg">⏳ Queue: {qLen}</div>}
           <button onClick={onSettings} className={`text-xs px-3 py-1.5 rounded-lg border transition-all ${getKey()?"border-white/20 text-white/50 hover:border-white/40":"border-red-500/50 text-red-400 bg-red-500/10 pulse-a"}`}>{getKey()?"⚙️ Settings":"⚠️ Set API Key"}</button>
           {onTour&&<button onClick={onTour} title="Page tour — learn how to use this page" className="text-xs px-3 py-1.5 rounded-lg border border-purple-500/40 text-purple-300/70 hover:bg-purple-500/20 transition-all" id="tour-btn">❓ Tour</button>}
@@ -2897,7 +3022,7 @@ async function genCoverImage(prompt,opts={}){
   const imgModel=getPuterImageModel();
   const w=opts.width||832,h=opts.height||1216;
   
-  if(imgModel==="pollinations"||getBackend()!=="puter"){
+  if(imgModel==="pollinations"||getBackend()==="gemini"||getBackend()==="groq"){
     // Original Pollinations approach — URL-based, no Puter account needed
     const url=`https://image.pollinations.ai/prompt/${encodeURIComponent(prompt.trim())}?width=${w}&height=${h}&model=flux&nologo=true&seed=${Date.now()}`;
     return {url,method:"url"};
