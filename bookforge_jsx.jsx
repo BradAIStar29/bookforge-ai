@@ -31,9 +31,12 @@ const setBackend=b=>localStorage.setItem("bfai_backend",b);
 
 // Puter text model options
 const PUTER_TEXT_MODELS=[
+  {id:"openai/gpt-5.6-sol",label:"GPT-5.6 Sol",desc:"OpenAI's newest flagship — best overall quality"},
+  {id:"openai/gpt-5.6-terra",label:"GPT-5.6 Terra",desc:"GPT-5.6 mid-tier — great quality, faster"},
+  {id:"openai/gpt-5.6-luna",label:"GPT-5.6 Luna",desc:"GPT-5.6 smallest — fast & efficient"},
   {id:"google/gemini-3.6-flash",label:"Gemini 3.6 Flash",desc:"Google's latest — fast, great default"},
   {id:"anthropic/claude-opus-5",label:"Claude Opus 5",desc:"Best for creative writing & long-form prose"},
-  {id:"openai/gpt-5.5",label:"GPT-5.5",desc:"OpenAI flagship — versatile, strong reasoning"},
+  {id:"openai/gpt-5.5",label:"GPT-5.5",desc:"OpenAI previous gen — versatile, strong reasoning"},
   {id:"x-ai/grok-4.5",label:"Grok 4.5",desc:"xAI — good for current events & edgy tone"},
   {id:"deepseek/deepseek-v4-pro",label:"DeepSeek V4 Pro",desc:"Excellent reasoning & structure"},
   {id:"meta-llama/llama-4-maverick",label:"Llama 4 Maverick",desc:"Meta's open-weight — solid all-rounder"},
@@ -58,18 +61,20 @@ const getPuterImageModel=()=>localStorage.getItem("bfai_puter_image_model")||"po
 const setPuterImageModel=m=>localStorage.setItem("bfai_puter_image_model",m);
 // ── Groq Models ──────────────────────────────────────────────────────────────────
 const GROQ_MODELS=[
-  {id:"llama-4-scout-17b-16e-instruct",label:"Llama 4 Scout 17B",desc:"Best for creative writing — rich prose"},
-  {id:"llama-4-maverick-17b-128e-instruct",label:"Llama 4 Maverick 17B",desc:"128-expert model — nuanced narratives"},
-  {id:"llama-3.3-70b-versatile",label:"Llama 3.3 70B Versatile",desc:"All-purpose — fast, reliable, great quality"},
-  {id:"llama-3.1-8b-instant",label:"Llama 3.1 8B Instant",desc:"Ultra-fast — draft outlines & metadata in seconds"},
-  {id:"mixtral-8x7b-32768",label:"Mixtral 8x7B",desc:"Mistral mixture-of-experts — long context (32K)"},
-  {id:"gemma2-9b-it",label:"Gemma 2 9B",desc:"Google's efficient model — quick + capable"},
-  {id:"deepseek-r1-distill-llama-70b",label:"DeepSeek R1 Distill 70B",desc:"Reasoning model — best for nonfiction & outlines"},
-  {id:"qwen-2.5-72b-instruct",label:"Qwen 2.5 72B",desc:"Alibaba's model — multilingual support"}
+  {id:"openai/gpt-oss-120b",label:"GPT-OSS 120B",desc:"OpenAI open-weight flagship — best for creative writing, 500 tok/s"},
+  {id:"openai/gpt-oss-20b",label:"GPT-OSS 20B",desc:"Ultra-fast (1000 tok/s) — outlines, metadata, quick drafts"},
+  {id:"qwen/qwen3.6-27b",label:"Qwen 3.6 27B",desc:"Strong multilingual + reasoning — preview model"},
+  {id:"llama-3.3-70b-versatile",label:"Llama 3.3 70B (retiring Aug 16)",desc:"Legacy — reliable all-purpose, being deprecated"},
+  {id:"llama-3.1-8b-instant",label:"Llama 3.1 8B (retiring Aug 16)",desc:"Legacy ultra-fast — being deprecated"}
 ];
 const getGroqKey=()=>localStorage.getItem("groq_api_key")||"";
 const setGroqKey=k=>localStorage.setItem("groq_api_key",k.trim());
-const getGroqModel=()=>localStorage.getItem("bfai_groq_model")||"llama-4-scout-17b-16e-instruct";
+const DEPRECATED_GROQ_MODELS={"llama-4-scout-17b-16e-instruct":"openai/gpt-oss-120b","llama-4-maverick-17b-128e-instruct":"openai/gpt-oss-120b","mixtral-8x7b-32768":"openai/gpt-oss-20b","gemma2-9b-it":"openai/gpt-oss-20b","deepseek-r1-distill-llama-70b":"openai/gpt-oss-120b","qwen-2.5-72b-instruct":"openai/gpt-oss-120b"};
+const getGroqModel=()=>{
+  let m=localStorage.getItem("bfai_groq_model")||"openai/gpt-oss-120b";
+  if(DEPRECATED_GROQ_MODELS[m]){localStorage.setItem("bfai_groq_model",DEPRECATED_GROQ_MODELS[m]);return DEPRECATED_GROQ_MODELS[m];}
+  return m;
+};
 const setGroqModel=m=>localStorage.setItem("bfai_groq_model",m);
 const GROQ_URL="https://api.groq.com/openai/v1/chat/completions";
 // ── Groq Rate Limit Tracking ────────────────────────────────────────────────────
@@ -3186,9 +3191,43 @@ async function genCoverImage(prompt,opts={}){
   const w=opts.width||832,h=opts.height||1216;
   
   if(imgModel==="pollinations"||getBackend()==="gemini"||getBackend()==="groq"){
-    // Original Pollinations approach — URL-based, no Puter account needed
-    const url=`https://image.pollinations.ai/prompt/${encodeURIComponent(prompt.trim())}?width=${w}&height=${h}&model=flux&nologo=true&seed=${Date.now()}`;
-    return {url,method:"url"};
+    // Pollinations URL-based approach — no Puter account needed
+    try{
+      const url=`https://image.pollinations.ai/prompt/${encodeURIComponent(prompt.trim())}?width=${w}&height=${h}&model=flux&nologo=true&seed=${Date.now()}`;
+      // Verify the URL is reachable with a quick HEAD check (3s timeout)
+      const probe=await Promise.race([
+        fetch(url,{method:"HEAD"}),
+        new Promise((_,reject)=>setTimeout(()=>reject(new Error("timeout")),3000))
+      ]);
+      if(probe.ok)return {url,method:"url"};
+    }catch(e){
+      // Pollinations unreachable — fall through to Puter.js txt2img if available
+      if(typeof puter!=="undefined"){
+        try{
+          const imgEl=await puter.ai.txt2img(prompt,{model:"openai/gpt-image-2"});
+          let src="";
+          if(typeof imgEl==="string")src=imgEl;
+          else if(imgEl?.src)src=imgEl.src;
+          else if(imgEl?.toString().startsWith("data:"))src=imgEl.toString();
+          else src=String(imgEl);
+          if(src.startsWith("data:"))return {url:src,method:"puter"};
+          // Try canvas conversion
+          if(imgEl instanceof HTMLImageElement||imgEl?.tagName==="IMG"){
+            const canvas=document.createElement("canvas");
+            canvas.width=w;canvas.height=h;
+            const ctx=canvas.getContext("2d");
+            ctx.drawImage(imgEl,0,0,w,h);
+            return {url:canvas.toDataURL("image/jpeg",0.92),method:"puter"};
+          }
+          return {url:src,method:"puter"};
+        }catch(pe){
+          // Both failed — return a placeholder data URI
+          return {url:"data:image/svg+xml;base64,"+btoa(`<svg xmlns='http://www.w3.org/2000/svg' width='${w}' height='${h}'><rect width='100%' height='100%' fill='%231a1a2e'/><text x='50%' y='50%' fill='%23888' font-size='20' text-anchor='middle' dy='.3em'>Cover generation failed — try again</text></svg>`),method:"fallback"};
+        }
+      }
+      // No Puter available — return error
+      throw{code:"IMAGE_FAILED",msg:"Cover generation failed — Pollinations unreachable and Puter.js not loaded."};
+    }
   }
   
   // Puter.js image generation — returns an <img> element, convert to data URL
