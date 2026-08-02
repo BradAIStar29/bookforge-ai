@@ -1,5 +1,6 @@
 
 const {useState,useEffect,useRef}=React;
+const {createRoot}=ReactDOM;
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 const GEMINI_URL="https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent";
