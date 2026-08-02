@@ -393,6 +393,31 @@ async function callAI(prompt,temperature=0.85,opts={}){
   return callGemini(prompt,temperature,opts);
 }
 
+// ── Test Connection ───────────────────────────────────────────────────────────
+async function testConnection(){
+  const backend=getBackend();
+  try{
+    if(backend==="gemini"){
+      if(!getKey())return{ok:false,msg:"No Gemini API key set — add one in Settings."};
+      const r=await callGemini("Say OK",0.1,{max_tokens:5});
+      return{ok:true,msg:"✅ Gemini API key works! Response: "+(r||"OK").slice(0,50)};
+    }
+    if(backend==="puter"){
+      if(typeof puter==="undefined")return{ok:false,msg:"❌ Puter.js script failed to load — check your internet connection and refresh."};
+      const r=await callPuter("Say OK",0.1,{max_tokens:5});
+      return{ok:true,msg:"✅ Puter.js works! Model: "+getPuterTextModel()+" — Response: "+(r||"OK").slice(0,50)};
+    }
+    if(backend==="groq"){
+      if(!getGroqKey())return{ok:false,msg:"No Groq API key set — add one in Settings."};
+      const r=await callGroq("Say OK",0.1,{max_tokens:5});
+      return{ok:true,msg:"✅ Groq API key works! Model: "+getGroqModel()+" — Response: "+(r||"OK").slice(0,50)};
+    }
+    return{ok:false,msg:"Unknown backend: "+backend};
+  }catch(e){
+    return{ok:false,msg:errMsg(e)};
+  }
+}
+
 const errMsg=e=>{
   if(e?.code==="PUTER_NOT_LOADED")return "⚠️ Puter.js not loaded. Refresh the page or switch to Gemini API key mode.";
   if(e?.code==="PUTER_AUTH")return "⚠️ Puter authentication needed. A login window should have appeared — please sign in to continue.";
@@ -741,6 +766,8 @@ function SettingsModal({onClose}){
   const setAutoCorrectSetting=v=>{setAutoCorrect(v);};
   const [testStatus,setTestStatus]=useState(null); // null | "testing" | "ok" | "fail"
   const [backendChanged,setBackendChanged]=useState(false);
+  const [testingConn,setTestingConn]=useState(false);
+  const [testResult,setTestResult]=useState(null);
   const [groqKeyDraft,setGroqKeyDraft]=useState(getGroqKey());
   const [groqKeySaved,setGroqKeySaved]=useState(false);
   const saveGroqKey=()=>{setGroqKey(groqKeyDraft);setGroqKeySaved(true);setTimeout(()=>setGroqKeySaved(false),2000);}; // null | "testing" | "ok" | "fail"
@@ -800,6 +827,10 @@ function SettingsModal({onClose}){
                     <button onClick={testKey} disabled={!draft.trim()||testStatus==="testing"} className={`flex-1 py-3 rounded-xl font-semibold text-sm transition-all border ${testStatus==="ok"?"bg-green-500/20 border-green-500 text-green-400":testStatus==="fail"?"bg-red-500/20 border-red-500 text-red-400":testStatus==="testing"?"border-white/20 text-white/40":"border-white/20 text-white/60 hover:border-purple-400 hover:text-white"}`}>{testStatus==="testing"?"⏳ Testing…":testStatus==="ok"?"✅ Key works!":testStatus==="fail"?"❌ Invalid key":"🔬 Test Key"}</button>
                     <button onClick={save} disabled={!draft.trim()} className={`flex-1 py-3 rounded-xl font-semibold transition-all ${saved?"bg-green-500 text-white":"bg-gradient-to-r from-purple-500 to-pink-500 text-white hover:opacity-90 disabled:opacity-50"}`}>{saved?"✅ Saved!":"Save Key"}</button>
                   </div>
+                <button onClick={async()=>{setTestingConn(true);const r=await testConnection();setTestResult(r);setTestingConn(false);}} disabled={testingConn} className={`w-full py-3 rounded-xl font-semibold transition-all mb-4 ${testingConn?"bg-white/10 text-white/50":testResult?.ok?"bg-green-500/20 text-green-300 border border-green-500/30":testResult?"bg-red-500/20 text-red-300 border border-red-500/30":"bg-gradient-to-r from-purple-500 to-pink-500 text-white hover:opacity-90"}`}>
+                  {testingConn?"⏳ Testing…":"🔌 Test Connection"}
+                </button>
+                {testResult&&<div className={`mb-4 p-3 rounded-xl text-sm ${testResult.ok?"bg-green-500/10 text-green-300":"bg-red-500/10 text-red-300"}`}>{testResult.msg}</div>}
                 </div>
               )}
 
@@ -2185,6 +2216,13 @@ function HomePage({navigate,onSettings}){
   const pct=b=>b.chapters?.length>0?(b.chapters.filter(c=>c.generated).length/b.chapters.length)*100:0;
   return(
     <div className="max-w-7xl mx-auto px-4 sm:px-6 py-8">
+          
+{getBackend()==="gemini"&&!getKey()&&(
+  <div className="bg-purple-500/10 border border-purple-500/20 rounded-xl p-3 mb-4 text-sm text-purple-300 flex items-center justify-between gap-3">
+    <span>💡 No Gemini API key set — you can use <b>Puter.js (Free, no key)</b> or <b>Groq Turbo</b> instead. Switch in Settings.</span>
+  </div>
+)}
+
       {!getKey()&&<div className="bg-amber-500/15 border border-amber-500/40 rounded-xl p-4 mb-6 flex items-center gap-3"><span className="text-2xl">🔑</span><div className="flex-1"><p className="text-amber-300 font-semibold text-sm">Gemini API key not set</p><p className="text-amber-200/50 text-xs">Required to generate books. Free from Google AI Studio.</p></div><button onClick={onSettings} className="bg-amber-500 text-black text-xs font-bold px-4 py-2 rounded-lg hover:bg-amber-400">Set Key</button></div>}
       {(()=>{
         const stalled=allBooks.filter(b=>!b.build_complete&&!b.auto_build&&!["published","ready"].includes(b.status)&&(b.needs_outline||(b.chapters?.length>0&&b.chapters.some(c=>!c.generated))));
@@ -3782,20 +3820,6 @@ function AudioStudioPanel({book,bookId,onSettings,flash}){
   const chapters=(book.chapters||[]).filter(c=>c.content);
   const addLog=msg=>setGenLog(prev=>[{msg,time:new Date().toLocaleTimeString()},...prev.slice(0,49)]);
 
-  const loadModel=async()=>{
-    if(modelState==="ready")return true;
-    setModelState("loading");setModelProgress("Starting…");
-    try{
-      await loadKokoro(msg=>{setModelProgress(msg);});
-      setModelState("ready");setModelProgress("");
-      addLog("✅ Kokoro TTS loaded and ready");
-      return true;
-    }catch(err){
-      setModelState("error");setModelProgress(err.message||"Load failed");
-      addLog("❌ Model load error: "+(err.message||String(err)));
-      return false;
-    }
-  };
 
   // Helper: split text into narration-safe chunks (max ~400 chars, split at sentence boundaries)
   const splitText=(text)=>{
@@ -4353,7 +4377,21 @@ function App(){
     </div>
   );
 }
-ReactDOM.createRoot(document.getElementById("root")).render(<ErrorBoundary><App/></ErrorBoundary>);
+ReactDOM.
+// ── Puter.js Load Check ────────────────────────────────────────────────────────
+window.addEventListener("load",()=>{
+  if(getBackend()==="puter"&&typeof puter==="undefined"){
+    setTimeout(()=>{
+      const banner=document.createElement("div");
+      banner.style.cssText="position:fixed;top:0;left:0;right:0;z-index:9999;background:#7c2d12;color:#fed7aa;padding:12px 20px;text-align:center;font-size:14px;font-family:system-ui,sans-serif";
+      banner.innerHTML='⚠️ Puter.js failed to load. Check your internet connection or <a href="#" onclick="location.reload()" style="color:#fbbf24;text-decoration:underline">refresh the page</a>. You can also switch to Gemini API mode in Settings.';
+      document.body.appendChild(banner);
+      setTimeout(()=>banner.remove(),10000);
+    },2000);
+  }
+});
+
+createRoot(document.getElementById("root")).render(<ErrorBoundary><App/></ErrorBoundary>);
 
 // ══════════════════════════════════════════════════════════════════════════════
 // 🎌 MANGA / MANHWA CREATOR — FULL SYSTEM
@@ -4470,7 +4508,7 @@ async function generateMangaChapters(bump, project, startChapter, count, onProgr
 
   // Build story memory — last 3 chapters for context
   const recentChapters = existingChapters.slice(-3).map(ch =>
-    `Ch.${ch.number} "${ch.title}": ${ch.summary}`
+    `Ch.${ch.num}: ${ch.title||""} — ${(ch.summary||"").slice(0,200)}`
   ).join("\n");
 
   const overarchingArc = `
@@ -5437,12 +5475,6 @@ function MangaExportTab({project, flash}){
   ];
 
   const sel = PLATFORMS.find(p => p.id === platform);
-  const chaptersWithArt = chapters.filter(ch =>
-    (ch.scenes||[]).some((_, si) => {
-      const chIdx = chapters.indexOf(ch);
-      return !!ch.panel_art?.[`${chIdx}-${si}`];
-    })
-  );
   const totalScenes = chapters.reduce((a,c) => a + (c.scenes?.length||0), 0);
   const totalWithArt = chapters.reduce((a,c,chIdx) =>
     a + (c.scenes||[]).filter((_,si) => !!c.panel_art?.[`${chIdx}-${si}`]).length, 0);
