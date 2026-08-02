@@ -1,0 +1,19 @@
+{
+  "properties": {
+    "answered": {
+      "type": "boolean"
+    },
+    "answer": {
+      "type": "string"
+    },
+    "context": {
+      "type": "string"
+    },
+    "question": {
+      "type": "string"
+    }
+  },
+  "type": "object",
+  "required": [],
+  "name": "HelpRequest"
+}

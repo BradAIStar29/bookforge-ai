@@ -1,0 +1,37 @@
+{
+  "name": "BookForge Help Desk",
+  "description": "When a BookForge AI user asks a question via the in-app chatbot that the bot can't answer, this workflow forwards it to Axel (the AI agent) to respond. Axel reads the question, crafts an answer, and updates the HelpRequest entity with the response.",
+  "trigger": {
+    "condition": "${ .trigger.data.answered == false }",
+    "config": {
+      "trigger_type": "entity",
+      "events": [
+        "create"
+      ],
+      "entity_name": "HelpRequest"
+    }
+  },
+  "definition": {
+    "document": {
+      "dsl": "1.0.0",
+      "name": "bookforge_help_desk",
+      "namespace": "base44",
+      "version": "1.0"
+    },
+    "do": [
+      {
+        "notify_axel": {
+          "call": "invoke_superagent_step",
+          "then": "end",
+          "with": {
+            "message": "A BookForge AI user asked for help via the in-app chatbot. Please respond and update the HelpRequest entity.\n\nQuestion: ${ .trigger.data.question }\nContext: ${ .trigger.data.context }\nHelpRequest ID: ${ .trigger.entity_id }\n\nInstructions:\n1. Read the question carefully \u2014 it's about BookForge AI (a book generation app on GitHub Pages)\n2. Answer based on your knowledge of BookForge AI: it's a 100% client-side HTML app that generates books using Gemini/Puter/Groq APIs, has 11 tabs (Library, Create, Editor with chapters/review/quality/cover/SEO/KDP/Audio/Translate, Series, Queue, Manga), uses localStorage, dual-gate publishing (75+ review, 78+ writing quality), Pollinations for covers, and is hosted at https://bradaistar29.github.io/bookforge-ai/\n3. Use the update_entities tool to update the HelpRequest entity with id ${ .trigger.entity_id }: set answered=true and answer=your response\n4. Keep your answer concise and helpful \u2014 the user will see it in the chatbot UI"
+          },
+          "x-base44": {
+            "description": "Send question to Axel for response",
+            "title": "Forward help request to Axel"
+          }
+        }
+      }
+    ]
+  }
+}

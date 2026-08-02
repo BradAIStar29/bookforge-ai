@@ -1173,7 +1173,7 @@ function Header({onBack,title,subtitle,onSettings,onTour,activeTab,setActiveTab}
       </div>
       {setActiveTab&&(
         <div id="bf-home-tabs" className="max-w-7xl mx-auto px-4 sm:px-6 flex gap-1">
-          {[["📚 Library","library"],["📗 Series","series"],["⏳ Queue","queue"],["🎌 Manga","manga"]].map(([label,id])=>(
+          {[["📚 Library","library"],["📗 Series","series"],["⏳ Queue","queue"],["💬 Help","help"],["🎌 Manga","manga"]].map(([label,id])=>(
             <button key={id} onClick={()=>setActiveTab(id)} className={`px-4 py-2.5 text-sm font-medium whitespace-nowrap rounded-t-lg transition-all ${activeTab===id?"bg-white/10 text-white border-b-2 border-purple-500":"text-white/35 hover:text-white/70"}`}>{label}</button>
           ))}
         </div>
@@ -2247,6 +2247,127 @@ function QueuePage({navigate,onSettings}){
               );
             })}
           </div>}
+      </div>
+    </div>
+  );
+}
+
+
+// ══════════════════════════════════════════════════════════════════════════════
+// HELP / CHATBOT PAGE
+// ══════════════════════════════════════════════════════════════════════════════
+function HelpPage({onSettings}){
+  const BACKEND_URL="https://axel-43bd7455.base44.app";
+  const [question,setQuestion]=useState("");
+  const [context,setContext]=useState("General");
+  const [requests,setRequests]=useState([]);
+  const [loading,setLoading]=useState(false);
+  const [checking,setChecking]=useState({});
+  const [error,setError]=useState("");
+  const [pollIntervals,setPollIntervals]=useState({});
+
+  useEffect(()=>{loadRecent();},[]);
+
+  const loadRecent=async()=>{
+    try{
+      setLoading(true);
+      const res=await fetch(`${BACKEND_URL}/functions/bookforgeHelp`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"recent"})});
+      const data=await res.json();
+      if(data.ok){setRequests(data.requests||[]);}
+    }catch(e){
+      console.error("Error loading recent questions:",e);
+    }finally{setLoading(false);}
+  };
+
+  const askQuestion=async()=>{
+    if(!question.trim()){setError("Please type a question.");return;}
+    setError("");
+    try{
+      setLoading(true);
+      const res=await fetch(`${BACKEND_URL}/functions/bookforgeHelp`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"ask",question:question.trim(),context})});
+      const data=await res.json();
+      if(data.ok){
+        setQuestion("");
+        const newReq={id:data.requestId,question:question.trim(),context,answered:false,answer:"",created_date:new Date().toISOString()};
+        setRequests([newReq,...requests]);
+        setChecking({...checking,[data.requestId]:true});
+        startPolling(data.requestId);
+      }else{
+        setError(data.message||"Failed to send question.");
+      }
+    }catch(e){
+      setError("Network error: "+e.message);
+      console.error(e);
+    }finally{setLoading(false);}
+  };
+
+  const startPolling=(requestId)=>{
+    if(pollIntervals[requestId])return;
+    const interval=setInterval(async()=>{
+      try{
+        const res=await fetch(`${BACKEND_URL}/functions/bookforgeHelp`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"check",requestId})});
+        const data=await res.json();
+        if(data.ok&&data.answered){
+          setRequests(prev=>prev.map(r=>r.id===requestId?{...r,answered:true,answer:data.answer}:r));
+          setChecking(prev=>{const n={...prev};delete n[requestId];return n;});
+          clearInterval(interval);
+          setPollIntervals(prev=>{const p={...prev};delete p[requestId];return p;});
+        }
+      }catch(e){
+        console.error("Poll error:",e);
+      }
+    },3000);
+    setPollIntervals({...pollIntervals,[requestId]:interval});
+  };
+
+  return(
+    <div className="max-w-2xl mx-auto space-y-5 pb-10">
+      <Card>
+        <h2 className="text-white text-xl font-bold mb-1">💬 Help & Questions</h2>
+        <p className="text-white/40 text-sm">Can't find what you're looking for? Ask Axel (the creator) — if our chatbot can't answer, your question gets escalated directly.</p>
+      </Card>
+
+      <Card>
+        <label className="block text-white/60 text-xs font-semibold mb-2">Your Question</label>
+        <textarea value={question} onChange={e=>setQuestion(e.target.value)} placeholder="E.g., How do I export my book as an audiobook? What API keys do I need?" className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-white placeholder-white/20 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none" rows="3" disabled={loading}/>
+        <label className="block text-white/60 text-xs font-semibold mt-3 mb-2">Context (where you were when this happened)</label>
+        <select value={context} onChange={e=>setContext(e.target.value)} className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" disabled={loading}>
+          <option>General</option>
+          <option>Library page</option>
+          <option>Create page</option>
+          <option>Editor</option>
+          <option>Settings</option>
+          <option>Cover generation</option>
+          <option>Export / Publishing</option>
+        </select>
+        {error&&<p className="text-red-400 text-xs mt-2">{error}</p>}
+        <button onClick={askQuestion} disabled={loading||!question.trim()} className="w-full mt-4 bg-gradient-to-r from-blue-500 to-cyan-500 hover:from-blue-600 hover:to-cyan-600 disabled:opacity-50 disabled:cursor-not-allowed text-white font-bold py-2 px-4 rounded-lg transition">{loading?"Sending...":"Send Question"}</button>
+      </Card>
+
+      {requests.length===0&&!loading&&<Card><p className="text-white/40 text-sm text-center">No questions yet. Ask something above!</p></Card>}
+
+      <div className="space-y-3">
+        {requests.map(req=>(
+          <Card key={req.id} className={req.answered?"border-l-2 border-l-green-500":"border-l-2 border-l-amber-500"}>
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex-1 min-w-0">
+                <p className="text-white/60 text-xs mb-1">{new Date(req.created_date).toLocaleString()}</p>
+                <p className="text-white font-medium mb-2">{req.question}</p>
+                {req.answered?(
+                  <div className="bg-green-500/10 border border-green-500/30 rounded-lg p-3 mt-2">
+                    <p className="text-green-400 text-xs font-semibold mb-1">✅ Answered by Axel</p>
+                    <p className="text-white/80 text-sm">{req.answer}</p>
+                  </div>
+                ):(
+                  <div className="flex items-center gap-2 mt-2">
+                    <Spin size="h-4 w-4"/>
+                    <p className="text-amber-400 text-xs">Waiting for response...</p>
+                  </div>
+                )}
+              </div>
+            </div>
+          </Card>
+        ))}
       </div>
     </div>
   );
@@ -4763,6 +4884,207 @@ const getMangaProject=id=>getMangaProjects().find(p=>p.id===id)||null;
 const saveMangaProject=p=>{const all=getMangaProjects();const i=all.findIndex(x=>x.id===p.id);if(i>-1)all[i]=p;else all.unshift(p);setMangaProjects(all);};
 const deleteMangaProject=id=>setMangaProjects(getMangaProjects().filter(p=>p.id!==id));
 
+// ══════════════════════════════════════════════════════════════════════════════
+// 🤖 BOOKFORGE HELP BOT — In-app chatbot with Axel escalation
+// ══════════════════════════════════════════════════════════════════════════════
+
+const HELP_FN_URL = "https://axel-43bd7455.base44.app/functions/bookforgeHelp";
+
+const BOT_KB = `You are the BookForge AI help assistant. BookForge AI is a 100% client-side web app for generating and publishing books. Here is what you know:
+
+FEATURES:
+- Library: Browse, search, filter books by genre/status. Create new books or import drafts.
+- Create Page: Enter topic, genre, audience, book length (Standard 12-15 ch / Novel 18-22 ch / Epic 25-30 ch / Custom). AI suggests titles. Generates outline for approval.
+- Editor (11 tabs): Chapters (write one-by-one or "Write All"), Review (auto-build results), Quality (Writing Quality Agent, Chapter Analysis), Cover (Pollinations.ai art + text compositing), SEO (KDP metadata), KDP (copy formatting), Audio (Kokoro TTS), Translate (multi-language), Characters, Voice Training, Notes.
+- Series: Multi-book projects with shared world/characters.
+- Queue: Batch-generate multiple books automatically.
+- Manga: Full manga/manhwa creator with panel art.
+- Settings: API key management (Gemini/Puter/Groq), author profile, voice training, auto-correct toggle.
+
+BACKENDS:
+- Gemini API: Free from Google AI Studio, 1500 req/day limit. Best for structured tasks.
+- Puter.js: Free, no key needed. 400+ models including GPT-5.6, Claude Opus 5, Gemini 3.6.
+- Groq: Fast (500 tok/s), free API key, uses GPT-OSS models.
+
+PUBLISHING:
+- Dual gate: Review Agent (75+ marketability score) AND Writing Quality Agent (78+ human-writing score).
+- Auto-build pipeline: Outline → Chapters → SEO → Cover → Review → Quality Check → Auto-correction.
+- "Write All" writes every ungenerated chapter sequentially, respecting quota.
+- Exports: EPUB, TXT, JSON, RTF, Audiobook script.
+
+TIPS:
+- Use "Write All" for efficiency — it writes all ungenerated chapters in sequence.
+- The "Improve My Odds" button auto-applies all Review Agent suggestions.
+- The "Improve My Writing" button auto-applies AI-tell rewrites across chapters.
+- Voice Training analyzes your writing samples to match your style.
+- Cover generation bakes title + author name onto AI art automatically.
+- Keyboard shortcuts: Ctrl+Enter to generate, Escape to close modals.
+- Set your author name in Settings for proper cover text.
+
+RULES:
+- Answer concisely (2-3 sentences max).
+- If the question is about something you don't know, say "I'm not sure about that — would you like me to ask Axel for help?"
+- Never make up features that don't exist.
+- Be friendly and helpful.`;
+
+const BOT_FAQS = [
+  { q: "How do I generate a book?", a: "Go to Library → New Book, enter your topic/genre/audience, pick a length (Standard/Novel/Epic), then click Generate. Once the outline is ready, approve it and the auto-build pipeline handles chapters, SEO, cover, and quality checks automatically." },
+  { q: "What's the difference between backends?", a: "Gemini is free (1500 req/day, needs API key). Puter.js is free with no key needed (400+ models). Groq is fastest (500 tok/s, free key). Switch in Settings → Backend. Puter is the easiest to start with." },
+  { q: "How does Write All work?", a: "On the Chapters tab, click 'Write All'. It writes every ungenerated chapter in sequence, stopping if quota runs out. Each chapter streams live. When all chapters are done, it can proceed to SEO/cover/review." },
+  { q: "What are the publish gates?", a: "Two scores must pass: Review Agent (75+ marketability) and Writing Quality Agent (78+ human-writing). The auto-build pipeline tries one round of self-correction if a gate fails. Downloads are locked until both pass." },
+  { q: "How do I export my book?", a: "Once both publish gates pass, go to the KDP/Publish tab for copy formatting, or use the Export buttons for EPUB, TXT, JSON, or RTF downloads. The Audio tab can generate an audiobook script." },
+  { q: "What is Voice Training?", a: "Settings → Voice Training lets you paste writing samples. The AI analyzes your style (sentence length, vocabulary, tone) and applies it to generated chapters for a consistent voice across your book." },
+];
+
+function HelpBot(){
+  const [open,setOpen]=useState(false);
+  const [messages,setMessages]=useState([{role:"bot",text:"Hey! I'm the BookForge AI assistant 🤖 Ask me anything about how to use the app, or tap a quick question below."}]);
+  const [input,setInput]=useState("");
+  const [thinking,setThinking]=useState(false);
+  const [escalating,setEscalating]=useState(false);
+  const [pendingId,setPendingId]=useState(null);
+  const pollRef=useRef(null);
+  const scrollRef=useRef(null);
+  const msgEndRef=useRef(null);
+
+  useEffect(()=>{if(msgEndRef.current)msgEndRef.current.scrollIntoView({behavior:"smooth"});},[messages,thinking]);
+
+  // Poll for Axel's response when escalated
+  useEffect(()=>{
+    if(!pendingId)return;
+    let active=true;
+    const poll=async()=>{
+      try{
+        const r=await fetch(HELP_FN_URL,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"check",requestId:pendingId})});
+        const d=await r.json();
+        if(active&&d.ok&&d.answered){
+          setMessages(prev=>[...prev,{role:"bot",text:"📋 Axel says:\n\n"+d.answer}]);
+          setPendingId(null);setEscalating(false);
+          return;
+        }
+      }catch{}
+      if(active)pollRef.current=setTimeout(poll,4000);
+    };
+    pollRef.current=setTimeout(poll,5000);
+    return()=>{active=false;if(pollRef.current)clearTimeout(pollRef.current);};
+  },[pendingId]);
+
+  const askBot=async(text)=>{
+    setThinking(true);
+    setMessages(prev=>[...prev,{role:"user",text}]);
+    setInput("");
+
+    // Check FAQ first
+    const faq=BOT_FAQS.find(f=>text.toLowerCase().includes(f.q.toLowerCase().slice(0,15))||f.q.toLowerCase().includes(text.toLowerCase().slice(0,10)));
+    if(faq){
+      setTimeout(()=>{
+        setMessages(prev=>[...prev,{role:"bot",text:faq.a+"\n\n💡 Ask another question, or tap 'Ask Axel' if you need more help."}]);
+        setThinking(false);
+      },600);
+      return;
+    }
+
+    // Try Puter.js for AI-powered answer
+    if(typeof puter!=="undefined"){
+      try{
+        const resp=await puter.ai.chat(`${BOT_KB}\n\nUser question: ${text}\n\nAnswer concisely (2-3 sentences). If you don't know, say "I'm not sure about that — would you like me to ask Axel for help?"`);
+        const answer=typeof resp==="string"?resp:(resp?.message?.content||resp?.text||JSON.stringify(resp));
+        setMessages(prev=>[...prev,{role:"bot",text:answer}]);
+        setThinking(false);
+        return;
+      }catch(e){
+        // Fall through to escalation
+      }
+    }
+
+    // Fallback: suggest asking Axel
+    setMessages(prev=>[...prev,{role:"bot",text:"I'm not sure about that. Would you like me to ask Axel (the BookForge creator) for help? Tap 'Ask Axel' below 👇"}]);
+    setThinking(false);
+  };
+
+  const askAxel=async()=>{
+    const lastUser=messages.filter(m=>m.role==="user").pop();
+    if(!lastUser)return;
+    setEscalating(true);
+    setMessages(prev=>[...prev,{role:"bot",text:"📨 Sending your question to Axel... I'll let you know when he responds!"}]);
+    try{
+      const r=await fetch(HELP_FN_URL,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"ask",question:lastUser.text,context:"BookForge AI in-app chatbot"})});
+      const d=await r.json();
+      if(d.ok){
+        setPendingId(d.requestId);
+        setMessages(prev=>[...prev,{role:"bot",text:"✅ Question sent! Axel will respond shortly. I'll show his answer here when it's ready."}]);
+      }else{
+        setMessages(prev=>[...prev,{role:"bot",text:"❌ Couldn't send to Axel. Please try again later or email brad directly."}]);
+        setEscalating(false);
+      }
+    }catch(e){
+      setMessages(prev=>[...prev,{role:"bot",text:"❌ Connection error. Make sure you're online and try again."}]);
+      setEscalating(false);
+    }
+  };
+
+  return <>
+    {/* Floating button */}
+    {!open&&<button onClick={()=>setOpen(true)} aria-label="Open help chat" className="fixed bottom-5 right-5 z-[9998] w-14 h-14 rounded-full bg-gradient-to-br from-purple-500 to-pink-500 text-white shadow-lg shadow-purple-500/30 hover:scale-105 transition-transform flex items-center justify-center text-2xl">
+      💬
+    </button>}
+    {/* Chat panel */}
+    {open&&<div className="fixed bottom-5 right-5 z-[9998] w-[360px] max-w-[calc(100vw-2rem)] h-[480px] max-h-[calc(100vh-2rem)] bg-slate-900/95 backdrop-blur-xl border border-white/15 rounded-2xl shadow-2xl flex flex-col overflow-hidden">
+      {/* Header */}
+      <div className="flex items-center justify-between px-4 py-3 bg-gradient-to-r from-purple-600/40 to-pink-600/40 border-b border-white/10">
+        <div className="flex items-center gap-2">
+          <span className="text-xl">🤖</span>
+          <div>
+            <div className="text-white font-semibold text-sm">BookForge Assistant</div>
+            <div className="text-white/40 text-xs">{escalating?"Waiting for Axel...":"Online · Ready to help"}</div>
+          </div>
+        </div>
+        <button onClick={()=>setOpen(false)} aria-label="Close chat" data-close-btn="true" className="text-white/40 hover:text-white text-lg">✕</button>
+      </div>
+      {/* Messages */}
+      <div ref={scrollRef} className="flex-1 overflow-y-auto px-3 py-3 space-y-2.5">
+        {messages.map((m,i)=>(
+          <div key={i} className={`flex ${m.role==="user"?"justify-end":"justify-start"}`}>
+            <div className={`max-w-[85%] px-3 py-2 rounded-xl text-sm leading-relaxed whitespace-pre-wrap ${m.role==="user"?"bg-purple-500/30 text-white rounded-br-sm":"bg-white/8 text-white/80 rounded-bl-sm"}`}>
+              {m.text}
+            </div>
+          </div>
+        ))}
+        {thinking&&<div className="flex justify-start"><div className="bg-white/8 px-3 py-2 rounded-xl text-sm text-white/40"><Spin size="h-4 w-4"/> Thinking…</div></div>}
+        <div ref={msgEndRef}/>
+      </div>
+      {/* Quick FAQ buttons */}
+      {messages.length<=2&&<div className="px-3 pb-2 flex flex-wrap gap-1.5">
+        {BOT_FAQS.slice(0,4).map((f,i)=>(
+          <button key={i} onClick={()=>askBot(f.q)} className="text-xs bg-white/5 text-white/60 border border-white/10 px-2.5 py-1 rounded-full hover:bg-white/10 transition-colors">{f.q.slice(0,28)}…</button>
+        ))}
+      </div>}
+      {/* Ask Axel button */}
+      {!escalating&&messages.length>1&&<div className="px-3 pb-2">
+        <button onClick={askAxel} className="w-full text-xs bg-amber-500/15 text-amber-300 border border-amber-500/25 px-3 py-1.5 rounded-lg hover:bg-amber-500/25 transition-colors flex items-center justify-center gap-1.5">
+          📨 Ask Axel for help
+        </button>
+      </div>}
+      {/* Input */}
+      <div className="px-3 pb-3 pt-1 flex gap-2 border-t border-white/5">
+        <input
+          type="text"
+          value={input}
+          onChange={e=>setInput(e.target.value)}
+          onKeyDown={e=>{if(e.key==="Enter"&&input.trim()&&!thinking)askBot(input.trim());}}
+          placeholder="Ask a question…"
+          className="flex-1 bg-white/5 border border-white/10 text-white text-sm rounded-xl px-3 py-2 placeholder-white/30 focus:outline-none focus:border-purple-500/40"
+        />
+        <button
+          onClick={()=>{if(input.trim()&&!thinking)askBot(input.trim());}}
+          disabled={!input.trim()||thinking}
+          className="bg-gradient-to-r from-purple-500 to-pink-500 text-white px-3 py-2 rounded-xl text-sm font-medium disabled:opacity-40"
+        >➤</button>
+      </div>
+    </div>}
+  </>;
+}
+
 function App(){
   const savedNav=getNavState();
   const [page,setPage]=useState(savedNav?.page||"home");
@@ -4826,10 +5148,12 @@ function App(){
       {isHome&&homeTab==="library"&&<HomePage navigate={navigate} onSettings={()=>setShowSettings(true)}/>}
       {isHome&&homeTab==="series"&&<SeriesPage navigate={navigate} onSettings={()=>setShowSettings(true)}/>}
       {isHome&&homeTab==="queue"&&<QueuePage navigate={navigate} onSettings={()=>setShowSettings(true)}/>}
+      {isHome&&homeTab==="help"&&<HelpPage onSettings={()=>setShowSettings(true)}/>}
       {isHome&&homeTab==="manga"&&<MangaHomePage navigate={navigate} onSettings={()=>setShowSettings(true)}/>}
       {page==="manga-editor"&&<MangaEditorPage projectId={bookId} navigate={navigate} onSettings={()=>setShowSettings(true)}/>}
       {isCreate&&<CreatePage navigate={navigate} onSettings={()=>setShowSettings(true)}/>}
       {isEditor&&<EditorPage bookId={bookId} navigate={navigate} onSettings={()=>setShowSettings(true)}/>}
+      <HelpBot/>
     </div>
   );
 }
