@@ -72,6 +72,23 @@ const setGroqKey=k=>localStorage.setItem("groq_api_key",k.trim());
 const getGroqModel=()=>localStorage.getItem("bfai_groq_model")||"llama-4-scout-17b-16e-instruct";
 const setGroqModel=m=>localStorage.setItem("bfai_groq_model",m);
 const GROQ_URL="https://api.groq.com/openai/v1/chat/completions";
+// ── Groq Rate Limit Tracking ────────────────────────────────────────────────────
+let _groqRateState={remaining:null,limit:null,resetSec:null,tokensRemaining:null,tokensLimit:null};
+function getGroqRate(){return _groqRateState;}
+function setGroqRate(headers){
+  try{
+    _groqRateState={
+      remaining:headers.get("x-ratelimit-remaining-requests")?parseInt(headers.get("x-ratelimit-remaining-requests")):_groqRateState.remaining,
+      limit:headers.get("x-ratelimit-limit-requests")?parseInt(headers.get("x-ratelimit-limit-requests")):_groqRateState.limit,
+      resetSec:headers.get("x-ratelimit-reset-requests")?parseFloat(headers.get("x-ratelimit-reset-requests")):_groqRateState.resetSec,
+      tokensRemaining:headers.get("x-ratelimit-remaining-tokens")?parseInt(headers.get("x-ratelimit-remaining-tokens")):_groqRateState.tokensRemaining,
+      tokensLimit:headers.get("x-ratelimit-limit-tokens")?parseInt(headers.get("x-ratelimit-limit-tokens")):_groqRateState.tokensLimit
+    };
+    window.dispatchEvent(new CustomEvent("bfai:groq-rate",{detail:_groqRateState}));
+  }catch(e){}
+}
+
+
 
 
 const getBooks=()=>ls.get("bfai_books",[]);
@@ -326,10 +343,46 @@ async function callGroq(prompt,temperature=0.85,opts={}){
           model:model,
           messages:[{role:"user",content:prompt}],
           temperature:temperature,
-          max_tokens:opts.max_tokens||32768
+          max_tokens:opts.max_tokens||32768,
+          stream:!!opts.onStream
         })
       });
       clearTimeout(timeout);
+      
+      // Capture rate limit headers
+      setGroqRate(resp.headers);
+      
+      // Streaming mode — read SSE chunks
+      if(opts.onStream&&resp.ok){
+        const reader=resp.body.getReader();
+        const decoder=new TextDecoder();
+        let fullText="";
+        let buffer="";
+        while(true){
+          const{done,value}=await reader.read();
+          if(done)break;
+          buffer+=decoder.decode(value,{stream:true});
+          const lines=buffer.split("\n");
+          buffer=lines.pop()||"";
+          for(const line of lines){
+            if(line.startsWith("data: ")){
+              const data=line.slice(6).trim();
+              if(data==="[DONE]")continue;
+              try{
+                const json=JSON.parse(data);
+                const delta=json?.choices?.[0]?.delta?.content||"";
+                if(delta){
+                  fullText+=delta;
+                  opts.onStream(fullText);
+                }
+              }catch(e){}
+            }
+          }
+        }
+        if(!fullText)throw{code:"EMPTY",msg:"Groq returned empty stream — please retry."};
+        trackUsage();
+        return fullText;
+      }
       
       if(!resp.ok){
         const errBody=await resp.text().catch(()=>"");
@@ -391,6 +444,18 @@ async function callAI(prompt,temperature=0.85,opts={}){
     return callGroq(prompt,temperature,opts);
   }
   return callGemini(prompt,temperature,opts);
+}
+
+// Streaming version — only Groq supports true streaming; others fall back to batch + onStream at end
+async function callAIStream(prompt,temperature=0.85,opts={}){
+  const backend=getBackend();
+  if(backend==="groq"&&opts.onStream){
+    return callGroq(prompt,temperature,opts);
+  }
+  // Fallback: generate all at once, then deliver
+  const text=await callAI(prompt,temperature,opts);
+  if(opts.onStream)opts.onStream(text);
+  return text;
 }
 
 // ── Test Connection ───────────────────────────────────────────────────────────
@@ -918,9 +983,18 @@ function SettingsModal({onClose}){
 // ── Header ────────────────────────────────────────────────────────────────────
 function Header({onBack,title,subtitle,onSettings,onTour,activeTab,setActiveTab}){
   const [usage,setUsage]=useState(getUsage());
-  useEffect(()=>{const t=setInterval(()=>setUsage(getUsage()),3000);return()=>clearInterval(t);},[]);
+  const [groqRate,setGroqRateState]=useState(getGroqRate());
+  useEffect(()=>{
+    const t=setInterval(()=>setUsage(getUsage()),3000);
+    const onRate=e=>setGroqRateState(e.detail);
+    window.addEventListener("bfai:groq-rate",onRate);
+    return()=>{clearInterval(t);window.removeEventListener("bfai:groq-rate",onRate);};
+  },[]);
   const pct=Math.min(Math.round((usage/DAILY_LIMIT)*100),100);
   const qLen=getQueue().length;
+  const isGroq=getBackend()==="groq";
+  const groqPct=groqRate.remaining!=null&&groqRate.limit!=null?Math.round((groqRate.remaining/groqRate.limit)*100):100;
+  const groqTokenPct=groqRate.tokensRemaining!=null&&groqRate.tokensLimit!=null?Math.round((groqRate.tokensRemaining/groqRate.tokensLimit)*100):100;
   return(
     <div className="border-b border-white/10 bg-black/30 backdrop-blur-sm sticky top-0 z-20">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 py-3 flex items-center justify-between gap-3">
@@ -930,12 +1004,27 @@ function Header({onBack,title,subtitle,onSettings,onTour,activeTab,setActiveTab}
           <div className="min-w-0"><h1 className="text-white font-bold text-base leading-tight truncate">{title||"BookForge AI"}</h1>{subtitle&&<p className="text-white/30 text-xs truncate">{subtitle}</p>}</div>
         </div>
         <div className="flex items-center gap-2 shrink-0">
-          <div className="bg-white/5 border border-white/10 rounded-lg px-3 py-1.5 flex items-center gap-2">
-            <span className={`text-xs font-bold ${pct>=90?"text-red-400":pct>=70?"text-amber-400":"text-green-400"}`}>{usage}/{DAILY_LIMIT}</span>
-            <div className="w-10 h-1 bg-white/10 rounded-full overflow-hidden"><div className={`h-full rounded-full ${pct>=90?"bg-red-500":pct>=70?"bg-amber-500":"bg-green-500"}`} style={{width:`${pct}%`}}/></div>
-          </div>
+          {getBackend()==="gemini"&&(
+            <div className="bg-white/5 border border-white/10 rounded-lg px-3 py-1.5 flex items-center gap-2">
+              <span className={`text-xs font-bold ${pct>=90?"text-red-400":pct>=70?"text-amber-400":"text-green-400"}`}>{usage}/{DAILY_LIMIT}</span>
+              <div className="w-10 h-1 bg-white/10 rounded-full overflow-hidden"><div className={`h-full rounded-full ${pct>=90?"bg-red-500":pct>=70?"bg-amber-500":"bg-green-500"}`} style={{width:`${pct}%`}}/></div>
+            </div>
+          )}
           {getBackend()==="puter"&&<span className="text-xs text-purple-400 font-medium px-2 py-1 bg-purple-500/10 rounded-lg border border-purple-500/20">⚡ Puter Free</span>}
-          {getBackend()==="groq"&&<span className="text-xs text-orange-400 font-medium px-2 py-1 bg-orange-500/10 rounded-lg border border-orange-500/20">⚡ Groq Turbo</span>}
+          {getBackend()==="groq"&&(
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-orange-400 font-medium px-2 py-1 bg-orange-500/10 rounded-lg border border-orange-500/20">⚡ Groq Turbo</span>
+              {groqRate.remaining!=null&&(
+                <div className="bg-white/5 border border-white/10 rounded-lg px-2.5 py-1.5 flex items-center gap-2" title={`Groq rate limit: ${groqRate.remaining}/${groqRate.limit} requests left this minute`}>
+                  <span className={`text-xs font-bold ${groqPct>=60?"text-green-400":groqPct>=30?"text-amber-400":"text-red-400"}`}>{groqRate.remaining}/{groqRate.limit}</span>
+                  <div className="w-10 h-1 bg-white/10 rounded-full overflow-hidden"><div className={`h-full rounded-full ${groqPct>=60?"bg-green-500":groqPct>=30?"bg-amber-500":"bg-red-500"}`} style={{width:`${groqPct}%`}}/></div>
+                  {groqRate.tokensRemaining!=null&&(
+                    <span className={`text-xs ${groqTokenPct>=60?"text-green-400":groqTokenPct>=30?"text-amber-400":"text-red-400"}`} title="Token budget remaining">{(groqRate.tokensRemaining/1000).toFixed(0)}K tok</span>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
           {qLen>0&&<div className="bg-cyan-500/20 border border-cyan-500/30 text-cyan-300 text-xs px-2.5 py-1.5 rounded-lg">⏳ Queue: {qLen}</div>}
           <button onClick={onSettings} className={`text-xs px-3 py-1.5 rounded-lg border transition-all ${getKey()?"border-white/20 text-white/50 hover:border-white/40":"border-red-500/50 text-red-400 bg-red-500/10 pulse-a"}`}>{getKey()?"⚙️ Settings":"⚠️ Set API Key"}</button>
           {onTour&&<button onClick={onTour} title="Page tour — learn how to use this page" className="text-xs px-3 py-1.5 rounded-lg border border-purple-500/40 text-purple-300/70 hover:bg-purple-500/20 transition-all" id="tour-btn">❓ Tour</button>}
@@ -2698,6 +2787,7 @@ function EditorPage({bookId,navigate,onSettings}){
   const [busyStep,setBusyStep]=useState("");
   const [altTitles,setAltTitles]=useState([]);
   const [busyCh,setBusyCh]=useState(null);
+  const [streamText,setStreamText]=useState(null);
   const [error,setError]=useState("");
   const [success,setSuccess]=useState("");
   const [selCh,setSelCh]=useState(0);
@@ -2777,7 +2867,8 @@ function EditorPage({bookId,navigate,onSettings}){
           const charCtx=chars.length?`\n\nESTABLISHED CHARACTERS (maintain exact consistency):\n${chars.map(c=>`${c.name} [${c.role||""}]: ${c.appearance||""} — ${c.personality||""}`).join("\n")}`:"";
           const langNote=b.writing_language&&b.writing_language!=="English"?`\n\nWRITE IN: ${b.writing_language}`:"";
           const nonfictionNote=b.nonfiction_mode?"\n\nNONFICTION MODE: End the chapter with a clearly marked Exercise, Reflection question, and Action Step.":"";
-          const content=await callAI(`Write Chapter ${chapters[i].number}: "${chapters[i].title}" for a ${b.genre} book titled "${outline.title}".${seriesCtx}${voiceCtx}${charCtx}${langNote}${nonfictionNote}\n\nChapter: ${chapters[i].description}\nPrevious: ${prev}\nAudience: ${b.target_audience}\n\n${(()=>{const tw=ch?.target_words||3800;return `${Math.round(tw*0.75).toLocaleString()}–${tw.toLocaleString()} words`;})()}. Match genre tone precisely.\n\nSTRUCTURE:\n• 3-5 distinct scenes per chapter, separated by: ⁂\n• Each scene has a clear goal → obstacle → outcome\n• Chapter must END on a hook, unresolved tension, or revelation that forces reading on\n• DO NOT wrap up cleanly — the best chapters end mid-breath\n\nWRITING RULES — violating these will get this chapter rejected:\n• NEVER start a sentence with 'He/She/They couldn't help but', 'In that moment', 'It dawned on', 'Something about the way', 'A wave of', 'A surge of'\n• NEVER state emotions directly ('he felt sad', 'warmth spread through her') — express through physical action, dialogue, or specific sensory detail\n• NEVER use em-dashes for dramatic effect more than once per page\n• VARY sentence length violently: one-word sentences. Fragments. Then a long, breathing sentence that winds through a scene and refuses to end neatly.\n• Dialogue must be messy and human: people talk past each other, leave things half-said, interrupt, change subject\n• Use SPECIFIC details: not 'the coffee shop smelled like coffee' but the burnt-sugar smell of the espresso machine at 6am, the sticky ring on the table from someone's iced latte\n• No clean emotional resolutions — conflict leaves residue\n• Character psychology must be specific, not convenient\n• Read like a novel — no chapter summaries, no scene headers, no markdown`);
+          const content=await callAI(`Write Chapter ${chapters[i].number}: "${chapters[i].title}" for a ${b.genre} book titled "${outline.title}".${seriesCtx}${voiceCtx}${charCtx}${langNote}${nonfictionNote}\n\nChapter: ${chapters[i].description}\nPrevious: ${prev}\nAudience: ${b.target_audience}\n\n${(()=>{const tw=ch?.target_words||3800;return `${Math.round(tw*0.75).toLocaleString()}–${tw.toLocaleString()} words`;})()}. Match genre tone precisely.\n\nSTRUCTURE:\n• 3-5 distinct scenes per chapter, separated by: ⁂\n• Each scene has a clear goal → obstacle → outcome\n• Chapter must END on a hook, unresolved tension, or revelation that forces reading on\n• DO NOT wrap up cleanly — the best chapters end mid-breath\n\nWRITING RULES — violating these will get this chapter rejected:\n• NEVER start a sentence with 'He/She/They couldn't help but', 'In that moment', 'It dawned on', 'Something about the way', 'A wave of', 'A surge of'\n• NEVER state emotions directly ('he felt sad', 'warmth spread through her') — express through physical action, dialogue, or specific sensory detail\n• NEVER use em-dashes for dramatic effect more than once per page\n• VARY sentence length violently: one-word sentences. Fragments. Then a long, breathing sentence that winds through a scene and refuses to end neatly.\n• Dialogue must be messy and human: people talk past each other, leave things half-said, interrupt, change subject\n• Use SPECIFIC details: not 'the coffee shop smelled like coffee' but the burnt-sugar smell of the espresso machine at 6am, the sticky ring on the table from someone's iced latte\n• No clean emotional resolutions — conflict leaves residue\n• Character psychology must be specific, not convenient\n• Read like a novel — no chapter summaries, no scene headers, no markdown`,0.85,{onStream:t=>{setBuildStep(`Ch.${i+1}/${chapters.length}: ${t.split(/\s+/).filter(Boolean).length} words streamed…`)}});
+          setStreamText(null);
           bump();chapters[i]={...chapters[i],content,generated:true};
           const wc=chapters.reduce((a,c)=>a+(c.content?c.content.split(/\s+/).length:0),0);
           updateBook(bookId,{chapters:[...chapters],word_count:wc});setBook(getBook(bookId));
@@ -2931,7 +3022,7 @@ function EditorPage({bookId,navigate,onSettings}){
   };
 
   const genChapter=async(idx)=>{
-    if(quotaHit||isBuilding)return;setBusyCh(idx);setError("");
+    if(quotaHit||isBuilding)return;setBusyCh(idx);setError("");setStreamText("");
     try{
       const outline=(()=>{try{return JSON.parse(book.outline||"{}");}catch{return {};}})();const ch=outline.chapters?.[idx];if(!ch){setError("Chapter outline missing — regenerate the outline.");setBusyCh(null);return;}
       const prevChaps=(book.chapters||[]).slice(0,idx).filter(c=>c.generated);
@@ -2956,7 +3047,7 @@ function EditorPage({bookId,navigate,onSettings}){
         ?{build_complete:true,build_complete_date:new Date().toISOString(),gates_passed:curB?.review?.verdict==="PASS"&&curB?.manuscript_quality?.manuscript_verdict==="PASS"}
         :{};
       upd({chapters,word_count:wc,status:"writing",...extraStamps});flash(`Chapter ${idx+1} written! ✍️`);
-    }catch(e){handleErr(e);}finally{setBusyCh(null);}
+    }catch(e){handleErr(e);}finally{setBusyCh(null);setStreamText(null);}
   };
 
   const genChapterIllustration=async(idx)=>{
@@ -3310,7 +3401,16 @@ const genCover=async()=>{if(quotaHit||isBuilding)return;setBusy(true);setError("
 })():<span className="text-white/20 text-xs shrink-0">Pending</span>}</div>)}</div><div className="mt-5 bg-white/5 rounded-xl p-4"><div className="flex justify-between text-xs text-white/40 mb-2"><span>Progress</span><span>{book.chapters.filter(c=>c.generated).length}/{book.chapters.length} chapters</span></div><div className="h-2 bg-white/10 rounded-full overflow-hidden"><div className="h-full bg-gradient-to-r from-purple-500 to-pink-500 rounded-full" style={{width:`${(book.chapters.filter(c=>c.generated).length/book.chapters.length)*100}%`}}/></div></div></>}{(!book.chapters||book.chapters.length===0)&&isBuilding&&<div className="text-center py-8 text-white/30"><Spin/><p className="mt-3 text-sm">Generating outline…</p></div>}<div className="mt-5 flex items-center gap-3 pt-4 border-t border-white/10"><button onClick={()=>downloadBookJSON(book)} className="text-xs px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-white/60 hover:bg-white/10 hover:text-white/90 transition-all flex items-center gap-2">💾 Export Backup (JSON)</button><label className="text-xs px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-white/60 hover:bg-white/10 hover:text-white/90 transition-all flex items-center gap-2 cursor-pointer">📥 Import Backup<input type="file" accept=".json" className="hidden" onChange={async(e)=>{const file=e.target.files?.[0];if(!file)return;try{const imported=await importBookJSON(file);const books=JSON.parse(localStorage.getItem("bfai_books")||"[]");books.unshift(imported);localStorage.setItem("bfai_books",JSON.stringify(books));alert("Imported \""+imported.title+"\" successfully!");window.location.reload();}catch(err){alert("Import failed: "+err.message);}}}/></label></div></Card></div>}
 
         {/* CHAPTERS */}
-        {tab===1&&<div className="grid grid-cols-1 lg:grid-cols-3 gap-5"><div className="lg:col-span-1"><div className="bg-white/5 border border-white/10 rounded-2xl p-4 sticky top-24"><div className="flex items-center justify-between mb-3"><h3 className="text-white font-semibold text-sm">Chapters</h3>{!isBuilding&&<button onClick={async()=>{for(const i of (book.chapters||[]).map((_,i)=>i).filter(i=>!(book.chapters?.[i]?.generated))){if(quotaHit)break;await genChapter(i);}}} disabled={busy||busyCh!==null||quotaHit||isBuilding} className="text-xs bg-purple-500/20 text-purple-300 border border-purple-500/30 px-3 py-1.5 rounded-lg hover:bg-purple-500/30 disabled:opacity-40">Write All</button>}</div><div className="space-y-1">{(book.chapters||[]).map((ch,i)=><button key={i} onClick={()=>setSelCh(i)} className={`w-full text-left px-3 py-2 rounded-lg text-sm transition-all ${selCh===i?"bg-purple-500/20 text-white border border-purple-500/30":"text-white/50 hover:bg-white/5"}`}><span className={ch.generated?"text-green-400":""}>{ch.generated?"✓ ":""}</span>{ch.number}. {ch.title}</button>)}</div></div></div><div className="lg:col-span-2">{book.chapters?.[selCh]&&<Card><div className="flex items-start justify-between mb-5 gap-4"><div><h2 className="text-white text-lg font-bold">Ch. {book.chapters?.[selCh].number}: {book.chapters?.[selCh].title}</h2><p className="text-white/35 text-sm mt-1">{book.chapters?.[selCh].description}</p></div>{!isBuilding&&<div className="flex gap-2 shrink-0"><button onClick={()=>genChapterIllustration(selCh)} disabled={busyCh!==null||quotaHit||isBuilding||busy} className="bg-white/5 border border-white/10 text-white/60 px-3 py-2 rounded-xl font-medium text-sm hover:bg-white/10 disabled:opacity-40 flex items-center gap-1.5" title="Generate chapter illustration">🖼️</button><button onClick={()=>genChapter(selCh)} disabled={busyCh!==null||quotaHit||isBuilding} className="bg-gradient-to-r from-purple-500 to-pink-500 text-white px-4 py-2 rounded-xl font-medium text-sm hover:opacity-90 disabled:opacity-50 flex items-center gap-2">{busyCh===selCh?<><Spin size="h-4 w-4"/>Writing…</>:book.chapters?.[selCh].generated?"✍️ Rewrite":"✍️ Write"}</button></div>}</div>{book.chapters?.[selCh]?.illustration_url&&<div className="mb-4"><img src={book.chapters?.[selCh].illustration_url} alt={`Chapter ${book.chapters?.[selCh].number} illustration`} className="w-full rounded-xl max-h-48 object-cover border border-white/10"/><p className="text-white/20 text-xs mt-1 text-center italic">{book.chapters?.[selCh].illustration_prompt?.slice(0,80)}…</p></div>}{book.chapters?.[selCh].content?<ChapterEditor book={book} chIdx={selCh} upd={upd}/>:<div className="text-center py-16 text-white/25"><div className="text-4xl mb-3">✍️</div><p>{isBuilding?"Generating…":"Click Write to generate"}</p></div>}</Card>}</div></div>}
+        {tab===1&&<div className="grid grid-cols-1 lg:grid-cols-3 gap-5"><div className="lg:col-span-1"><div className="bg-white/5 border border-white/10 rounded-2xl p-4 sticky top-24"><div className="flex items-center justify-between mb-3"><h3 className="text-white font-semibold text-sm">Chapters</h3>{!isBuilding&&<button onClick={async()=>{for(const i of (book.chapters||[]).map((_,i)=>i).filter(i=>!(book.chapters?.[i]?.generated))){if(quotaHit)break;await genChapter(i);}}} disabled={busy||busyCh!==null||quotaHit||isBuilding} className="text-xs bg-purple-500/20 text-purple-300 border border-purple-500/30 px-3 py-1.5 rounded-lg hover:bg-purple-500/30 disabled:opacity-40">Write All</button>}</div><div className="space-y-1">{(book.chapters||[]).map((ch,i)=><button key={i} onClick={()=>setSelCh(i)} className={`w-full text-left px-3 py-2 rounded-lg text-sm transition-all ${selCh===i?"bg-purple-500/20 text-white border border-purple-500/30":"text-white/50 hover:bg-white/5"}`}><span className={ch.generated?"text-green-400":""}>{ch.generated?"✓ ":""}</span>{ch.number}. {ch.title}</button>)}</div></div></div><div className="lg:col-span-2">{book.chapters?.[selCh]&&<Card><div className="flex items-start justify-between mb-5 gap-4"><div><h2 className="text-white text-lg font-bold">Ch. {book.chapters?.[selCh].number}: {book.chapters?.[selCh].title}</h2><p className="text-white/35 text-sm mt-1">{book.chapters?.[selCh].description}</p></div>{!isBuilding&&<div className="flex gap-2 shrink-0"><button onClick={()=>genChapterIllustration(selCh)} disabled={busyCh!==null||quotaHit||isBuilding||busy} className="bg-white/5 border border-white/10 text-white/60 px-3 py-2 rounded-xl font-medium text-sm hover:bg-white/10 disabled:opacity-40 flex items-center gap-1.5" title="Generate chapter illustration">🖼️</button><button onClick={()=>genChapter(selCh)} disabled={busyCh!==null||quotaHit||isBuilding} className="bg-gradient-to-r from-purple-500 to-pink-500 text-white px-4 py-2 rounded-xl font-medium text-sm hover:opacity-90 disabled:opacity-50 flex items-center gap-2">{busyCh===selCh?<><Spin size="h-4 w-4"/>Writing…</>:book.chapters?.[selCh].generated?"✍️ Rewrite":"✍️ Write"}</button></div>}</div>{book.chapters?.[selCh]?.illustration_url&&<div className="mb-4"><img src={book.chapters?.[selCh].illustration_url} alt={`Chapter ${book.chapters?.[selCh].number} illustration`} className="w-full rounded-xl max-h-48 object-cover border border-white/10"/><p className="text-white/20 text-xs mt-1 text-center italic">{book.chapters?.[selCh].illustration_prompt?.slice(0,80)}…</p></div>}{streamText&&busyCh===selCh?(
+            <div className="rounded-xl border border-purple-500/30 bg-purple-500/5 p-4 max-h-[500px] overflow-y-auto">
+              <div className="flex items-center gap-2 mb-3 pb-2 border-b border-white/10">
+                <Spin size="h-4 w-4"/>
+                <span className="text-purple-300 text-sm font-medium">Live writing — streaming from {getBackend()==="groq"?"Groq ⚡":getBackend()==="puter"?"Puter":"Gemini"}…</span>
+                <span className="text-white/30 text-xs ml-auto">{streamText.split(/\s+/).filter(Boolean).length} words</span>
+              </div>
+              <div className="text-white/70 text-sm leading-relaxed whitespace-pre-wrap font-serif">{streamText}<span className="inline-block w-2 h-4 bg-purple-400 animate-pulse ml-0.5"/></div>
+            </div>
+          ):book.chapters?.[selCh].content?<ChapterEditor book={book} chIdx={selCh} upd={upd}/>:<div className="text-center py-16 text-white/25"><div className="text-4xl mb-3">✍️</div><p>{isBuilding?"Generating…":"Click Write to generate"}</p></div>}</Card>}</div></div>}
 
         {/* COVER */}
         {tab===2&&<div className="max-w-5xl mx-auto">{!getAuthorProfile().name&&<div className="bg-amber-500/15 border border-amber-500/40 rounded-xl p-4 mb-6 flex items-center gap-3"><span className="text-2xl">✍️</span><div className="flex-1"><p className="text-amber-300 font-semibold text-sm">No author name set</p><p className="text-amber-200/50 text-xs">Your cover will show "AUTHOR" as a placeholder until you add your name.</p></div><button onClick={onSettings} className="bg-amber-500 text-black text-xs font-bold px-4 py-2 rounded-lg hover:bg-amber-400 whitespace-nowrap">Set Name</button></div>}<div className="grid grid-cols-1 lg:grid-cols-2 gap-8"><div><h2 className="text-white text-xl font-bold mb-4">Cover Preview</h2>{book.cover_image_url?<><img src={book.cover_image_url} alt="Cover" className="w-full max-w-xs rounded-2xl shadow-2xl shadow-purple-900/60 mx-auto block"/><div className="flex gap-2 mt-4 justify-center"><button onClick={newVariation} disabled={busy||isBuilding} className="text-sm border border-white/20 text-white/50 px-4 py-2 rounded-lg hover:bg-white/5 disabled:opacity-40">🎲 Variation</button><a href={book.cover_image_url} download={`${(book.title||"cover").replace(/[^a-z0-9]/gi,"_")}_cover.jpg`} className="text-sm border border-white/20 text-white/50 px-4 py-2 rounded-lg hover:bg-white/5">⬇️ Download</a></div></>:<div className="w-full max-w-xs aspect-[2/3] bg-white/5 border-2 border-dashed border-white/15 rounded-2xl flex items-center justify-center mx-auto"><div className="text-center text-white/20">{isBuilding?<><Spin/><p className="text-sm mt-2">Generating…</p></>:<><div className="text-5xl mb-2">🎨</div><p className="text-sm">Cover appears here</p></>}</div></div>}</div><div className="space-y-5"><h2 className="text-white text-xl font-bold">Cover Settings</h2><div className="bg-white/5 border border-white/10 rounded-xl p-1 flex gap-1">{[["auto","✨ AI Auto"],["custom","✏️ Custom"]].map(([m,label])=><button key={m} onClick={()=>setCoverMode(m)} className={`flex-1 py-2 rounded-lg text-sm font-medium transition-all ${coverMode===m?"bg-purple-500 text-white":"text-white/40 hover:text-white"}`}>{label}</button>)}</div>{coverMode==="auto"?<div className="bg-white/5 border border-white/10 rounded-xl p-4 text-sm text-white/50">Gemini analyzes your book and writes a detailed character-specific prompt.{lastAiPrompt&&<p className="text-white/25 text-xs mt-3 italic leading-relaxed">{lastAiPrompt}</p>}</div>:<div><label className="text-white/60 text-sm font-medium block mb-2">Describe your cover</label><div className="flex flex-wrap gap-1.5 mb-2">{[["🌅 Painterly","painterly digital art, warm golden light, cinematic depth"],["🎨 Watercolor","loose expressive watercolor illustration, soft edges, artistic"],["📸 Photorealistic","hyperrealistic photography, studio lighting, cinematic"],["🖤 Dark Ink","dark ink graphic novel style, high contrast, moody shadows"],["✨ Fantasy","epic fantasy concept art, magical atmosphere, dramatic lighting, ArtStation"],["💫 Minimalist","clean minimalist design, bold typography space, subtle gradient background, modern"],["🌃 Neon Noir","cyberpunk neon noir, rain-slicked streets, atmospheric fog"],["🌸 Soft Romance","soft romantic illustration, warm pastels, bokeh background, dreamy"]].map(([label,tag])=><button key={label} onClick={()=>setCustomPrompt(p=>(p?p+", ":"")+tag)} className="text-xs bg-white/5 border border-white/10 text-white/50 hover:text-white/80 hover:border-purple-500/40 px-2.5 py-1.5 rounded-lg transition-all">{label}</button>)}</div><textarea rows={6} value={customPrompt} onChange={e=>setCustomPrompt(e.target.value)} placeholder="E.g. Two men in their 20s, dark curly hair and red hair, standing close on a rainy rooftop at dusk, golden light, painterly cinematic style, no text..." className="w-full bg-white/10 border border-white/20 rounded-xl px-4 py-3 text-white placeholder-white/20 focus:outline-none focus:border-purple-500 resize-none text-sm"/><p className="text-white/20 text-xs mt-1.5">💡 Click style chips to append — or type freely. Always generates no-text portrait covers.</p></div>}<button onClick={genCover} disabled={busy||quotaHit||isBuilding||(coverMode==="custom"&&!customPrompt.trim())} className="w-full bg-gradient-to-r from-purple-500 to-pink-500 text-white py-4 rounded-xl font-semibold text-lg hover:opacity-90 disabled:opacity-40 flex items-center justify-center gap-2">{busy?<><Spin/>Generating…</>:book.cover_image_url?"🔄 Regenerate":"🎨 Generate Cover"}</button></div></div></div>}
