@@ -380,7 +380,6 @@ async function callPuter(prompt,temperature=0.85,opts={}){
         }
         fullText=fullText.trim();
         if(!fullText)throw{code:"EMPTY"};
-        trackUsage();
         return fullText;
       }
       const resp=await puter.ai.chat(prompt,{model,temperature:Math.min(temperature,1)});
@@ -393,7 +392,6 @@ async function callPuter(prompt,temperature=0.85,opts={}){
       else text=String(resp);
       text=text.trim();
       if(!text)throw{code:"EMPTY"};
-      trackUsage(); // still track for the daily counter
       return text;
     }catch(err){
       // Don't retry our own explicit throws
@@ -476,7 +474,6 @@ async function callGroq(prompt,temperature=0.85,opts={}){
           }
         }
         if(!fullText)throw{code:"EMPTY",msg:"Groq returned empty stream — please retry."};
-        trackUsage();
         return fullText;
       }
       
@@ -500,7 +497,6 @@ async function callGroq(prompt,temperature=0.85,opts={}){
       const data=await resp.json();
       const text=data?.choices?.[0]?.message?.content||"";
       if(!text)throw{code:"EMPTY",msg:"Groq returned empty response — please retry."};
-      trackUsage();
       return text;
     }catch(e){
       if(timeout)clearTimeout(timeout);
@@ -1284,7 +1280,7 @@ function CompetitorPanel({book,onSettings}){
   const [error,setError]=useState("");
   const run=async()=>{
     if(!hasCredentials()){onSettings();return;}
-    setLoading(true);setLoadStep("Building your series world bible…");setError("");
+    setLoading(true);setError("");
     try{
       const raw=await callAI(
         `You are an Amazon KDP market research expert. Analyze the competitive landscape for this book.\n\n`+
@@ -3353,7 +3349,7 @@ const genCover=async()=>{if(quotaHit||isBuilding)return;setBusy(true);setError("
     if(!book.review){setError("Run the Review Agent first (Review tab).");setTab(4);return;}
     if(book.review.verdict!=="PASS"){setError(`Review score ${book.review.overall_score}/100 — needs 70+. Check Review tab.`);setTab(4);return;}
     if(!book.manuscript_quality){setError("Run the Writing Quality check first (Writing tab).");setTab(8);return;}
-    if(book.manuscript_quality.manuscript_verdict!=="PASS"){setError(`Writing Quality score ${book.manuscript_quality.overall_human_score}/100 — needs 72+. Fix AI patterns in Writing tab.`);setTab(8);return;}
+    if(book.manuscript_quality.manuscript_verdict!=="PASS"){setError(`Writing Quality score ${book.manuscript_quality.overall_human_score}/100 — needs 75+. Fix AI patterns in Writing tab.`);setTab(8);return;}
     if(!book.chapters?.some(c=>c.content)){setError("Write at least one chapter first.");return;}
     const chaps=(book.chapters||[]).filter(c=>c.content);
     const seriesPage=book.hooks?.series_read_order_page?"\n\n---\n\n# Also By This Author\n\n"+book.hooks.series_read_order_page:"";

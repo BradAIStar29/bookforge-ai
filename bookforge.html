@@ -454,7 +454,6 @@ async function callPuter(prompt, temperature = 0.85, opts = {}) {
         }
         fullText = fullText.trim();
         if (!fullText) throw { code: "EMPTY" };
-        trackUsage();
         return fullText;
       }
       const resp = await puter.ai.chat(prompt, { model, temperature: Math.min(temperature, 1) });
@@ -466,7 +465,6 @@ async function callPuter(prompt, temperature = 0.85, opts = {}) {
       else text = String(resp);
       text = text.trim();
       if (!text) throw { code: "EMPTY" };
-      trackUsage();
       return text;
     } catch (err) {
       if (err?.code === "EMPTY" && attempt < maxRetries) {
@@ -541,7 +539,6 @@ async function callGroq(prompt, temperature = 0.85, opts = {}) {
           }
         }
         if (!fullText) throw { code: "EMPTY", msg: "Groq returned empty stream \u2014 please retry." };
-        trackUsage();
         return fullText;
       }
       if (!resp.ok) {
@@ -562,7 +559,6 @@ async function callGroq(prompt, temperature = 0.85, opts = {}) {
       const data = await resp.json();
       const text = data?.choices?.[0]?.message?.content || "";
       if (!text) throw { code: "EMPTY", msg: "Groq returned empty response \u2014 please retry." };
-      trackUsage();
       return text;
     } catch (e) {
       if (timeout) clearTimeout(timeout);
@@ -1202,7 +1198,6 @@ function CompetitorPanel({ book, onSettings }) {
       return;
     }
     setLoading(true);
-    setLoadStep("Building your series world bible\u2026");
     setError("");
     try {
       const raw = await callAI(
@@ -2091,7 +2086,7 @@ function SeriesPage({ navigate, onSettings }) {
   const [viewBible, setViewBible] = useState(null);
   const [form, setForm] = useState({ name: "", concept: "", genre: "", audience: "", book_count: 3, tone: "" });
   const [loading, setLoading] = useState(false);
-  const [loadStep, setLoadStep2] = useState("");
+  const [loadStep, setLoadStep] = useState("");
   const [error, setError] = useState("");
   const reload = () => {
     const s = getSeries();
@@ -2125,7 +2120,7 @@ Respond ONLY with valid JSON (no markdown):
       trackUsage();
       const match = raw.match(/\{[\s\S]*\}/);
       if (!match) throw { code: "PARSE", msg: "Couldn't parse series plan." };
-      setLoadStep2("Structuring characters, world & book arcs\u2026");
+      setLoadStep("Structuring characters, world & book arcs\u2026");
       let plan;
       try {
         plan = JSON.parse(match[0]);
@@ -2157,7 +2152,7 @@ Respond ONLY with valid JSON (no markdown):
       setError(errMsg(e));
     } finally {
       setLoading(false);
-      setLoadStep2("");
+      setLoadStep("");
     }
   };
   const deleteSeries = (id, e) => {
@@ -3645,7 +3640,7 @@ CRITICAL RULES:
       return;
     }
     if (book.manuscript_quality.manuscript_verdict !== "PASS") {
-      setError(`Writing Quality score ${book.manuscript_quality.overall_human_score}/100 \u2014 needs 72+. Fix AI patterns in Writing tab.`);
+      setError(`Writing Quality score ${book.manuscript_quality.overall_human_score}/100 \u2014 needs 75+. Fix AI patterns in Writing tab.`);
       setTab(8);
       return;
     }
