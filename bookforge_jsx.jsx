@@ -1133,7 +1133,7 @@ function Header({onBack,title,subtitle,onSettings,onTour,activeTab,setActiveTab}
             </div>
           )}
           {qLen>0&&<div className="bg-cyan-500/20 border border-cyan-500/30 text-cyan-300 text-xs px-2.5 py-1.5 rounded-lg">⏳ Queue: {qLen}</div>}
-          <button onClick={onSettings} className={`text-xs px-3 py-1.5 rounded-lg border transition-all ${getKey()?"border-white/20 text-white/50 hover:border-white/40":"border-red-500/50 text-red-400 bg-red-500/10 pulse-a"}`}>{getKey()?"⚙️ Settings":"⚠️ Set API Key"}</button>
+          <button onClick={onSettings} className={`text-xs px-3 py-1.5 rounded-lg border transition-all ${hasCredentials()?"border-white/20 text-white/50 hover:border-white/40":"border-red-500/50 text-red-400 bg-red-500/10 pulse-a"}`}>{hasCredentials()?"⚙️ Settings":"⚠️ Set API Key"}</button>
           {onTour&&<button onClick={onTour} title="Page tour — learn how to use this page" className="text-xs px-3 py-1.5 rounded-lg border border-purple-500/40 text-purple-300/70 hover:bg-purple-500/20 transition-all" id="tour-btn">❓ Tour</button>}
         </div>
       </div>
@@ -2456,7 +2456,7 @@ function HomePage({navigate,onSettings}){
   </div>
 )}
 
-      {!getKey()&&<div className="bg-amber-500/15 border border-amber-500/40 rounded-xl p-4 mb-6 flex items-center gap-3"><span className="text-2xl">🔑</span><div className="flex-1"><p className="text-amber-300 font-semibold text-sm">Gemini API key not set</p><p className="text-amber-200/50 text-xs">Required to generate books. Free from Google AI Studio.</p></div><button onClick={onSettings} className="bg-amber-500 text-black text-xs font-bold px-4 py-2 rounded-lg hover:bg-amber-400">Set Key</button></div>}
+      {getBackend()==="gemini"&&!getKey()&&<div className="bg-amber-500/15 border border-amber-500/40 rounded-xl p-4 mb-6 flex items-center gap-3"><span className="text-2xl">🔑</span><div className="flex-1"><p className="text-amber-300 font-semibold text-sm">Gemini API key not set</p><p className="text-amber-200/50 text-xs">Required to generate books. Free from Google AI Studio.</p></div><button onClick={onSettings} className="bg-amber-500 text-black text-xs font-bold px-4 py-2 rounded-lg hover:bg-amber-400">Set Key</button></div>}
       {(()=>{
         const stalled=allBooks.filter(b=>!b.build_complete&&!b.auto_build&&!["published","ready"].includes(b.status)&&(b.needs_outline||(b.chapters?.length>0&&b.chapters.some(c=>!c.generated))));
         if(stalled.length===0)return null;
