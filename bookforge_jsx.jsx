@@ -1174,7 +1174,7 @@ async function runReviewAgent(book){
     `"top_3_fixes":["Single most impactful change to make right now","Second fix","Third fix"],`+
     `"amazon_search_prediction":"The exact search query most likely to surface this book on Amazon",`+
     `"estimated_page_count":${Math.round(((book.chapters||[]).filter(c=>c.content).reduce((a,c)=>a+(c.content||"").split(/\\s+/).length,0))/250)||100}}`+
-    `\nVerdict must be "PASS" if overall_score>=70, otherwise "FAIL".`,0.5
+    `\nVerdict must be "PASS" if overall_score>=75, otherwise "FAIL".`,0.5
   );
   trackUsage();
   const match=raw.match(/\{[\s\S]*\}/);
@@ -1226,7 +1226,7 @@ function ReviewPanel({book,onApply,onSettings}){
     <div className="max-w-3xl mx-auto space-y-5">
       <Card>
         <div className="flex items-start justify-between gap-4 mb-4">
-          <div><h2 className="text-white text-xl font-bold">🤖 AI Review Agent</h2><p className="text-white/40 text-sm mt-1">Scores title, keywords & SEO. Must pass 70+ to unlock publishing.</p></div>
+          <div><h2 className="text-white text-xl font-bold">🤖 AI Review Agent</h2><p className="text-white/40 text-sm mt-1">Scores title, keywords & SEO. Must pass 75+ to unlock publishing.</p></div>
           {review&&<ScoreBadge score={review.overall_score}/>}
         </div>
         {error&&<div className="bg-red-500/20 border border-red-500/30 text-red-300 rounded-xl p-4 mb-4 text-sm">{error}</div>}
@@ -1534,7 +1534,7 @@ async function runManuscriptHumanCheck(book){
     `- Specificity — does the world feel observed (real brands, textures, smells) or generic?\n` +
     `- Structural crutches — does the book lean on "in that moment", "he couldn't help but", balanced sentence pairs?\n\n` +
     `Score STRICTLY. Average AI chapter rewriting gets 60-70. Genuinely human-sounding prose scores 80+.\n` +
-    `A manuscript needs 75+ to pass — not 72.\n\n` +
+    `A manuscript needs 78+ to pass — not 75. Be strict: a book that scores 75-77 is decent but not authentic enough for readers to trust.\n\n` +
     `Respond ONLY with valid JSON:\n` +
     `{"overall_human_score":68,"manuscript_verdict":"FAIL","verdict_summary":"One blunt sentence on whether this reads human.",` +
     `"top_ai_patterns":["most pervasive AI pattern found — be specific with examples"],` +
@@ -1544,7 +1544,7 @@ async function runManuscriptHumanCheck(book){
     `"emotional_authenticity":"Detailed assessment — are emotions shown or told? Quote evidence.",` +
     `"specificity_score":"Are details generic or observed? Give examples.",` +
     `"priority_fixes":["most critical fix #1 — be prescriptive","fix #2","fix #3","fix #4"]}` +
-    `\nManuscript verdict: "PASS" only if overall_human_score>=75. Otherwise "FAIL". Be strict — err on the side of FAIL.`, 0.15
+    `\nManuscript verdict: "PASS" only if overall_human_score>=78. Otherwise "FAIL". Be strict — err on the side of FAIL.`, 0.15
   );
   trackUsage();
   const match = raw.match(/\{[\s\S]*\}/);
@@ -1644,7 +1644,7 @@ function WritingQualityPanel({book,onSettings,onApply}){
     finally{setLoadingMs(false);}
   };
 
-  const hc = s => s>=80?"text-green-400":s>=65?"text-amber-400":"text-red-400";
+  const hc = s => s>=78?"text-green-400":s>=65?"text-amber-400":"text-red-400";
   const hcBg = s => s>=80?"bg-green-500/10 border-green-500/20":s>=65?"bg-amber-500/10 border-amber-500/20":"bg-red-500/10 border-red-500/20";
   const writtenCount = (book.chapters||[]).filter(c=>c.content).length;
   const scoredCount = Object.keys(chScores).length;
@@ -3347,9 +3347,9 @@ const genCover=async()=>{if(quotaHit||isBuilding)return;setBusy(true);setError("
 
   const download=(fmt="md")=>{
     if(!book.review){setError("Run the Review Agent first (Review tab).");setTab(4);return;}
-    if(book.review.verdict!=="PASS"){setError(`Review score ${book.review.overall_score}/100 — needs 70+. Check Review tab.`);setTab(4);return;}
+    if(book.review.verdict!=="PASS"){setError(`Review score ${book.review.overall_score}/100 — needs 75+. Check Review tab.`);setTab(4);return;}
     if(!book.manuscript_quality){setError("Run the Writing Quality check first (Writing tab).");setTab(8);return;}
-    if(book.manuscript_quality.manuscript_verdict!=="PASS"){setError(`Writing Quality score ${book.manuscript_quality.overall_human_score}/100 — needs 75+. Fix AI patterns in Writing tab.`);setTab(8);return;}
+    if(book.manuscript_quality.manuscript_verdict!=="PASS"){setError(`Writing Quality score ${book.manuscript_quality.overall_human_score}/100 — needs 78+. Fix AI patterns in Writing tab.`);setTab(8);return;}
     if(!book.chapters?.some(c=>c.content)){setError("Write at least one chapter first.");return;}
     const chaps=(book.chapters||[]).filter(c=>c.content);
     const seriesPage=book.hooks?.series_read_order_page?"\n\n---\n\n# Also By This Author\n\n"+book.hooks.series_read_order_page:"";
@@ -4503,7 +4503,7 @@ const TOUR_STEPS = {
     { popover: { title: "✍️ Chapters Tab", description: "Once your outline is approved, write chapters one at a time or use 'Write All'. Each chapter is ~2,000-3,000 words with anti-AI patterns built in for natural prose.", side: "bottom" }},
     { popover: { title: "🎨 Cover Tab", description: "Generate a professional book cover using Pollinations.ai (free, no API key needed). Describe your cover or let it auto-generate from your book's details.", side: "bottom" }},
     { popover: { title: "🔍 SEO Tab", description: "Generates Amazon KDP-optimized title, subtitle, description, and 7 exact-match keywords. This is what makes your book discoverable.", side: "bottom" }},
-    { popover: { title: "🤖 Review Agent", description: "Your book must score 70+ on marketability before downloads unlock. The agent checks title appeal, keyword strength, SEO quality, and market differentiation.", side: "bottom" }},
+    { popover: { title: "🤖 Review Agent", description: "Your book must score 75+ on marketability before downloads unlock. The agent checks title appeal, keyword strength, SEO quality, and market differentiation.", side: "bottom" }},
     { popover: { title: "📊 Quality Agent", description: "Your book must also score 78+ on writing quality. This agent specifically hunts AI writing patterns: em-dash overuse, filler openers, unstated emotions, passive voice.", side: "bottom" }},
     { popover: { title: "📤 Publish Tab", description: "Download your book as EPUB (for Amazon KDP), TXT, Audiobook script, or RTF. The dual gate (Review 70+ AND Quality 78+) must pass first.", side: "bottom" }},
     { popover: { title: "🎙️ Audio Studio Tab", description: "Generate a real narrated audiobook using Kokoro TTS — 82M parameter AI model running free in your browser. 15 voices, WAV export. First load downloads ~82MB (cached after).", side: "bottom" }},
