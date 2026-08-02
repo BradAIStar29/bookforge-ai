@@ -1959,7 +1959,7 @@ WRITE IN: ${fb.writing_language}` : "";
             const qNfNote = book.nonfiction_mode ? "\n\nNONFICTION MODE: End the chapter with a clearly marked Exercise, Reflection question, and Action Step." : "";
             const prevChaps = chapters.slice(0, i2).filter((c) => c.generated);
             const prev = prevChaps.length === 0 ? "None" : prevChaps.length <= 2 ? prevChaps.map((c) => c.title).join(", ") : prevChaps.slice(-3).map((c) => `Ch.${c.number} "${c.title}": ${(c.content || "").slice(0, 200).replace(/\n/g, " ")}\u2026`).join("\n");
-            const content = await callAI(
+            const content = await callAIStream(
               `Write Chapter ${chapters[i2].number}: "${chapters[i2].title}" for a ${book.genre} book titled "${outline.title || book.title}".${seriesCtx}${qVoiceCtx}${qCharCtx}${qLangNote}${qNfNote}
 Chapter description: ${chapters[i2].description}
 Previous: ${prev}
@@ -1988,7 +1988,11 @@ WRITING RULES \u2014 violating these will get this chapter rejected:
 \u2022 No clean emotional resolutions \u2014 conflict leaves residue
 \u2022 Character psychology must be specific, not convenient
 \u2022 Every scene must have a sensory anchor: a smell, a texture, a specific sound
-\u2022 Read like a published novel \u2014 no chapter summaries, no scene headers, no markdown`
+\u2022 Read like a published novel \u2014 no chapter summaries, no scene headers, no markdown`,
+              0.85,
+              { task: "creative", onStream: (t) => {
+                addLog(`  \u270D\uFE0F Ch.${i2 + 1}/${chapters.length}: ${t.split(/\s+/).filter(Boolean).length} words streamed\u2026`);
+              } }
             );
             trackUsage();
             chapters[i2] = { ...chapters[i2], content, generated: true };
