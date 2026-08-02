@@ -4538,7 +4538,7 @@ function App() {
     }
   ), isHome && homeTab === "library" && /* @__PURE__ */ React.createElement(HomePage, { navigate, onSettings: () => setShowSettings(true) }), isHome && homeTab === "series" && /* @__PURE__ */ React.createElement(SeriesPage, { navigate, onSettings: () => setShowSettings(true) }), isHome && homeTab === "queue" && /* @__PURE__ */ React.createElement(QueuePage, { navigate, onSettings: () => setShowSettings(true) }), isHome && homeTab === "manga" && /* @__PURE__ */ React.createElement(MangaHomePage, { navigate, onSettings: () => setShowSettings(true) }), page === "manga-editor" && /* @__PURE__ */ React.createElement(MangaEditorPage, { projectId: bookId, navigate, onSettings: () => setShowSettings(true) }), isCreate && /* @__PURE__ */ React.createElement(CreatePage, { navigate, onSettings: () => setShowSettings(true) }), isEditor && /* @__PURE__ */ React.createElement(EditorPage, { bookId, navigate, onSettings: () => setShowSettings(true) }));
 }
-ReactDOM.window.addEventListener("load", () => {
+window.addEventListener("load", () => {
   if (getBackend() === "puter" && typeof puter === "undefined") {
     setTimeout(() => {
       const banner = document.createElement("div");

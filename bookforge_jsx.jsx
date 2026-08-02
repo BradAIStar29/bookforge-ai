@@ -4748,7 +4748,6 @@ function App(){
     </div>
   );
 }
-ReactDOM.
 // ── Puter.js Load Check ────────────────────────────────────────────────────────
 window.addEventListener("load",()=>{
   if(getBackend()==="puter"&&typeof puter==="undefined"){
