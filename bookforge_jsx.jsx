@@ -687,6 +687,121 @@ function importBookJSON(file){
         book.created_date=new Date().toISOString();
         resolve(book);
       }catch(e){reject(e);}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// 📄 PDF EXPORT — Print-optimized PDF via browser print
+// ══════════════════════════════════════════════════════════════════════════════
+function downloadPDF(book){
+  const author=getAuthorProfile().name||"Unknown Author";
+  const chaps=(book.chapters||[]).filter(c=>c.generated&&c.content);
+  if(chaps.length===0){alert("No chapters to export — write some chapters first.");return;}
+  const printArea=document.createElement("div");
+  printArea.id="bf-print-area";
+  printArea.style.cssText="padding:2in 1in;font-family:Georgia,'Times New Roman',serif;font-size:12pt;line-height:1.8;color:#000;background:#fff;";
+  let html=`<div style="text-align:center;margin-bottom:2in;">
+    <h1 style="font-size:28pt;margin-bottom:0.5in;">${book.title}</h1>
+    ${book.subtitle?`<p style="font-size:16pt;font-style:italic;color:#555;">${book.subtitle}</p>`:""}
+    <p style="font-size:14pt;margin-top:1in;color:#666;">by ${author}</p>
+  </div>`;
+  html+=`<div style="page-break-after:always;"><h2 style="font-size:18pt;border-bottom:1px solid #999;padding-bottom:8px;">Table of Contents</h2><ol style="font-size:12pt;line-height:2;">`;
+  chaps.forEach(ch=>{html+=`<li>${ch.title}</li>`;});
+  html+=`</ol></div>`;
+  chaps.forEach((ch,i)=>{
+    html+=`<div style="page-break-before:always;">
+      <h2 style="font-size:18pt;border-bottom:1px solid #ccc;padding-bottom:6px;margin-bottom:20px;">Chapter ${ch.number}: ${ch.title}</h2>
+      <div style="font-size:12pt;line-height:1.8;text-align:justify;white-space:pre-wrap;">${(ch.content||"").replace(/</g,"&lt;").replace(/\u2042/g,'<hr style="border:none;border-top:1px solid #ccc;margin:20px 0;"/>')}</div>
+    </div>`;
+  });
+  printArea.innerHTML=html;
+  document.body.appendChild(printArea);
+  window.print();
+  setTimeout(()=>printArea.remove(),1000);
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// 📝 MARKDOWN EXPORT — Export book as Markdown
+// ══════════════════════════════════════════════════════════════════════════════
+function downloadMarkdown(book){
+  const author=getAuthorProfile().name||"Unknown Author";
+  const chaps=(book.chapters||[]).filter(c=>c.generated&&c.content);
+  if(chaps.length===0){alert("No chapters to export.");return;}
+  let md=`# ${book.title}\n\n`;
+  if(book.subtitle)md+=`*${book.subtitle}*\n\n`;
+  md+=`by ${author}\n\n`;
+  md+=`## Table of Contents\n\n`;
+  chaps.forEach(ch=>{md+=`- [Chapter ${ch.number}: ${ch.title}](#chapter-${ch.number})\n`;});
+  md+=`\n---\n\n`;
+  chaps.forEach(ch=>{
+    md+=`## Chapter ${ch.number}: ${ch.title}\n\n`;
+    md+=(ch.content||"").replace(/⁂/g,"\n---\n")+"\n\n";
+  });
+  const blob=new Blob([md],{type:"text/markdown"});
+  const a=document.createElement("a");
+  a.href=URL.createObjectURL(blob);
+  a.download=`${book.title.replace(/[^a-z0-9]/gi,"_")}.md`;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// 📋 DUPLICATE BOOK — Clone a book with new ID
+// ══════════════════════════════════════════════════════════════════════════════
+function duplicateBook(bookId){
+  const book=getBook(bookId);
+  if(!book)return;
+  const copy=JSON.parse(JSON.stringify(book));
+  copy.id="bk_"+Date.now();
+  copy.title=(book.title||"Untitled")+" (Copy)";
+  copy.created_date=new Date().toISOString();
+  copy.status="idea";
+  copy.build_complete=false;
+  copy.gates_passed=false;
+  copy.auto_build=false;
+  copy.build_step="";
+  copy.needs_outline=true;
+  copy.seo_done=false;copy.cover_done=false;copy.review_done=false;
+  copy.competitor_done=false;copy.hooks_done=false;copy.wq_done=false;
+  const books=getBooks();
+  books.unshift(copy);
+  setBooks(books);
+  return copy.id;
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// 🔄 CHAPTER REORDER — Swap chapters and renumber
+// ══════════════════════════════════════════════════════════════════════════════
+function reorderChapters(book,fromIdx,toIdx){
+  if(toIdx<0||toIdx>=book.chapters.length)return book;
+  const chaps=[...book.chapters];
+  const [moved]=chaps.splice(fromIdx,1);
+  chaps.splice(toIdx,0,moved);
+  chaps.forEach((ch,i)=>{ch.number=i+1;});
+  return {...book,chapters:chaps};
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// 🔍 OVERUSED WORDS ANALYZER — Scan chapters for repetition
+// ══════════════════════════════════════════════════════════════════════════════
+function analyzeOverusedWords(book){
+  const stopWords=new Set(["the","a","an","and","or","but","is","was","were","are","to","of","in","on","at","for","it","he","she","they","we","you","i","his","her","their","this","that","with","as","by","from","had","have","has","not","what","when","who","how","why","which","its","be","been","being","do","does","did","so","if","than","then","there","here","can","will","would","could","should","may","might","must","shall","just","also","only","up","out","about","into","over","after","before","between","through","during","while","because","though","although","unless","until","since","again","more","most","some","any","all","both","each","few","many","other","such","no","nor","very","one","two","too","well","get","got","go","goes","went","gone","come","came","say","said","says","make","made","see","saw","seen","know","knew","known","think","thought","take","took","taken","give","gave","given","find","found","tell","told","want","wanted","need","needed","try","tried","let","put","seem","seemed","feel","felt","leave","left","turn","turned","begin","began","begun","keep","kept","hold","held","stand","stood","move","moved","run","ran","bring","brought","open","close","start","play","read","write","eat","drink","sleep","wake","walk","talk","look","sound","hear","watch","sit","sat","lay","laid","rise","rose","set","fall","fell","cut","hit","beat","meet","met","pay","paid","lose","lost","win","won","wear","wore","bear","bore","draw","drew","grow","grew","throw","threw","fly","flew","blow","blew","break","broke","choose","chose","ride","rode","drive","drove","swim","swam","sing","sang","ring","rang","fight","fought","catch","caught","teach","taught","build","built","send","sent","spend","spent","lend","lent","bend","bent","rent","wound","wind","bind","bound","find","found","grind","ground","mind","behind","under","never","ever","still","back","even","now","down","off","away","upon"]);
+  const chaps=(book.chapters||[]).filter(c=>c.generated&&c.content);
+  const allText=chaps.map(c=>c.content).join(" ");
+  const words=allText.toLowerCase().match(/[a-z']+/g)||[];
+  const freq={};
+  words.forEach(w=>{if(w.length>3&&!stopWords.has(w)){freq[w]=(freq[w]||0)+1;}});
+  const overused=Object.entries(freq).filter(([w,c])=>c>=15).sort((a,b)=>b[1]-a[1]).slice(0,30);
+  const adverbs=Object.entries(freq).filter(([w,c])=>w.endsWith("ly")&&c>=8).sort((a,b)=>b[1]-a[1]).slice(0,15);
+  // Repeated 3-word phrases
+  const phrases={};
+  for(let i=0;i<words.length-2;i++){
+    const phrase=(words[i]+" "+words[i+1]+" "+words[i+2]).toLowerCase();
+    if(stopWords.has(words[i])&&stopWords.has(words[i+1]))continue;
+    phrases[phrase]=(phrases[phrase]||0)+1;
+  }
+  const repeatedPhrases=Object.entries(phrases).filter(([p,c])=>c>=3).sort((a,b)=>b[1]-a[1]).slice(0,10);
+  return {overused,adverbs,repeatedPhrases,totalWords:words.length};
+}
+
     };
     reader.onerror=()=>reject(new Error("Failed to read file"));
     reader.readAsText(file);
@@ -1711,7 +1826,7 @@ function WritingQualityPanel({book,onSettings,onApply}){
 
       {/* Sub-tabs */}
       <div className="bg-white/5 border border-white/10 rounded-xl p-1 flex gap-1">
-        {[["manuscript","📄 Manuscript Check"],["chapters","📑 Chapter-by-Chapter"]].map(([id,label])=>(
+        {[["manuscript","📄 Manuscript Check"],["chapters","📑 Chapter-by-Chapter"],["overused","🔍 Overused Words"]].map(([id,label])=>(
           <button key={id} onClick={()=>setActiveTab(id)} className={`flex-1 py-2.5 rounded-lg text-sm font-medium transition-all ${activeTab===id?"bg-purple-500 text-white":"text-white/40 hover:text-white"}`}>{label}</button>
         ))}
       </div>
@@ -1807,6 +1922,43 @@ function WritingQualityPanel({book,onSettings,onApply}){
           })}
         </div>
       )}
+      {activeTab==="overused"&&(()=>{
+        const [analysis,setAnalysis]=useState(null);
+        const [analyzing,setAnalyzing]=useState(false);
+        const run=()=>{setAnalyzing(true);setTimeout(()=>{setAnalysis(analyzeOverusedWords(book));setAnalyzing(false);},100);};
+        return(
+          <div className="space-y-4">
+            <div className="flex items-center justify-between">
+              <p className="text-white/40 text-sm">Scans all chapters for overused words, repeated phrases, and adverb frequency. Instant — no API call needed.</p>
+              <button onClick={run} disabled={analyzing} className="text-xs bg-purple-500/20 text-purple-300 border border-purple-500/30 px-4 py-2 rounded-lg hover:bg-purple-500/30 disabled:opacity-40 flex items-center gap-1.5 shrink-0">{analyzing?<><Spin size="h-3 w-3"/>Analyzing…</>:"🔍 Analyze Words"}</button>
+            </div>
+            {!analysis&&!analyzing&&<p className="text-white/20 text-sm text-center py-8">Click "Analyze Words" to scan your manuscript for repetition patterns.</p>}
+            {analysis&&(
+              <div className="space-y-5">
+                <div className="bg-white/5 border border-white/10 rounded-xl p-4">
+                  <p className="text-white/40 text-xs uppercase tracking-wider mb-3">Top Overused Words ({analysis.totalWords.toLocaleString()} total words scanned)</p>
+                  {analysis.overused.length===0?<p className="text-green-300/60 text-sm">✅ No significantly overused words found!</p>:(
+                    <div className="flex flex-wrap gap-2">{analysis.overused.map(([word,count])=><span key={word} className={`px-3 py-1.5 rounded-lg text-xs font-medium ${count>=50?"bg-red-500/20 text-red-300 border border-red-500/30":count>=30?"bg-amber-500/20 text-amber-300 border border-amber-500/30":"bg-yellow-500/20 text-yellow-300 border border-yellow-500/30"}`}>{word} <span className="font-bold">{count}</span></span>)}</div>
+                  )}
+                  <p className="text-white/20 text-xs mt-2">🔴 50+ uses · 🟡 30-49 · 🟡 15-29</p>
+                </div>
+                {analysis.repeatedPhrases.length>0&&(
+                  <div className="bg-white/5 border border-white/10 rounded-xl p-4">
+                    <p className="text-white/40 text-xs uppercase tracking-wider mb-3">Repeated 3-Word Phrases</p>
+                    <div className="space-y-1.5">{analysis.repeatedPhrases.map(([phrase,count])=><div key={phrase} className="flex items-center justify-between bg-black/20 rounded-lg px-3 py-2"><span className="text-white/70 text-sm italic">"{phrase}"</span><span className="text-amber-400 text-xs font-bold shrink-0 ml-3">×{count}</span></div>)}</div>
+                  </div>
+                )}
+                {analysis.adverbs.length>0&&(
+                  <div className="bg-white/5 border border-white/10 rounded-xl p-4">
+                    <p className="text-white/40 text-xs uppercase tracking-wider mb-3">Frequent Adverbs (-ly)</p>
+                    <div className="flex flex-wrap gap-2">{analysis.adverbs.map(([word,count])=><span key={word} className="px-2.5 py-1 rounded-lg text-xs bg-blue-500/20 text-blue-300 border border-blue-500/30">{word} <span className="font-bold">×{count}</span></span>)}</div>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        );
+      })()}
     </div>
   );
 }
@@ -2613,6 +2765,7 @@ function HomePage({navigate,onSettings}){
   const books=searchedBooks.filter(b=>!filterGenre||b.genre===filterGenre).filter(b=>!filterStatus||b.status===filterStatus);
   const [pageSize,setPageSize]=useState(12);
   const del=(id,e)=>{e.stopPropagation();if(!confirm("Delete this book?"))return;const b=getBooks().filter(x=>x.id!==id);setBooks(b);setBooksList(b);};
+  const dup=(id,e)=>{e.stopPropagation();const newId=duplicateBook(id);if(newId){setBooksList(getBooks());alert("Book duplicated! 📋");}};
   const pct=b=>b.chapters?.length>0?(b.chapters.filter(c=>c.generated).length/b.chapters.length)*100:0;
   return(
     <div className="max-w-7xl mx-auto px-4 sm:px-6 py-8">
@@ -2688,7 +2841,7 @@ function HomePage({navigate,onSettings}){
                   {book.chapters?.length>0&&<div className="mt-3"><div className="h-1 bg-white/10 rounded-full overflow-hidden"><div className="h-full bg-gradient-to-r from-purple-500 to-pink-500 rounded-full" style={{width:`${pct(book)}%`}}/></div><p className="text-white/20 text-xs mt-1">{book.chapters.filter(c=>c.generated).length}/{book.chapters.length} chapters</p></div>}
                 </div>
               </div>
-              <button onClick={e=>del(book.id,e)} aria-label="Delete book" className="absolute top-2 left-2 w-7 h-7 bg-red-500/80 hover:bg-red-600 rounded-full text-white text-xs opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center shadow">✕</button>
+              <button onClick={e=>dup(book.id,e)} aria-label="Duplicate book" className="absolute top-2 right-2 w-7 h-7 bg-purple-500/80 hover:bg-purple-600 rounded-full text-white text-xs opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center shadow" title="Duplicate">📋</button><button onClick={e=>del(book.id,e)} aria-label="Delete book" className="absolute top-2 left-2 w-7 h-7 bg-red-500/80 hover:bg-red-600 rounded-full text-white text-xs opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center shadow">✕</button>
               <button onClick={e=>{e.stopPropagation();const src=getBook(book.id);if(!src)return;const dup={...src,id:Date.now().toString(36)+Math.random().toString(36).slice(2),title:src.title+" (Copy)",status:"draft",auto_build:false,build_complete:false,gates_passed:false,seo_done:false,cover_done:false,review_done:false,wq_done:false,competitor_done:false,hooks_done:false,review:null,manuscript_quality:null,build_complete_date:null};const books=getBooks();books.push(dup);setBooks(books);setBooksList(getBooks());}} className="absolute top-2 right-2 w-7 h-7 bg-blue-500/80 hover:bg-blue-600 rounded-full text-white text-xs opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center shadow" title="Duplicate book">⧉</button>
             </div>
           ))}
@@ -3847,7 +4000,7 @@ const genCover=async()=>{if(quotaHit||isBuilding)return;setBusy(true);setError("
       </div>
     );
   })()
-}<p className="text-white/40 text-xs uppercase tracking-wider mb-3">Chapters ({book.chapters.length})</p><div className="space-y-2">{book.chapters.map((ch,i)=><div key={i} className={`rounded-xl p-3 border flex gap-3 items-start ${ch.generated?"bg-green-500/10 border-green-500/20":"bg-white/5 border-white/10"}`}><span className={`font-bold text-sm min-w-[24px] ${ch.generated?"text-green-400":"text-purple-400"}`}>{ch.generated?"✓":ch.number+"."}</span><div className="flex-1"><p className="text-white text-sm font-medium">{ch.title}</p><p className="text-white/35 text-xs mt-0.5">{ch.description}</p>{ch.content&&<div className="flex items-center gap-3 mt-1.5"><span className="text-green-400/70 text-xs">{ch.content.split(/\s+/).length.toLocaleString()} words</span><span className="text-white/20 text-xs">~{Math.ceil(ch.content.split(/\s+/).length/200)} min read</span></div>}{ch.opening_hook&&!ch.content&&<p className="text-purple-300/50 text-xs mt-1 italic">Hook: {ch.opening_hook.slice(0,80)}…</p>}</div>{ch.generated?(()=>{
+}<p className="text-white/40 text-xs uppercase tracking-wider mb-3">Chapters ({book.chapters.length})</p><div className="space-y-2">{book.chapters.map((ch,i)=><div key={i} className={`rounded-xl p-3 border flex gap-3 items-start ${ch.generated?"bg-green-500/10 border-green-500/20":"bg-white/5 border-white/10"}`}><div className="flex flex-col gap-1 mr-1"><button onClick={()=>{if(i>0){const updated=reorderChapters(book,i,i-1);updateBook(book.id,{chapters:updated.chapters});setBook(updated);}}} disabled={i===0} className="text-white/30 hover:text-purple-400 disabled:opacity-20 transition-colors text-xs leading-none">▲</button><button onClick={()=>{if(i<book.chapters.length-1){const updated=reorderChapters(book,i,i+1);updateBook(book.id,{chapters:updated.chapters});setBook(updated);}}} disabled={i===book.chapters.length-1} className="text-white/30 hover:text-purple-400 disabled:opacity-20 transition-colors text-xs leading-none">▼</button></div><span className={`font-bold text-sm min-w-[24px] ${ch.generated?"text-green-400":"text-purple-400"}`}>{ch.generated?"✓":ch.number+"."}</span><div className="flex-1"><p className="text-white text-sm font-medium">{ch.title}</p><p className="text-white/35 text-xs mt-0.5">{ch.description}</p>{ch.content&&<div className="flex items-center gap-3 mt-1.5"><span className="text-green-400/70 text-xs">{ch.content.split(/\s+/).length.toLocaleString()} words</span><span className="text-white/20 text-xs">~{Math.ceil(ch.content.split(/\s+/).length/200)} min read</span></div>}{ch.opening_hook&&!ch.content&&<p className="text-purple-300/50 text-xs mt-1 italic">Hook: {ch.opening_hook.slice(0,80)}…</p>}</div>{ch.generated?(()=>{
   const wc=ch.content?ch.content.trim().split(/\s+/).length:0;
   const tw=ch.target_words||0;
   const isShort=tw>0&&wc<tw*0.6;
@@ -3857,7 +4010,7 @@ const genCover=async()=>{if(quotaHit||isBuilding)return;setBusy(true);setError("
       :<span className="text-green-400/50 text-xs">✅ Done</span>}
     <button onClick={e=>{e.stopPropagation();downloadChapterTxt(book,i);}} className="text-white/30 hover:text-white/60 text-xs">📄 Export TXT</button>
   </div>;
-})():<span className="text-white/20 text-xs shrink-0">Pending</span>}</div>)}</div><div className="mt-5 bg-white/5 rounded-xl p-4"><div className="flex justify-between text-xs text-white/40 mb-2"><span>Progress</span><span>{book.chapters.filter(c=>c.generated).length}/{book.chapters.length} chapters</span></div><div className="h-2 bg-white/10 rounded-full overflow-hidden"><div className="h-full bg-gradient-to-r from-purple-500 to-pink-500 rounded-full" style={{width:`${(book.chapters.filter(c=>c.generated).length/book.chapters.length)*100}%`}}/></div></div></>}{(!book.chapters||book.chapters.length===0)&&isBuilding&&<div className="text-center py-8 text-white/30"><Spin/><p className="mt-3 text-sm">Generating outline…</p></div>}<div className="mt-5 flex items-center gap-3 pt-4 border-t border-white/10"><button onClick={()=>setReadingMode(true)} disabled={!book.chapters?.some(c=>c.generated)} className="text-xs px-3 py-2 rounded-lg bg-purple-500/20 border border-purple-500/30 text-purple-300 hover:bg-purple-500/30 hover:text-purple-200 transition-all flex items-center gap-2 disabled:opacity-40">📖 Read Book</button><button onClick={()=>downloadBookJSON(book)} className="text-xs px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-white/60 hover:bg-white/10 hover:text-white/90 transition-all flex items-center gap-2">💾 Export Backup (JSON)</button><label className="text-xs px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-white/60 hover:bg-white/10 hover:text-white/90 transition-all flex items-center gap-2 cursor-pointer">📥 Import Backup<input type="file" accept=".json" className="hidden" onChange={async(e)=>{const file=e.target.files?.[0];if(!file)return;try{const imported=await importBookJSON(file);const books=JSON.parse(localStorage.getItem("bfai_books")||"[]");books.unshift(imported);localStorage.setItem("bfai_books",JSON.stringify(books));alert("Imported \""+imported.title+"\" successfully!");window.location.reload();}catch(err){alert("Import failed: "+err.message);}}}/></label></div></Card></div>}
+})():<span className="text-white/20 text-xs shrink-0">Pending</span>}</div>)}</div><div className="mt-5 bg-white/5 rounded-xl p-4"><div className="flex justify-between text-xs text-white/40 mb-2"><span>Progress</span><span>{book.chapters.filter(c=>c.generated).length}/{book.chapters.length} chapters</span></div><div className="h-2 bg-white/10 rounded-full overflow-hidden"><div className="h-full bg-gradient-to-r from-purple-500 to-pink-500 rounded-full" style={{width:`${(book.chapters.filter(c=>c.generated).length/book.chapters.length)*100}%`}}/></div></div></>}{(!book.chapters||book.chapters.length===0)&&isBuilding&&<div className="text-center py-8 text-white/30"><Spin/><p className="mt-3 text-sm">Generating outline…</p></div>}<div className="mt-5 flex items-center gap-3 pt-4 border-t border-white/10"><button onClick={()=>setReadingMode(true)} disabled={!book.chapters?.some(c=>c.generated)} className="text-xs px-3 py-2 rounded-lg bg-purple-500/20 border border-purple-500/30 text-purple-300 hover:bg-purple-500/30 hover:text-purple-200 transition-all flex items-center gap-2 disabled:opacity-40">📖 Read Book</button><button onClick={()=>downloadPDF(book)} className="text-xs px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-white/60 hover:bg-white/10 hover:text-white/90 transition-all flex items-center gap-2">📄 Export PDF</button><button onClick={()=>downloadMarkdown(book)} className="text-xs px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-white/60 hover:bg-white/10 hover:text-white/90 transition-all flex items-center gap-2">📝 Export Markdown</button><button onClick={()=>downloadBookJSON(book)} className="text-xs px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-white/60 hover:bg-white/10 hover:text-white/90 transition-all flex items-center gap-2">💾 Export Backup (JSON)</button><label className="text-xs px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-white/60 hover:bg-white/10 hover:text-white/90 transition-all flex items-center gap-2 cursor-pointer">📥 Import Backup<input type="file" accept=".json" className="hidden" onChange={async(e)=>{const file=e.target.files?.[0];if(!file)return;try{const imported=await importBookJSON(file);const books=JSON.parse(localStorage.getItem("bfai_books")||"[]");books.unshift(imported);localStorage.setItem("bfai_books",JSON.stringify(books));alert("Imported \""+imported.title+"\" successfully!");window.location.reload();}catch(err){alert("Import failed: "+err.message);}}}/></label></div></Card></div>}
 
         {/* CHAPTERS */}
         {tab===1&&<div className="grid grid-cols-1 lg:grid-cols-3 gap-5"><div className="lg:col-span-1"><div className="bg-white/5 border border-white/10 rounded-2xl p-4 sticky top-24"><div className="flex items-center justify-between mb-3"><h3 className="text-white font-semibold text-sm">Chapters</h3><div className="flex gap-1.5"><button onClick={()=>setReadingMode(true)} disabled={!book.chapters?.some(c=>c.generated)} className="text-xs text-purple-300 hover:text-purple-200 disabled:opacity-30 px-2 py-1 rounded bg-purple-500/10">📖 Read</button><button onClick={()=>setShowFindReplace(true)} className="text-xs text-purple-300 hover:text-purple-200 disabled:opacity-30 px-2 py-1 rounded bg-purple-500/10 flex items-center gap-1">🔍 Find & Replace</button>{!isBuilding&&<button onClick={async()=>{
@@ -3933,7 +4086,7 @@ const genCover=async()=>{if(quotaHit||isBuilding)return;setBusy(true);setError("
               <button onClick={()=>download("txt")} className="bg-white/10 border border-white/20 text-white py-3 rounded-xl font-semibold hover:bg-white/15 flex items-center justify-center gap-2 text-sm">📄 Plain Text (.txt)</button>
               <button onClick={()=>download("rtf")} className="bg-gradient-to-r from-orange-500 to-amber-500 text-white py-3 rounded-xl font-semibold hover:opacity-90 flex items-center justify-center gap-2 text-sm">📋 Word Doc (.rtf)</button>
               <button onClick={()=>download("audio")} className="bg-gradient-to-r from-green-500 to-emerald-500 text-white py-3 rounded-xl font-semibold hover:opacity-90 flex items-center justify-center gap-2 text-sm">🎙️ Audiobook Script</button>
-              <button onClick={()=>{const ch=book.chapters?.find(c=>c.content);if(!ch){alert("Write a chapter first.");return;}const u=window.speechSynthesis;if(u.speaking){u.cancel();flash("⏹ Stopped");return;}const utt=new SpeechSynthesisUtterance(ch.content.replace(/[#*_`]/g,"").slice(0,2000));utt.rate=0.92;utt.pitch=1.0;const voices=u.getVoices();const eng=voices.find(v=>v.lang.startsWith("en")&&!v.name.includes("Google"));if(eng)utt.voice=eng;u.speak(utt);flash("🔊 Reading Ch.1 preview — click again to stop");}} className="bg-white/5 border border-white/10 text-white/60 py-3 rounded-xl font-semibold hover:bg-white/10 flex items-center justify-center gap-2 text-sm">🔊 Listen Preview</button>
+              <button onClick={()=>{const ch=book.chapters?.find(c=>c.content);if(!ch){alert("Write a chapter first.");return;}const u=window.speechSynthesis;if(u.speaking){u.cancel();flash("⏹ Stopped");return;}const utt=new SpeechSynthesisUtterance(ch.content.replace(/[#*_`]/g,"").slice(0,2000));utt.rate=0.92;utt.pitch=1.0;const voices=u.getVoices();const eng=voices.find(v=>v.lang.startsWith("en")&&!v.name.includes("Google"));if(eng)utt.voice=eng;u.speak(utt);flash("🔊 Reading Ch.1 preview — click again to stop");}} className="bg-white/5 border border-white/10 text-white/60 py-3 rounded-xl font-semibold hover:bg-white/10 flex items-center justify-center gap-2 text-sm">🔊 Listen Preview</button><button onClick={()=>downloadPDF(book)} className="bg-gradient-to-r from-red-500 to-rose-500 text-white py-3 rounded-xl font-semibold hover:opacity-90 flex items-center justify-center gap-2 text-sm">📄 Print PDF</button>
             </div>
             <div className="mt-4 bg-blue-500/10 border border-blue-500/20 rounded-xl p-4 text-xs text-white/50 space-y-2">
               <p className="text-white/70 font-semibold text-sm">📖 Where to publish your .epub</p>
