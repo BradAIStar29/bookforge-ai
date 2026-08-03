@@ -1711,6 +1711,8 @@ function WritingQualityPanel({book,onSettings,onApply}){
   const [wqFlash, setWqFlash] = useState("");
   const [error, setError] = useState("");
   const [activeTab, setActiveTab] = useState("manuscript");
+  const [owAnalysis, setOwAnalysis] = useState(null);
+  const [owAnalyzing, setOwAnalyzing] = useState(false);
 
   function flashWQ(msg){setWqFlash(msg);setTimeout(()=>setWqFlash(""),5000);}
 
@@ -1923,35 +1925,33 @@ function WritingQualityPanel({book,onSettings,onApply}){
         </div>
       )}
       {activeTab==="overused"&&(()=>{
-        const [analysis,setAnalysis]=useState(null);
-        const [analyzing,setAnalyzing]=useState(false);
-        const run=()=>{setAnalyzing(true);setTimeout(()=>{setAnalysis(analyzeOverusedWords(book));setAnalyzing(false);},100);};
+        const run=()=>{setOwAnalyzing(true);setTimeout(()=>{setOwAnalysis(analyzeOverusedWords(book));setOwAnalyzing(false);},100);};
         return(
           <div className="space-y-4">
             <div className="flex items-center justify-between">
               <p className="text-white/40 text-sm">Scans all chapters for overused words, repeated phrases, and adverb frequency. Instant — no API call needed.</p>
-              <button onClick={run} disabled={analyzing} className="text-xs bg-purple-500/20 text-purple-300 border border-purple-500/30 px-4 py-2 rounded-lg hover:bg-purple-500/30 disabled:opacity-40 flex items-center gap-1.5 shrink-0">{analyzing?<><Spin size="h-3 w-3"/>Analyzing…</>:"🔍 Analyze Words"}</button>
+              <button onClick={run} disabled={owAnalyzing} className="text-xs bg-purple-500/20 text-purple-300 border border-purple-500/30 px-4 py-2 rounded-lg hover:bg-purple-500/30 disabled:opacity-40 flex items-center gap-1.5 shrink-0">{owAnalyzing?<><Spin size="h-3 w-3"/>Analyzing…</>:"🔍 Analyze Words"}</button>
             </div>
-            {!analysis&&!analyzing&&<p className="text-white/20 text-sm text-center py-8">Click "Analyze Words" to scan your manuscript for repetition patterns.</p>}
-            {analysis&&(
+            {!owAnalysis&&!owAnalyzing&&<p className="text-white/20 text-sm text-center py-8">Click "Analyze Words" to scan your manuscript for repetition patterns.</p>}
+            {owAnalysis&&(
               <div className="space-y-5">
                 <div className="bg-white/5 border border-white/10 rounded-xl p-4">
-                  <p className="text-white/40 text-xs uppercase tracking-wider mb-3">Top Overused Words ({analysis.totalWords.toLocaleString()} total words scanned)</p>
-                  {analysis.overused.length===0?<p className="text-green-300/60 text-sm">✅ No significantly overused words found!</p>:(
-                    <div className="flex flex-wrap gap-2">{analysis.overused.map(([word,count])=><span key={word} className={`px-3 py-1.5 rounded-lg text-xs font-medium ${count>=50?"bg-red-500/20 text-red-300 border border-red-500/30":count>=30?"bg-amber-500/20 text-amber-300 border border-amber-500/30":"bg-yellow-500/20 text-yellow-300 border border-yellow-500/30"}`}>{word} <span className="font-bold">{count}</span></span>)}</div>
+                  <p className="text-white/40 text-xs uppercase tracking-wider mb-3">Top Overused Words ({owAnalysis.totalWords.toLocaleString()} total words scanned)</p>
+                  {owAnalysis.overused.length===0?<p className="text-green-300/60 text-sm">✅ No significantly overused words found!</p>:(
+                    <div className="flex flex-wrap gap-2">{owAnalysis.overused.map(([word,count])=><span key={word} className={`px-3 py-1.5 rounded-lg text-xs font-medium ${count>=50?"bg-red-500/20 text-red-300 border border-red-500/30":count>=30?"bg-amber-500/20 text-amber-300 border border-amber-500/30":"bg-yellow-500/20 text-yellow-300 border border-yellow-500/30"}`}>{word} <span className="font-bold">{count}</span></span>)}</div>
                   )}
                   <p className="text-white/20 text-xs mt-2">🔴 50+ uses · 🟡 30-49 · 🟡 15-29</p>
                 </div>
-                {analysis.repeatedPhrases.length>0&&(
+                {owAnalysis.repeatedPhrases.length>0&&(
                   <div className="bg-white/5 border border-white/10 rounded-xl p-4">
                     <p className="text-white/40 text-xs uppercase tracking-wider mb-3">Repeated 3-Word Phrases</p>
-                    <div className="space-y-1.5">{analysis.repeatedPhrases.map(([phrase,count])=><div key={phrase} className="flex items-center justify-between bg-black/20 rounded-lg px-3 py-2"><span className="text-white/70 text-sm italic">"{phrase}"</span><span className="text-amber-400 text-xs font-bold shrink-0 ml-3">×{count}</span></div>)}</div>
+                    <div className="space-y-1.5">{owAnalysis.repeatedPhrases.map(([phrase,count])=><div key={phrase} className="flex items-center justify-between bg-black/20 rounded-lg px-3 py-2"><span className="text-white/70 text-sm italic">"{phrase}"</span><span className="text-amber-400 text-xs font-bold shrink-0 ml-3">×{count}</span></div>)}</div>
                   </div>
                 )}
-                {analysis.adverbs.length>0&&(
+                {owAnalysis.adverbs.length>0&&(
                   <div className="bg-white/5 border border-white/10 rounded-xl p-4">
                     <p className="text-white/40 text-xs uppercase tracking-wider mb-3">Frequent Adverbs (-ly)</p>
-                    <div className="flex flex-wrap gap-2">{analysis.adverbs.map(([word,count])=><span key={word} className="px-2.5 py-1 rounded-lg text-xs bg-blue-500/20 text-blue-300 border border-blue-500/30">{word} <span className="font-bold">×{count}</span></span>)}</div>
+                    <div className="flex flex-wrap gap-2">{owAnalysis.adverbs.map(([word,count])=><span key={word} className="px-2.5 py-1 rounded-lg text-xs bg-blue-500/20 text-blue-300 border border-blue-500/30">{word} <span className="font-bold">×{count}</span></span>)}</div>
                   </div>
                 )}
               </div>
