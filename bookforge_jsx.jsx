@@ -3201,6 +3201,7 @@ function EditorPage({bookId,navigate,onSettings}){
   const [buildLog,setBuildLog]=useState([]);
   const [readingMode,setReadingMode]=useState(false);
   const [bookSearch,setBookSearch]=useState(false);
+  const [showFindReplace,setShowFindReplace]=useState(false);
   const [isBuilding,setIsBuilding]=useState(false);
   const [coverMode,setCoverMode]=useState("auto");
   const [customPrompt,setCustomPrompt]=useState("");
@@ -3208,6 +3209,16 @@ function EditorPage({bookId,navigate,onSettings}){
   const buildRef=useRef(false);
   const TABS=["📋 Outline","✍️ Chapters","🎨 Cover","🔍 SEO","🤖 Review","🔎 Market","🪝 Hooks","📊 Quality","✍️ Writing","👥 Characters","📤 Publish","🌍 Translate","🎙️ Audio Studio","📦 Amazon KDP"];
 
+  useEffect(()=>{
+    const onKey=(e)=>{
+      if((e.ctrlKey||e.metaKey)&&(e.key==="h"||e.key==="H")){
+        e.preventDefault();
+        setShowFindReplace(true);
+      }
+    };
+    window.addEventListener("keydown",onKey);
+    return()=>window.removeEventListener("keydown",onKey);
+  },[]);
   useEffect(()=>{
     const b=getBook(bookId);if(!b){navigate("home");return;}
     setBook(b);if(quotaBlocked())setQuotaHit(true);
@@ -3849,7 +3860,7 @@ const genCover=async()=>{if(quotaHit||isBuilding)return;setBusy(true);setError("
 })():<span className="text-white/20 text-xs shrink-0">Pending</span>}</div>)}</div><div className="mt-5 bg-white/5 rounded-xl p-4"><div className="flex justify-between text-xs text-white/40 mb-2"><span>Progress</span><span>{book.chapters.filter(c=>c.generated).length}/{book.chapters.length} chapters</span></div><div className="h-2 bg-white/10 rounded-full overflow-hidden"><div className="h-full bg-gradient-to-r from-purple-500 to-pink-500 rounded-full" style={{width:`${(book.chapters.filter(c=>c.generated).length/book.chapters.length)*100}%`}}/></div></div></>}{(!book.chapters||book.chapters.length===0)&&isBuilding&&<div className="text-center py-8 text-white/30"><Spin/><p className="mt-3 text-sm">Generating outline…</p></div>}<div className="mt-5 flex items-center gap-3 pt-4 border-t border-white/10"><button onClick={()=>setReadingMode(true)} disabled={!book.chapters?.some(c=>c.generated)} className="text-xs px-3 py-2 rounded-lg bg-purple-500/20 border border-purple-500/30 text-purple-300 hover:bg-purple-500/30 hover:text-purple-200 transition-all flex items-center gap-2 disabled:opacity-40">📖 Read Book</button><button onClick={()=>downloadBookJSON(book)} className="text-xs px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-white/60 hover:bg-white/10 hover:text-white/90 transition-all flex items-center gap-2">💾 Export Backup (JSON)</button><label className="text-xs px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-white/60 hover:bg-white/10 hover:text-white/90 transition-all flex items-center gap-2 cursor-pointer">📥 Import Backup<input type="file" accept=".json" className="hidden" onChange={async(e)=>{const file=e.target.files?.[0];if(!file)return;try{const imported=await importBookJSON(file);const books=JSON.parse(localStorage.getItem("bfai_books")||"[]");books.unshift(imported);localStorage.setItem("bfai_books",JSON.stringify(books));alert("Imported \""+imported.title+"\" successfully!");window.location.reload();}catch(err){alert("Import failed: "+err.message);}}}/></label></div></Card></div>}
 
         {/* CHAPTERS */}
-        {tab===1&&<div className="grid grid-cols-1 lg:grid-cols-3 gap-5"><div className="lg:col-span-1"><div className="bg-white/5 border border-white/10 rounded-2xl p-4 sticky top-24"><div className="flex items-center justify-between mb-3"><h3 className="text-white font-semibold text-sm">Chapters</h3><div className="flex gap-1.5"><button onClick={()=>setReadingMode(true)} disabled={!book.chapters?.some(c=>c.generated)} className="text-xs text-purple-300 hover:text-purple-200 disabled:opacity-30 px-2 py-1 rounded bg-purple-500/10">📖 Read</button>{!isBuilding&&<button onClick={async()=>{
+        {tab===1&&<div className="grid grid-cols-1 lg:grid-cols-3 gap-5"><div className="lg:col-span-1"><div className="bg-white/5 border border-white/10 rounded-2xl p-4 sticky top-24"><div className="flex items-center justify-between mb-3"><h3 className="text-white font-semibold text-sm">Chapters</h3><div className="flex gap-1.5"><button onClick={()=>setReadingMode(true)} disabled={!book.chapters?.some(c=>c.generated)} className="text-xs text-purple-300 hover:text-purple-200 disabled:opacity-30 px-2 py-1 rounded bg-purple-500/10">📖 Read</button><button onClick={()=>setShowFindReplace(true)} className="text-xs text-purple-300 hover:text-purple-200 disabled:opacity-30 px-2 py-1 rounded bg-purple-500/10 flex items-center gap-1">🔍 Find & Replace</button>{!isBuilding&&<button onClick={async()=>{
     // Write all unwritten chapters, then trigger remaining pipeline steps
     for(let i=0;i<(book.chapters||[]).length;i++){
       if(quotaBlocked()){setQuotaHit(true);break;}
@@ -4740,6 +4751,7 @@ function TranslatePanel({book,upd,quotaHit,bump,handleErr,flash}){
         </div>
       </Card>
       {readingMode&&<BookReader book={book} onClose={()=>setReadingMode(false)}/>}
+      {showFindReplace&&<FindReplaceModal book={book} onClose={()=>setShowFindReplace(false)} onUpdateBook={upd} flash={flash}/>}
     </div>
   );
 }
@@ -4902,6 +4914,209 @@ const setMangaProjects=v=>{try{localStorage.setItem(MANGA_KEY,JSON.stringify(v))
 const getMangaProject=id=>getMangaProjects().find(p=>p.id===id)||null;
 const saveMangaProject=p=>{const all=getMangaProjects();const i=all.findIndex(x=>x.id===p.id);if(i>-1)all[i]=p;else all.unshift(p);setMangaProjects(all);};
 const deleteMangaProject=id=>setMangaProjects(getMangaProjects().filter(p=>p.id!==id));
+
+// ══════════════════════════════════════════════════════════════════════════════
+// 🔍 FIND & REPLACE MODAL — Global Find & Replace across all chapters
+// ══════════════════════════════════════════════════════════════════════════════
+function FindReplaceModal({book,onClose,onUpdateBook,flash}){
+  const [findText,setFindText]=useState("");
+  const [replaceText,setReplaceText]=useState("");
+  const [caseSensitive,setCaseSensitive]=useState(false);
+  const [replacedMsg,setReplacedMsg]=useState("");
+
+  const escapeRegExp=(str)=>{
+    return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  };
+
+  const getChapterMatches=()=>{
+    if(!findText)return[];
+    try{
+      const flags=caseSensitive?"g":"gi";
+      const regex=new RegExp(escapeRegExp(findText),flags);
+      return(book?.chapters||[]).map((ch,idx)=>{
+        const content=ch.content||"";
+        const matches=content?(content.match(regex)||[]).length:0;
+        return{
+          idx,
+          number:ch.number||(idx+1),
+          title:ch.title||`Chapter ${idx+1}`,
+          count:matches,
+          hasContent:!!ch.content
+        };
+      });
+    }catch(e){
+      return[];
+    }
+  };
+
+  const chapterMatches=getChapterMatches();
+  const totalMatches=chapterMatches.reduce((acc,c)=>acc+c.count,0);
+
+  const handleReplaceAll=()=>{
+    if(!findText||totalMatches===0)return;
+    try{
+      const flags=caseSensitive?"g":"gi";
+      const regex=new RegExp(escapeRegExp(findText),flags);
+
+      let totalReplaced=0;
+      let chaptersModified=0;
+      const chapterCounts=[];
+
+      const updatedChapters=(book?.chapters||[]).map((ch,idx)=>{
+        if(!ch.content)return ch;
+        const matches=(ch.content.match(regex)||[]).length;
+        if(matches>0){
+          totalReplaced+=matches;
+          chaptersModified++;
+          chapterCounts.push(`Ch. ${ch.number||idx+1}: ${matches}`);
+          const newContent=ch.content.replace(regex,()=>replaceText);
+          return{...ch,content:newContent};
+        }
+        return ch;
+      });
+
+      const wc=updatedChapters.reduce((acc,c)=>acc+(c.content?c.content.trim().split(/\s+/).filter(Boolean).length:0),0);
+
+      if(onUpdateBook){
+        onUpdateBook({chapters:updatedChapters,word_count:wc});
+      }
+
+      const msg=`Replaced ${totalReplaced} occurrence${totalReplaced===1?"":"s"} across ${chaptersModified} chapter${chaptersModified===1?"":"s"} (${chapterCounts.join(", ")})`;
+      setReplacedMsg(msg);
+      if(flash)flash(`Replaced ${totalReplaced} occurrence${totalReplaced===1?"":"s"} across ${chaptersModified} chapter${chaptersModified===1?"":"s"}! 🔍`);
+    }catch(err){
+      console.error("Replace failed:",err);
+    }
+  };
+
+  return(
+    <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+      <div className="bg-slate-800 border border-white/10 rounded-2xl max-w-lg w-full shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
+        {/* Header */}
+        <div className="sticky top-0 bg-slate-800 border-b border-white/10 px-6 py-4 flex items-center justify-between z-10">
+          <div className="flex items-center gap-2">
+            <span className="text-xl">🔍</span>
+            <h2 className="text-white text-lg font-bold">Global Find & Replace</h2>
+          </div>
+          <button
+            onClick={onClose}
+            aria-label="Close modal"
+            data-close-btn="true"
+            className="text-white/40 hover:text-white text-xl transition-colors"
+          >
+            ✕
+          </button>
+        </div>
+
+        {/* Body */}
+        <div className="p-6 space-y-4 overflow-y-auto flex-1">
+          {replacedMsg&&(
+            <div className="p-3 bg-green-500/20 border border-green-500/30 rounded-xl text-green-300 text-xs flex items-center justify-between">
+              <span>✅ {replacedMsg}</span>
+              <button onClick={()=>setReplacedMsg("")} className="text-green-300/60 hover:text-green-300">✕</button>
+            </div>
+          )}
+
+          <div>
+            <label className="text-white/70 text-xs font-semibold block mb-1.5 uppercase tracking-wider">
+              Find
+            </label>
+            <input
+              type="text"
+              value={findText}
+              onChange={(e)=>{setFindText(e.target.value);setReplacedMsg("");}}
+              placeholder="Text to find across all chapters..."
+              className="w-full bg-white/5 border border-white/10 rounded-xl px-3.5 py-2.5 text-white text-sm placeholder-white/30 focus:outline-none focus:border-purple-500/50 transition-colors"
+              autoFocus
+            />
+          </div>
+
+          <div>
+            <label className="text-white/70 text-xs font-semibold block mb-1.5 uppercase tracking-wider">
+              Replace with
+            </label>
+            <input
+              type="text"
+              value={replaceText}
+              onChange={(e)=>{setReplaceText(e.target.value);setReplacedMsg("");}}
+              placeholder="Replacement text..."
+              className="w-full bg-white/5 border border-white/10 rounded-xl px-3.5 py-2.5 text-white text-sm placeholder-white/30 focus:outline-none focus:border-purple-500/50 transition-colors"
+            />
+          </div>
+
+          <div className="flex items-center justify-between pt-1">
+            <label className="flex items-center gap-2 cursor-pointer text-sm text-white/80 select-none">
+              <input
+                type="checkbox"
+                checked={caseSensitive}
+                onChange={(e)=>setCaseSensitive(e.target.checked)}
+                className="rounded border-white/20 bg-white/10 text-purple-500 focus:ring-purple-500 accent-purple-500"
+              />
+              Case sensitive
+            </label>
+
+            {findText&&(
+              <span className={`text-xs px-2.5 py-1 rounded-full font-medium ${
+                totalMatches>0
+                  ?"bg-purple-500/20 text-purple-300 border border-purple-500/30"
+                  :"bg-white/5 text-white/40 border border-white/10"
+              }`}>
+                {totalMatches} {totalMatches===1?"occurrence":"occurrences"} found
+              </span>
+            )}
+          </div>
+
+          {findText&&(
+            <div className="mt-4 pt-3 border-t border-white/10">
+              <p className="text-white/50 text-xs font-semibold mb-2 uppercase tracking-wider">
+                Per-Chapter Breakdown
+              </p>
+              <div className="space-y-1.5 max-h-40 overflow-y-auto pr-1 text-xs">
+                {chapterMatches.map((ch)=>(
+                  <div
+                    key={ch.idx}
+                    className="flex items-center justify-between py-1.5 px-3 rounded-lg bg-white/5 border border-white/5"
+                  >
+                    <span className="text-white/80 truncate max-w-[280px]">
+                      Ch. {ch.number}: {ch.title}
+                    </span>
+                    <span
+                      className={`font-mono font-medium px-2 py-0.5 rounded ${
+                        ch.count>0
+                          ?"bg-purple-500/30 text-purple-200"
+                          :"text-white/30"
+                      }`}
+                    >
+                      {ch.count} {ch.count===1?"match":"matches"}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Footer */}
+        <div className="bg-slate-800/80 border-t border-white/10 px-6 py-4 flex items-center justify-end gap-3">
+          <button
+            onClick={onClose}
+            className="text-xs px-4 py-2.5 rounded-xl border border-white/10 text-white/70 hover:bg-white/5 transition-colors"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={handleReplaceAll}
+            disabled={!findText||totalMatches===0}
+            className="text-xs font-semibold px-5 py-2.5 rounded-xl bg-gradient-to-r from-purple-500 to-pink-500 text-white hover:opacity-90 disabled:opacity-40 disabled:hover:opacity-40 transition-all shadow-lg shadow-purple-500/20 flex items-center gap-1.5"
+          >
+            <span>✨ Replace All</span>
+            {totalMatches>0&&<span>({totalMatches})</span>}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 // ══════════════════════════════════════════════════════════════════════════════
 // 📖 BOOK READER — Full-book read mode with chapter navigation
