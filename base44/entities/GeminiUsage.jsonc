@@ -1,0 +1,16 @@
+{
+  "type": "object",
+  "properties": {
+    "date": {
+      "type": "string"
+    },
+    "request_count": {
+      "type": "number"
+    },
+    "daily_limit": {
+      "type": "number"
+    }
+  },
+  "required": [],
+  "name": "GeminiUsage"
+}
