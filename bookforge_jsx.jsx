@@ -41,7 +41,7 @@ const setKey=k=>localStorage.setItem("gemini_api_key",k.trim());
 const BACKENDS=[
   {id:"gemini",label:"Gemini API Key",desc:"Bring your own free Google AI Studio key. 1,500 req/day."},
   {id:"puter",label:"Puter.js (Free — No Key)",desc:"400+ models incl. GPT-5.5, Claude Opus 5, Gemini 3.6. User-pays model — you pay nothing."},
-  {id:"groq",label:"Groq Turbo (⚡ Fastest)",desc:"500+ tokens/sec with Llama 4. Free API key, generous rate limits."}
+  {id:"groq",label:"Groq Turbo (⚡ Fastest)",desc:"500+ tokens/sec with GPT-OSS 120B. Free API key, 14,400 req/day."}
 ];
 const getBackend=()=>localStorage.getItem("bfai_backend")||"gemini";
 const setBackend=b=>safeLS("bfai_backend",b);
@@ -53,6 +53,9 @@ const PUTER_TEXT_MODELS=[
   {id:"openai/gpt-5.6-luna",label:"GPT-5.6 Luna",desc:"GPT-5.6 smallest — fast & efficient"},
   {id:"google/gemini-3.6-flash",label:"Gemini 3.6 Flash",desc:"Google's latest — fast, great default"},
   {id:"anthropic/claude-opus-5",label:"Claude Opus 5",desc:"Best for creative writing & long-form prose"},
+  {id:"deepseek/deepseek-v4-flash",label:"DeepSeek V4 Flash ⭐ NEW",desc:"284B params, 13B active — faster than V4 Pro, great reasoning"},
+  {id:"qwen/qwen3.8-flash",label:"Qwen 3.8 Flash ⭐ NEW",desc:"125B params, 1M context, 128K output — multimodal, super long books"},
+  {id:"z-ai/glm-5.3-flash",label:"GLM 5.3 Flash ⭐ NEW",desc:"320B params, 1M context — strong coding/reasoning, always thinking"},
   {id:"openai/gpt-5.5",label:"GPT-5.5",desc:"OpenAI previous gen — versatile, strong reasoning"},
   {id:"x-ai/grok-4.5",label:"Grok 4.5",desc:"xAI — good for current events & edgy tone"},
   {id:"deepseek/deepseek-v4-pro",label:"DeepSeek V4 Pro",desc:"Excellent reasoning & structure"},
@@ -70,6 +73,7 @@ const PUTER_IMAGE_MODELS=[
   {id:"google/gemini-3-pro-image-preview",label:"Gemini 3 Pro Image",desc:"Google — fast, vibrant"},
   {id:"google/imagen-4.0",label:"Imagen 4.0",desc:"Google — photorealistic"},
   {id:"stabilityai/stable-diffusion-3-medium",label:"Stable Diffusion 3",desc:"Open-source — reliable"},
+  {id:"bytedance-seed/seedream-4.5",label:"Seedream 4.5 ⭐ NEW",desc:"ByteDance — newest, best artistic quality"},
   {id:"bytedance-seed/seedream-4.0",label:"Seedream 4.0",desc:"ByteDance — artistic styles"},
   {id:"ideogram/ideogram-3.0",label:"Ideogram 3.0",desc:"Best at rendering text on images"},
   {id:"pollinations",label:"Pollinations.ai (current)",desc:"No Puter account needed — URL-based"}
@@ -80,13 +84,12 @@ const setPuterImageModel=m=>safeLS("bfai_puter_image_model",m);
 const GROQ_MODELS=[
   {id:"openai/gpt-oss-120b",label:"GPT-OSS 120B",desc:"OpenAI open-weight flagship — best for creative writing, 500 tok/s"},
   {id:"openai/gpt-oss-20b",label:"GPT-OSS 20B",desc:"Ultra-fast (1000 tok/s) — outlines, metadata, quick drafts"},
-  {id:"qwen/qwen3.6-27b",label:"Qwen 3.6 27B",desc:"Strong multilingual + reasoning — preview model"},
-  {id:"llama-3.3-70b-versatile",label:"Llama 3.3 70B (retiring Aug 16)",desc:"Legacy — reliable all-purpose, being deprecated"},
-  {id:"llama-3.1-8b-instant",label:"Llama 3.1 8B (retiring Aug 16)",desc:"Legacy ultra-fast — being deprecated"}
+  {id:"qwen/qwen3.8-27b",label:"Qwen 3.8 27B ⭐ NEW",desc:"Newer preview — strong multilingual + reasoning, 450 tok/s"},
+  {id:"qwen/qwen3.6-27b",label:"Qwen 3.6 27B",desc:"Strong multilingual + reasoning — preview model"}
 ];
 const getGroqKey=()=>localStorage.getItem("groq_api_key")||"";
 const setGroqKey=k=>safeLS("groq_api_key",k.trim());
-const DEPRECATED_GROQ_MODELS={"llama-4-scout-17b-16e-instruct":"openai/gpt-oss-120b","llama-4-maverick-17b-128e-instruct":"openai/gpt-oss-120b","mixtral-8x7b-32768":"openai/gpt-oss-20b","gemma2-9b-it":"openai/gpt-oss-20b","deepseek-r1-distill-llama-70b":"openai/gpt-oss-120b","qwen-2.5-72b-instruct":"openai/gpt-oss-120b"};
+const DEPRECATED_GROQ_MODELS={"llama-4-scout-17b-16e-instruct":"openai/gpt-oss-120b","llama-4-maverick-17b-128e-instruct":"openai/gpt-oss-120b","mixtral-8x7b-32768":"openai/gpt-oss-20b","gemma2-9b-it":"openai/gpt-oss-20b","deepseek-r1-distill-llama-70b":"openai/gpt-oss-120b","qwen-2.5-72b-instruct":"openai/gpt-oss-120b","llama-3.3-70b-versatile":"openai/gpt-oss-120b","llama-3.1-8b-instant":"openai/gpt-oss-20b"};
 const getGroqModel=()=>{
   let m=localStorage.getItem("bfai_groq_model")||"openai/gpt-oss-120b";
   if(DEPRECATED_GROQ_MODELS[m]){safeLS("bfai_groq_model",DEPRECATED_GROQ_MODELS[m]);return DEPRECATED_GROQ_MODELS[m];}
@@ -123,14 +126,14 @@ const TASK_MODELS={
     structured:"openai/gpt-oss-120b",    // Good at JSON following
     short:"openai/gpt-oss-20b",          // 1000 tok/s — fast for metadata
     reasoning:"openai/gpt-oss-120b",      // Best reasoning for outlines
-    multilingual:"qwen/qwen3.6-27b",      // Strong multilingual
+    multilingual:"qwen/qwen3.8-27b",      // Newer Qwen — stronger multilingual
   },
   puter:{
     creative:"openai/gpt-5.6-sol",       // Flagship — best creative writing
-    structured:"openai/gpt-5.6-terra",   // Mid-tier — good JSON, cost-effective
+    structured:"deepseek/deepseek-v4-flash", // V4 Flash — excellent JSON + reasoning, fast
     short:"openai/gpt-5.6-luna",         // Smallest — fast for short tasks
-    reasoning:"openai/gpt-5.6-sol",      // Best reasoning
-    multilingual:"qwen/qwen3.7-max",      // Best multilingual
+    reasoning:"deepseek/deepseek-v4-flash", // V4 Flash — strong reasoning, cost-effective
+    multilingual:"qwen/qwen3.8-flash",    // 1M context, multimodal, strong multilingual
   },
   gemini:{
     creative:"gemini-2.5-flash",        // Only model available
@@ -166,6 +169,7 @@ const detectTask=(prompt)=>{
 
 // Resolve which model to use: auto-selected by task detection, or user's manual choice
 const resolveModel=(prompt,opts={})=>{
+  if(opts.model)return opts.model; // explicit model override (e.g. translation models)
   if(!getAutoModel())return null; // null = use user's manual choice
   if(opts.task)return getBestModel(opts.task);
   const task=detectTask(prompt);
@@ -4824,6 +4828,14 @@ function TranslatePanel({book,upd,quotaHit,bump,handleErr,flash}){
   const [transPct,setTransPct]=useState(0);
   const [done,setDone]=useState(false);
   const [error,setError]=useState("");
+  // Dedicated translation models (via Puter.js) — purpose-built for translation
+  const TRANSLATE_MODELS=[
+    {id:"auto",label:"Auto (smart model picker)",desc:"Uses the best model for your backend"},
+    {id:"tencent/hy-mt2-7b",label:"Tencent Hy-MT2 7B ⭐",desc:"Purpose-built translation — 33 languages, excellent quality"},
+    {id:"tencent/hy-mt2-30b-a3b",label:"Tencent Hy-MT2 30B ⭐",desc:"Pro translation — approaches Gemini 3.1 Pro quality"},
+    {id:"qwen/qwen3.8-flash",label:"Qwen 3.8 Flash",desc:"1M context — great for full-book translation in one pass"},
+  ];
+  const [transModel,setTransModel]=useState("auto");
 
   const translate=async()=>{
     if(quotaHit||translating)return;
@@ -4838,12 +4850,12 @@ function TranslatePanel({book,upd,quotaHit,bump,handleErr,flash}){
         const ch=toTranslate[i];
         const chIdx=chapters.findIndex(c=>c.number===ch.number);
         setProgress(`Translating chapter ${i+1}/${toTranslate.length}…`);setTransPct(Math.round((i+1)/toTranslate.length*100));
-        const translated=await callAI(
-          `You are a professional literary translator. Translate this chapter into ${targetLang}.\n\n`+
+        const transPrompt=_useTransModel
+          ?`Translate this chapter into ${targetLang}. Preserve the author's voice, sentence rhythm, and style. Keep character names as-is. Keep all emotional beats intact. Natural ${targetLang} — not word-for-word literal translation. Return ONLY the translated text — no preamble.\n\nCHAPTER:\n${ch.content}`
+          :`You are a professional literary translator. Translate this chapter into ${targetLang}.\n\n`+
           `Rules:\n• Preserve the author's voice, sentence rhythm, and style\n• Keep character names as-is\n• Keep all emotional beats intact\n• Natural ${targetLang} — not word-for-word literal translation\n• Return ONLY the translated text — no preamble\n\n`+
-          `CHAPTER:\n${ch.content}`,
-          0.4
-        );
+          `CHAPTER:\n${ch.content}`;
+        const translated=await callAI(transPrompt,0.4,{model:_useTransModel?transModel:undefined});
         bump();
         chapters[chIdx]={...chapters[chIdx],content:translated};
       }
@@ -4860,6 +4872,7 @@ function TranslatePanel({book,upd,quotaHit,bump,handleErr,flash}){
     }catch(e){setError(errMsg(e));}finally{setTranslating(false);}
   };
 
+  const _useTransModel=transModel!=="auto"&&getBackend()==="puter";
   return(
     <div className="max-w-2xl mx-auto">
       <Card>
@@ -4868,6 +4881,12 @@ function TranslatePanel({book,upd,quotaHit,bump,handleErr,flash}){
           <h2 className="text-white text-xl font-bold mb-1">Book Translation</h2>
           <p className="text-white/40 text-sm">Translate your entire book into 30+ languages. Reach new KDP markets.</p>
         </div>
+        {getBackend()==="puter"&&<div className="mb-4">
+          <label className="text-white/40 text-xs uppercase tracking-wider mb-2 block">Translation Model</label>
+          <select value={transModel} onChange={e=>setTransModel(e.target.value)} className="w-full bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-white/60 text-sm focus:outline-none focus:border-purple-500 cursor-pointer">
+            {TRANSLATE_MODELS.map(m=><option key={m.id} value={m.id}>{m.label} — {m.desc}</option>)}
+          </select>
+        </div>}
         {done&&<div className="bg-green-500/15 border border-green-500/30 rounded-xl p-4 mb-5 text-center">
   <p className="text-green-300 font-semibold">✅ Translation complete! All chapters now in {targetLang}.</p>
   <p className="text-green-300/60 text-xs mt-1 mb-3">Re-run the Writing Quality Agent to verify quality in the new language.</p>
