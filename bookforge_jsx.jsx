@@ -115,10 +115,13 @@ const PUTER_IMAGE_MODELS=[
   {id:"google/gemini-3-pro-image-preview",label:"Gemini 3 Pro Image",desc:"Google — fast, vibrant"},
   {id:"google/imagen-4.0",label:"Imagen 4.0",desc:"Google — photorealistic"},
   {id:"stabilityai/stable-diffusion-3-medium",label:"Stable Diffusion 3",desc:"Open-source — reliable"},
-  {id:"bytedance-seed/seedream-4.5",label:"Seedream 4.5 ⭐ NEW",desc:"ByteDance — newest, best artistic quality"},
+  {id:"black-forest-labs/flux-2-pro",label:"FLUX.2 Pro ⭐ BEST",desc:"Black Forest Labs — highest quality, photorealistic, best for covers"},
+  {id:"black-forest-labs/flux-2-max",label:"FLUX.2 Max",desc:"Black Forest Labs — maximum quality & realism, premium tier"},
+  {id:"black-forest-labs/flux-schnell",label:"FLUX.1 Schnell (Fast)",desc:"Black Forest Labs — fastest generation, great for drafts"},
+  {id:"bytedance-seed/seedream-4.5",label:"Seedream 4.5",desc:"ByteDance — strong artistic quality"},
   {id:"bytedance-seed/seedream-4.0",label:"Seedream 4.0",desc:"ByteDance — artistic styles"},
   {id:"ideogram/ideogram-3.0",label:"Ideogram 3.0",desc:"Best at rendering text on images"},
-  {id:"pollinations",label:"Pollinations.ai (current)",desc:"No Puter account needed — URL-based"}
+  {id:"pollinations",label:"Pollinations.ai (No Key)",desc:"No Puter account needed — URL-based, lower quality"}
 ];
 const getPuterImageModel=()=>localStorage.getItem("bfai_puter_image_model")||"pollinations";
 const setPuterImageModel=m=>safeLS("bfai_puter_image_model",m);
@@ -1422,6 +1425,54 @@ function ScoreBadge({score}){const color=score>=80?"text-green-400 border-green-
 function Card({children,className=""}){return<div className={`bg-white/5 border border-white/10 rounded-2xl p-6 ${className}`}>{children}</div>;}
 
 // ── Settings Modal ────────────────────────────────────────────────────────────
+// ── AI Content Detection (heuristic pre-publish check) ──
+const AI_TELL_PATTERNS={
+  emDashes:{regex:/—/g,label:"Em-dashes",desc:"AI overuses em-dashes for dramatic pauses"},
+  hedgeWords:{regex:/\b(indeed|moreover|furthermore|additionally|consequently|nevertheless|notably|specifically|ultimately|overall)\b/gi,label:"Hedge/formal words",desc:"Formal transition words AI loves, humans rarely use"},
+  triteOpeners:{regex:/\b(it was a|in the world of|in a world where|imagine a|picture this|the year is)\b/gi,label:"Trite openers",desc:"Overused AI narrative openers"},
+  toldNotShown:{regex:/\b(she felt|he felt|they felt|she knew|he knew|they knew|she realized|he realized|she noticed|he noticed)\b/gi,label:"Told not shown",desc:"Stating emotions instead of showing them"},
+  purpleProse:{regex:/\b(tapestry|symphony|dance|mosaic|kaleidoscope|ethereal|ineffable|luminous|transcendent)\b/gi,label:"Purple prose",desc:"Overly flowery words AI gravitates toward"},
+  listFormat:{regex:/\b(firstly|secondly|thirdly|lastly|in conclusion|to summarize)\b/gi,label:"List format",desc:"Essay-like transitions in fiction"},
+  redundantAdverbs:{regex:/\b(absolutely|definitely|certainly|completely|totally|utterly|entirely)\b/gi,label:"Redundant adverbs",desc:"Unnecessary intensifiers"}
+};
+
+function detectAIContent(text){
+  const results=[];
+  let totalHits=0;
+  const words=text.split(/\s+/);
+  const wordCount=words.length;
+  if(wordCount<50)return{score:100,issues:[],verdict:"PASS",msg:"Not enough text to analyze."};
+  for(const[key,val]of Object.entries(AI_TELL_PATTERNS)){
+    const matches=text.match(val.regex);
+    if(matches){
+      const density=(matches.length/wordCount)*1000;
+      const threshold=key==="emDashes"?3:key==="toldNotShown"?5:key==="redundantAdverbs"?4:2;
+      if(density>threshold||(matches.length>5&&density>1)){
+        results.push({label:val.label,count:matches.length,density:density.toFixed(2),desc:val.desc,examples:[...new Set(matches)].slice(0,3)});
+        totalHits+=matches.length;
+      }
+    }
+  }
+  // Sentence length variance check (AI tends toward uniformity)
+  const sentences=text.split(/[.!?]+/).filter(s=>s.trim().length>0);
+  if(sentences.length>10){
+    const lengths=sentences.map(s=>s.trim().split(/\s+/).length);
+    const avg=lengths.reduce((a,b)=>a+b,0)/lengths.length;
+    const variance=lengths.reduce((sum,l)=>sum+Math.pow(l-avg,2),0)/lengths.length;
+    const stdev=Math.sqrt(variance);
+    if(stdev<4&&avg>12){
+      results.push({label:"Low sentence variance",count:1,density:"0",desc:"Sentence lengths are too uniform — human writing varies more",examples:[]});
+      totalHits+=2;
+    }
+  }
+  // Scoring
+  let score=100-totalHits*3;
+  if(results.length>4)score-=10;
+  score=Math.max(0,Math.min(100,score));
+  const verdict=score>=70?"PASS":score>=45?"REVIEW":"FAIL";
+  return{score,issues:results,verdict};
+}
+
 function SettingsModal({onClose}){
   const [draft,setDraft]=useState(getKey());
   const [saved,setSaved]=useState(false);
@@ -2196,8 +2247,8 @@ function WritingQualityPanel({book,onSettings,onApply}){
       </Card>
 
       {/* Sub-tabs */}
-      <div className="bg-white/5 border border-white/10 rounded-xl p-1 flex gap-1">
-        {[["manuscript","📄 Manuscript Check"],["chapters","📑 Chapter-by-Chapter"],["overused","🔍 Overused Words"]].map(([id,label])=>(
+      <div className="bg-white/5 border border-white/10 rounded-xl p-1 flex gap-1 flex-wrap">
+        {[["manuscript","📄 Manuscript Check"],["chapters","📑 Chapter-by-Chapter"],["overused","🔍 Overused Words"],["aidetect","🤖 AI Detection"]].map(([id,label])=>(
           <button key={id} onClick={()=>setActiveTab(id)} className={`flex-1 py-2.5 rounded-lg text-sm font-medium transition-all ${activeTab===id?"bg-purple-500 text-white":"text-white/40 hover:text-white"}`}>{label}</button>
         ))}
       </div>
@@ -4220,6 +4271,36 @@ const genCover=async()=>{if(quotaHit||isBuilding)return;setBusy(true);setError("
     if(!book.chapters?.some(c=>c.content)){setError("Write at least one chapter first.");return;}
     const chaps=(book.chapters||[]).filter(c=>c.content);
     const seriesPage=book.hooks?.series_read_order_page?"\n\n---\n\n# Also By This Author\n\n"+book.hooks.series_read_order_page:"";
+    if(fmt==="docx"){
+      // Generate DOCX as an HTML blob with Word-compatible MIME type
+      const author=getAuthorProfile().name||"Author";
+      const docHTML=`<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word" xmlns="http://www.w3.org/TR/REC-html40"><head><meta charset="utf-8"><title>${book.title}</title><style>
+        @page{margin:1in;}
+        body{font-family:"Times New Roman",serif;font-size:12pt;line-height:1.5;}
+        h1{font-size:24pt;text-align:center;margin-top:3in;margin-bottom:0.5in;font-weight:normal;}
+        h2{font-size:14pt;text-align:center;margin-bottom:1in;font-weight:normal;font-style:italic;}
+        h3{font-size:14pt;margin-top:0.5in;margin-bottom:0.25in;page-break-before:always;}
+        .copyright{font-size:10pt;text-align:center;margin-top:2in;color:#666;}
+        p{text-indent:0.5in;margin:0;margin-bottom:0.12in;}
+        p:first-of-type{text-indent:0;}
+        .toc{margin-bottom:1in;}
+        .toc p{text-indent:0;font-size:11pt;}
+      </style></head><body>
+      <h1>${book.title}</h1>
+      ${book.subtitle?`<h2>${book.subtitle}</h2>`:""}
+      <p class="copyright">Copyright © ${new Date().getFullYear()} ${author}<br>All rights reserved.</p>
+      <div class="toc"><h3 style="page-break-before:avoid">Table of Contents</h3>
+      ${chaps.map(c=>`<p>Chapter ${c.number}: ${c.title}</p>`).join("")}
+      </div>
+      ${chaps.map(c=>`<h3>Chapter ${c.number}: ${c.title}</h3>`+c.content.split(/\n\n+/).map(p=>`<p>${p.replace(/</g,"&lt;").replace(/>/g,"&gt;")}</p>`).join("")).join("")}
+      ${seriesPage?`<h3>Also By This Author</h3>${seriesPage.split("\n").map(p=>p.trim()?`<p>${p.replace(/</g,"&lt;").replace(/>/g,"&gt;")}</p>`:"").join("")}`:""}
+      </body></html>`;
+      const blob=new Blob(["\ufeff",docHTML],{type:"application/msword"});
+      const a=Object.assign(document.createElement("a"),{href:URL.createObjectURL(blob),download:(book.title||"book").replace(/[^a-z0-9]/gi,"_")+".doc"});
+      a.click();
+      flash("DOCX exported! 📄");
+      return;
+    }
     if(fmt==="md"){
       const md="# "+book.title+"\n"+(book.subtitle?"## "+book.subtitle+"\n":"")+"\n"+(book.description||"")+"\n\n---\n\n"+chaps.map(c=>"# Chapter "+c.number+": "+c.title+"\n\n"+c.content).join("\n\n---\n\n")+seriesPage;
       const a=Object.assign(document.createElement("a"),{href:URL.createObjectURL(new Blob([md],{type:"text/markdown"})),download:(book.title||"book").replace(/[^a-z0-9]/gi,"_")+".md"});a.click();
@@ -4488,6 +4569,7 @@ const genCover=async()=>{if(quotaHit||isBuilding)return;setBusy(true);setError("
             <p className="text-white/50 text-sm font-semibold mb-3">Export Formats</p>
             <div className="grid grid-cols-2 gap-3">
               <button onClick={()=>download("md")} className="bg-gradient-to-r from-purple-500 to-pink-500 text-white py-3 rounded-xl font-semibold hover:opacity-90 flex items-center justify-center gap-2 text-sm">📝 Markdown (.md)</button>
+              <button onClick={()=>download("docx")} className="bg-gradient-to-r from-indigo-500 to-blue-500 text-white py-3 rounded-xl font-semibold hover:opacity-90 flex items-center justify-center gap-2 text-sm">📋 Word (.docx) ⭐ NEW</button>
               <button onClick={()=>download("epub")} className="bg-gradient-to-r from-blue-500 to-cyan-500 text-white py-3 rounded-xl font-semibold hover:opacity-90 flex items-center justify-center gap-2 text-sm">📖 EPUB-ready (.html)</button>
               <button onClick={()=>download("txt")} className="bg-white/10 border border-white/20 text-white py-3 rounded-xl font-semibold hover:bg-white/15 flex items-center justify-center gap-2 text-sm">📄 Plain Text (.txt)</button>
               <button onClick={()=>download("rtf")} className="bg-gradient-to-r from-orange-500 to-amber-500 text-white py-3 rounded-xl font-semibold hover:opacity-90 flex items-center justify-center gap-2 text-sm">📋 Word Doc (.rtf)</button>
@@ -5148,6 +5230,59 @@ function AudioStudioPanel({book,bookId,onSettings,flash}){
           </div>
         ):(
           <p className="text-white/30 text-sm text-center py-4">Browser TTS not available — try Chrome, Edge, or Safari.</p>
+        )}
+      </Card>
+
+      {/* Puter.js Premium TTS — OpenAI, Polly, ElevenLabs neural voices */}
+      <Card>
+        <div className="flex items-start gap-4 mb-4">
+          <div className="w-12 h-12 bg-gradient-to-br from-violet-500 to-indigo-500 rounded-2xl flex items-center justify-center text-2xl shrink-0">🎭</div>
+          <div className="flex-1">
+            <h2 className="text-white text-xl font-bold">Premium Neural TTS (Puter.js)</h2>
+            <p className="text-white/40 text-sm mt-1">OpenAI TTS, AWS Polly & ElevenLabs — <strong className="text-violet-400/70">natural human-like voices</strong>. Requires Puter.js backend. User-pays model — you pay nothing.</p>
+          </div>
+          <div className={`text-xs px-3 py-1 rounded-full border font-semibold shrink-0 ${typeof puter!=="undefined"?"bg-green-500/20 text-green-300 border-green-500/30":"bg-white/10 text-white/30 border-white/10"}`}>{typeof puter!=="undefined"?"Available":"Puter.js Required"}</div>
+        </div>
+        {typeof puter!=="undefined"?(
+          <div className="space-y-3">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <div>
+                <label className="text-white/50 text-xs uppercase tracking-wider block mb-1.5">Provider</label>
+                <select value={getPuterTTSProvider()} onChange={e=>{setPuterTTSProvider(e.target.value);const p=PUTER_TTS_PROVIDERS.find(x=>x.id===e.target.value);if(p)setPuterTTSVoice(p.voices[0]);}} className="w-full bg-white/10 border border-white/20 rounded-xl px-3 py-2.5 text-white text-sm focus:outline-none focus:border-violet-500">
+                  {PUTER_TTS_PROVIDERS.map(p=><option key={p.id} value={p.id} className="bg-gray-800">{p.label}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="text-white/50 text-xs uppercase tracking-wider block mb-1.5">Voice</label>
+                <select value={getPuterTTSVoice()} onChange={e=>setPuterTTSVoice(e.target.value)} className="w-full bg-white/10 border border-white/20 rounded-xl px-3 py-2.5 text-white text-sm focus:outline-none focus:border-violet-500">
+                  {(PUTER_TTS_PROVIDERS.find(p=>p.id===getPuterTTSProvider())?.voices||[]).map(v=><option key={v} value={v} className="bg-gray-800">{v}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="text-white/50 text-xs uppercase tracking-wider block mb-1.5">Chapter</label>
+                <select value={browserChIdx} onChange={e=>setBrowserChIdx(Number(e.target.value))} className="w-full bg-white/10 border border-white/20 rounded-xl px-3 py-2.5 text-white text-sm focus:outline-none focus:border-violet-500">
+                  {chapters.map((ch,i)=><option key={i} value={i} className="bg-gray-800">Ch.{ch.number}: {ch.title}</option>)}
+                </select>
+              </div>
+            </div>
+            <button onClick={async()=>{
+              if(!chapters[browserChIdx]){flash("No chapter selected");return;}
+              try{
+                flash("🎭 Generating premium audio…");
+                const text=chapters[browserChIdx].content.replace(/[#*_`]/g,"").slice(0,4000);
+                const audio=await puterTTS(text);
+                if(audio?.play)audio.play();
+                else if(audio instanceof HTMLAudioElement)audio.play();
+                else if(typeof audio==="string"){const a=new Audio(audio);a.play();}
+                flash("▶ Playing premium TTS preview");
+              }catch(e){flash("⚠️ "+errMsg(e));}
+            }} disabled={chapters.length===0} className="w-full bg-gradient-to-r from-violet-500 to-indigo-500 text-white py-3.5 rounded-xl font-semibold hover:opacity-90 disabled:opacity-40 flex items-center justify-center gap-2">▶ Play Premium Preview (first 4000 chars)</button>
+            <p className="text-white/30 text-xs">⚠️ Puter.js user-pays model: your listeners cover their own TTS costs. No API keys needed.</p>
+          </div>
+        ):(
+          <div className="bg-white/5 rounded-xl p-4 text-center">
+            <p className="text-white/40 text-sm">Switch to <strong className="text-violet-400/70">Puter.js</strong> backend in Settings to access premium neural voices (OpenAI, Polly, ElevenLabs).</p>
+          </div>
         )}
       </Card>
 
