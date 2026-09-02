@@ -2223,20 +2223,32 @@ function checkSeriesContinuity(series) {
   const allBooks = getBooks().filter((b) => b.series_id === series.id);
   const written = allBooks.filter((b) => b.chapters?.some((c) => c.content)).sort((a, b) => (a.series_number || 0) - (b.series_number || 0));
   const bookTexts = written.map((b) => ({ book: b, text: (b.chapters || []).map((c) => c.content).join(" ") }));
+  const countName = (n) => bookTexts.reduce((sum, bt) => sum + (bt.text.toLowerCase().split(n.toLowerCase()).length - 1), 0);
   const roster = series.character_roster || [];
   const names = roster.map((c) => c.name).filter(Boolean);
+  const renamedPairs = /* @__PURE__ */ new Set();
   for (let i = 0; i < names.length; i++) {
     for (let j = i + 1; j < names.length; j++) {
       const sim = nameSimilarity(names[i], names[j]);
       if (sim > 0.72 && names[i] !== names[j]) {
-        issues.push({ type: "Name", msg: `Possible duplicate character: "${names[i]}" and "${names[j]}" in roster \u2014 ${Math.round(sim * 100)}% similar. Verify spelling.` });
+        const ci = countName(names[i]), cj = countName(names[j]);
+        const keep = ci >= cj ? names[i] : names[j];
+        const drop = ci >= cj ? names[j] : names[i];
+        const key = [names[i], names[j]].sort().join("|");
+        if (renamedPairs.has(key)) continue;
+        renamedPairs.add(key);
+        issues.push({
+          type: "Name",
+          msg: `Possible duplicate character: "${names[i]}" and "${names[j]}" in roster \u2014 ${Math.round(sim * 100)}% similar.`,
+          fix: { kind: "rename", from: drop, to: keep, reason: `"${keep}" appears ${Math.max(ci, cj)}\xD7 in text vs "${drop}" ${Math.min(ci, cj)}\xD7` }
+        });
       }
     }
   }
   names.forEach((name) => {
     const inBooks = bookTexts.filter((bt) => bt.text.toLowerCase().includes(name.toLowerCase().split(" ")[0]));
     if (bookTexts.length > 0 && inBooks.length === 0) {
-      warnings.push({ type: "Character", msg: `"${name}" is in the roster but never appears in any written book ${bookTexts.length > 1 ? "\u2014 did they get cut, or are the books unwritten yet? " : ""}(of ${bookTexts.length} written).` });
+      warnings.push({ type: "Character", msg: `"${name}" is in the roster but never appears in any written book (of ${bookTexts.length} written).`, fix: { kind: "removeChar", name } });
     } else if (inBooks.length > 0 && inBooks.length < bookTexts.length && bookTexts.length > 1) {
       const nums = inBooks.map((bt) => bt.book.series_number);
       ok.push({ type: "Character", msg: `"${name}" appears in book(s) ${nums.join(", ")} of ${written.map((b) => b.series_number).join(", ")} written.` });
@@ -2246,13 +2258,13 @@ function checkSeriesContinuity(series) {
     if (!loc.name) return;
     const first = loc.name.toLowerCase().split(" ")[0];
     if (bookTexts.length > 0 && !bookTexts.some((bt) => bt.text.toLowerCase().includes(first))) {
-      warnings.push({ type: "Location", msg: `Location "${loc.name}" from the world bible never appears in any written book.` });
+      warnings.push({ type: "Location", msg: `Location "${loc.name}" from the world bible never appears in any written book.`, fix: { kind: "removeLoc", name: loc.name } });
     }
   });
   const planned = series.plan?.books || [];
   planned.forEach((bp) => {
     const exists = allBooks.find((b) => b.series_number === bp.number);
-    if (!exists) issues.push({ type: "Missing Book", msg: `Book ${bp.number} ("${bp.title}") is planned but hasn't been created yet.` });
+    if (!exists) issues.push({ type: "Missing Book", msg: `Book ${bp.number} ("${bp.title}") is planned but hasn't been created yet.`, fix: { kind: "createBook", number: bp.number, bookPlan: bp } });
     else if (!exists.chapters?.some((c) => c.content) && exists.status !== "published") warnings.push({ type: "Unwritten", msg: `Book ${bp.number} ("${bp.title}") exists but has no written chapters.` });
   });
   if (written.length >= 2) {
@@ -2267,25 +2279,218 @@ function checkSeriesContinuity(series) {
       });
     }
   }
-  const genres = new Set(written.map((b) => b.genre));
-  if (genres.size > 1) warnings.push({ type: "Genre", msg: `Books in this series have different genres: ${[...genres].join(", ")} \u2014 fine if intentional (e.g. romantic suspense), confusing if not.` });
-  (series.plot_events || []).forEach((ev) => {
+  const genres = new Set(written.map((b) => b.genre).filter(Boolean));
+  if (genres.size > 1) warnings.push({ type: "Genre", msg: `Books in this series have different genres: ${[...genres].join(", ")} \u2014 fine if intentional, confusing if not.`, fix: { kind: "syncGenre", genre: series.genre } });
+  (series.plot_events || []).forEach((ev, idx) => {
     const ref = ev.book;
     if (ref && !planned.some((bp) => String(bp.number) === String(ref)) && !allBooks.some((b) => String(b.series_number) === String(ref))) {
-      warnings.push({ type: "Timeline", msg: `Plot event references book ${ref} but no book ${ref} exists in the plan.` });
+      warnings.push({ type: "Timeline", msg: `Plot event references book ${ref} but no book ${ref} exists in the plan.`, fix: { kind: "removeEvent", book: ev.book, event: ev.event } });
     }
   });
   const score = Math.max(0, 100 - issues.length * 8 - warnings.length * 3);
   return { issues, warnings, ok, score, writtenCount: written.length, totalPlanned: planned.length || series.book_count };
 }
-function SeriesContinuityModal({ series, onClose }) {
-  const [result, setResult] = React.useState(null);
-  React.useEffect(() => {
-    setResult(checkSeriesContinuity(series));
-  }, [series.id]);
-  if (!result) return null;
+function escapeRegExp(s) {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+function applySeriesFix(series, fix) {
+  if (!fix) return { series, changed: 0, msg: "" };
+  let changed = 0;
+  const books = getBooks();
+  const seriesBooks = books.filter((b) => b.series_id === series.id);
+  if (fix.kind === "rename") {
+    const re = new RegExp(escapeRegExp(fix.from), "gi");
+    seriesBooks.forEach((b) => {
+      let hits = 0;
+      const chapters = (b.chapters || []).map((ch2) => {
+        if (!ch2.content) return ch2;
+        const before = ch2.content;
+        const after = before.replace(re, (m) => {
+          hits++;
+          return m[0] === m[0].toLowerCase() ? fix.to.charAt(0).toLowerCase() + fix.to.slice(1) : fix.to;
+        });
+        return after === before ? ch2 : { ...ch2, content: after };
+      });
+      if (hits > 0) {
+        const idx = books.findIndex((x) => x.id === b.id);
+        books[idx] = { ...books[idx], chapters };
+        changed += hits;
+      }
+    });
+    setBooks(books);
+    const roster = (series.character_roster || []).map((c) => c.name === fix.from ? { ...c, name: fix.to } : c);
+    series = { ...series, character_roster: roster };
+    return { series, changed, msg: `Renamed "${fix.from}" \u2192 "${fix.to}" (${changed} replacement${changed === 1 ? "" : "s"} across the series)` };
+  }
+  if (fix.kind === "removeChar") {
+    const roster = (series.character_roster || []).filter((c) => c.name !== fix.name);
+    series = { ...series, character_roster: roster };
+    return { series, changed: 1, msg: `Removed "${fix.name}" from the roster` };
+  }
+  if (fix.kind === "removeLoc") {
+    const locs = (series.world_locations || []).filter((l) => l.name !== fix.name);
+    series = { ...series, world_locations: locs };
+    return { series, changed: 1, msg: `Removed location "${fix.name}" from the world bible` };
+  }
+  if (fix.kind === "createBook") {
+    const bp = fix.bookPlan;
+    const book = {
+      id: "book_" + Date.now() + "_" + Math.random().toString(36).slice(2, 7),
+      title: bp.title,
+      subtitle: bp.subtitle || "",
+      genre: series.genre,
+      target_audience: series.audience,
+      description: bp.description,
+      series_id: series.id,
+      series_name: series.name,
+      series_number: fix.number,
+      chapters: [],
+      outline: "",
+      status: "outlining",
+      word_count: 0,
+      cover_image_url: "",
+      seo_title: "",
+      seo_description: "",
+      seo_keywords: "",
+      notes: "",
+      review: null,
+      book_plan: bp,
+      created_date: (/* @__PURE__ */ new Date()).toISOString()
+    };
+    books.unshift(book);
+    setBooks(books);
+    series = { ...series, book_ids: [...series.book_ids || [], book.id] };
+    return { series, changed: 1, msg: `Created book ${fix.number}: "${bp.title}" (outline not generated yet)` };
+  }
+  if (fix.kind === "syncGenre") {
+    seriesBooks.forEach((b) => {
+      if (b.genre !== fix.genre) {
+        const idx = books.findIndex((x) => x.id === b.id);
+        books[idx] = { ...books[idx], genre: fix.genre };
+        changed++;
+      }
+    });
+    if (changed > 0) setBooks(books);
+    return { series, changed, msg: changed > 0 ? `Synced ${changed} book${changed === 1 ? "" : "s"} to genre "${fix.genre}"` : "All books already match" };
+  }
+  if (fix.kind === "removeEvent") {
+    const events = (series.plot_events || []).filter((e) => !(String(e.book) === String(fix.book) && e.event === fix.event));
+    series = { ...series, plot_events: events };
+    return { series, changed: 1, msg: `Removed orphan plot event (book ${fix.book})` };
+  }
+  return { series, changed: 0, msg: "Unknown fix" };
+}
+function SeriesContinuityModal({ seriesId, onClose }) {
+  const [rev, setRev] = React.useState(0);
+  const [log, setLog] = React.useState([]);
+  const [fixing, setFixing] = React.useState(false);
+  const series = getSeries().find((s) => s.id === seriesId) || null;
+  const result = React.useMemo(() => series ? checkSeriesContinuity(series) : null, [seriesId, rev]);
+  const persist = (updated) => {
+    const all = getSeries();
+    const idx = all.findIndex((s) => s.id === updated.id);
+    if (idx > -1) {
+      all[idx] = updated;
+      setSeries(all);
+    }
+    setRev((r) => r + 1);
+  };
+  const runFix = (fix) => {
+    setFixing(true);
+    try {
+      const { series: updated, changed, msg } = applySeriesFix(series, fix);
+      persist(updated);
+      setLog((l) => [{ msg, ts: Date.now() }, ...l].slice(0, 8));
+    } catch (e) {
+      setLog((l) => [{ msg: "Fix failed: " + (e?.message || "unknown error"), ts: Date.now() }, ...l].slice(0, 8));
+    } finally {
+      setFixing(false);
+    }
+  };
+  const fixAll = () => {
+    if (!result) return;
+    const seen = /* @__PURE__ */ new Set();
+    const fixable = [...result.issues, ...result.warnings].filter((x) => x.fix).map((x) => x.fix).filter((f) => {
+      const key = f.kind + "|" + (f.from || f.name || f.number || f.genre || f.book) + "|" + (f.to || f.event || "");
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+    if (fixable.length === 0) return;
+    const kinds = { rename: 0, removeChar: 0, removeLoc: 0, createBook: 0, syncGenre: 0, removeEvent: 0 };
+    fixable.forEach((f) => kinds[f.kind] = (kinds[f.kind] || 0) + 1);
+    const summary = Object.entries(kinds).filter(([, n]) => n > 0).map(([k, n]) => `${n}\xD7 ${k}`).join(", ");
+    if (!confirm(`Apply ALL auto-fixes?
+
+${summary}
+
+Character renames edit book text directly. This cannot be undone \u2014 export a library backup first if unsure.`)) return;
+    setFixing(true);
+    let current = series;
+    try {
+      const messages = [];
+      for (const fix of fixable) {
+        const { series: updated, msg } = applySeriesFix(current, fix);
+        if (msg) messages.push(msg);
+        current = updated;
+      }
+      persist(current);
+      setLog(() => messages.map((msg) => ({ msg, ts: Date.now() })));
+    } catch (e) {
+      setLog((l) => [{ msg: "Fix failed: " + (e?.message || "unknown error"), ts: Date.now() }, ...l]);
+    } finally {
+      setFixing(false);
+    }
+  };
+  if (!series || !result) return null;
   const scoreColor = result.score >= 85 ? "text-green-400" : result.score >= 60 ? "text-amber-400" : "text-red-400";
-  return /* @__PURE__ */ React.createElement("div", { className: "fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4" }, /* @__PURE__ */ React.createElement("div", { className: "bg-slate-800 border border-cyan-500/30 rounded-2xl max-w-2xl w-full max-h-[85vh] overflow-y-auto shadow-2xl" }, /* @__PURE__ */ React.createElement("div", { className: "sticky top-0 bg-slate-800 border-b border-white/10 px-6 py-4 flex items-center justify-between" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("h2", { className: "text-white font-bold text-lg" }, "\u{1F50D} Continuity Check"), /* @__PURE__ */ React.createElement("p", { className: "text-cyan-300 text-sm" }, series.name)), /* @__PURE__ */ React.createElement("button", { onClick: onClose, className: "text-white/30 hover:text-white text-2xl" }, "\u2715")), /* @__PURE__ */ React.createElement("div", { className: "p-6 space-y-5" }, /* @__PURE__ */ React.createElement("div", { className: "bg-white/5 rounded-xl p-4 flex items-center justify-between" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("p", { className: "text-white/40 text-xs uppercase tracking-wider" }, "Continuity Score"), /* @__PURE__ */ React.createElement("p", { className: `text-3xl font-bold ${scoreColor}` }, result.score, /* @__PURE__ */ React.createElement("span", { className: "text-white/20 text-lg" }, "/100"))), /* @__PURE__ */ React.createElement("div", { className: "text-right text-xs text-white/40" }, /* @__PURE__ */ React.createElement("p", null, result.writtenCount, " of ", result.totalPlanned, " books written"), /* @__PURE__ */ React.createElement("p", { className: "mt-1" }, result.issues.length, " issues \xB7 ", result.warnings.length, " warnings"))), result.issues.length > 0 && /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("h3", { className: "text-red-300 text-sm font-bold mb-2" }, "\u274C Issues (", result.issues.length, ")"), /* @__PURE__ */ React.createElement("div", { className: "space-y-2" }, result.issues.map((iss, i) => /* @__PURE__ */ React.createElement("div", { key: i, className: "bg-red-500/10 border border-red-500/30 rounded-lg p-3" }, /* @__PURE__ */ React.createElement("span", { className: "text-red-400 text-xs font-bold uppercase" }, iss.type), /* @__PURE__ */ React.createElement("p", { className: "text-white/70 text-sm mt-0.5" }, iss.msg))))), result.warnings.length > 0 && /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("h3", { className: "text-amber-300 text-sm font-bold mb-2" }, "\u26A0\uFE0F Warnings (", result.warnings.length, ")"), /* @__PURE__ */ React.createElement("div", { className: "space-y-2" }, result.warnings.map((w, i) => /* @__PURE__ */ React.createElement("div", { key: i, className: "bg-amber-500/10 border border-amber-500/30 rounded-lg p-3" }, /* @__PURE__ */ React.createElement("span", { className: "text-amber-400 text-xs font-bold uppercase" }, w.type), /* @__PURE__ */ React.createElement("p", { className: "text-white/70 text-sm mt-0.5" }, w.msg))))), result.issues.length === 0 && result.warnings.length === 0 && /* @__PURE__ */ React.createElement("div", { className: "bg-green-500/10 border border-green-500/30 rounded-xl p-4 text-center" }, /* @__PURE__ */ React.createElement("p", { className: "text-green-300 font-bold" }, "\u2705 No continuity problems found!"), /* @__PURE__ */ React.createElement("p", { className: "text-white/40 text-xs mt-1" }, "Roster names are unique, planned books exist, pacing is consistent.")), /* @__PURE__ */ React.createElement("p", { className: "text-white/20 text-xs" }, "Runs instantly with no API calls. Re-check after writing more books in the series."))));
+  const fixableCount = [...result.issues, ...result.warnings].filter((x) => x.fix).length;
+  const FixBtn = ({ fix }) => /* @__PURE__ */ React.createElement("button", { onClick: () => runFix(fix), disabled: fixing, className: "shrink-0 text-xs bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 px-2.5 py-1.5 rounded-lg hover:bg-emerald-500/30 disabled:opacity-40 transition-colors" }, "\u{1F527} Fix");
+  return /* @__PURE__ */ React.createElement("div", { className: "fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4" }, /* @__PURE__ */ React.createElement("div", { className: "bg-slate-800 border border-cyan-500/30 rounded-2xl max-w-2xl w-full max-h-[85vh] overflow-y-auto shadow-2xl" }, /* @__PURE__ */ React.createElement("div", { className: "sticky top-0 bg-slate-800 border-b border-white/10 px-6 py-4 flex items-center justify-between" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("h2", { className: "text-white font-bold text-lg" }, "\u{1F50D} Continuity Check"), /* @__PURE__ */ React.createElement("p", { className: "text-cyan-300 text-sm" }, series.name)), /* @__PURE__ */ React.createElement("button", { onClick: onClose, className: "text-white/30 hover:text-white text-2xl" }, "\u2715")), /* @__PURE__ */ React.createElement("div", { className: "p-6 space-y-5" }, /* @__PURE__ */ React.createElement("div", { className: "bg-white/5 rounded-xl p-4 flex items-center justify-between" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("p", { className: "text-white/40 text-xs uppercase tracking-wider" }, "Continuity Score"), /* @__PURE__ */ React.createElement("p", { className: `text-3xl font-bold ${scoreColor}` }, result.score, /* @__PURE__ */ React.createElement("span", { className: "text-white/20 text-lg" }, "/100"))), /* @__PURE__ */ React.createElement("div", { className: "text-right text-xs text-white/40" }, /* @__PURE__ */ React.createElement("p", null, result.writtenCount, " of ", result.totalPlanned, " books written"), /* @__PURE__ */ React.createElement("p", { className: "mt-1" }, result.issues.length, " issues \xB7 ", result.warnings.length, " warnings"), fixableCount > 0 && /* @__PURE__ */ React.createElement("p", { className: "text-emerald-400 mt-1 font-medium" }, "\u{1F527} ", fixableCount, " auto-fixable"))), fixableCount > 0 && /* @__PURE__ */ React.createElement("button", { onClick: fixAll, disabled: fixing, className: "w-full bg-gradient-to-r from-emerald-500 to-teal-500 text-white py-3 rounded-xl font-semibold hover:opacity-90 disabled:opacity-50 flex items-center justify-center gap-2 text-sm" }, fixing ? /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement(Spin, { size: "h-4 w-4" }), "Fixing\u2026") : `\u{1F680} Fix All \u2014 ${fixableCount} Auto-Fix${fixableCount === 1 ? "" : "es"}`), log.length > 0 && /* @__PURE__ */ React.createElement("div", { className: "bg-emerald-500/10 border border-emerald-500/30 rounded-xl p-3" }, /* @__PURE__ */ React.createElement("p", { className: "text-emerald-300 text-xs font-bold uppercase tracking-wider mb-2" }, "Applied Fixes"), /* @__PURE__ */ React.createElement("div", { className: "space-y-1" }, log.map((l, i) => /* @__PURE__ */ React.createElement("p", { key: l.ts + "-" + i, className: "text-white/60 text-xs" }, "\u2705 ", l.msg)))), result.issues.length > 0 && /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("h3", { className: "text-red-300 text-sm font-bold mb-2" }, "\u274C Issues (", result.issues.length, ")"), /* @__PURE__ */ React.createElement("div", { className: "space-y-2" }, result.issues.map((iss, i) => /* @__PURE__ */ React.createElement("div", { key: i, className: "bg-red-500/10 border border-red-500/30 rounded-lg p-3 flex items-start justify-between gap-3" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("span", { className: "text-red-400 text-xs font-bold uppercase" }, iss.type), /* @__PURE__ */ React.createElement("p", { className: "text-white/70 text-sm mt-0.5" }, iss.msg), iss.fix?.reason && /* @__PURE__ */ React.createElement("p", { className: "text-white/30 text-xs mt-0.5 italic" }, iss.fix.reason)), iss.fix && /* @__PURE__ */ React.createElement(FixBtn, { fix: iss.fix }))))), result.warnings.length > 0 && /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("h3", { className: "text-amber-300 text-sm font-bold mb-2" }, "\u26A0\uFE0F Warnings (", result.warnings.length, ")"), /* @__PURE__ */ React.createElement("div", { className: "space-y-2" }, result.warnings.map((w, i) => /* @__PURE__ */ React.createElement("div", { key: i, className: "bg-amber-500/10 border border-amber-500/30 rounded-lg p-3 flex items-start justify-between gap-3" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("span", { className: "text-amber-400 text-xs font-bold uppercase" }, w.type), /* @__PURE__ */ React.createElement("p", { className: "text-white/70 text-sm mt-0.5" }, w.msg)), w.fix && /* @__PURE__ */ React.createElement(FixBtn, { fix: w.fix }))))), result.issues.length === 0 && result.warnings.length === 0 && /* @__PURE__ */ React.createElement("div", { className: "bg-green-500/10 border border-green-500/30 rounded-xl p-4 text-center" }, /* @__PURE__ */ React.createElement("p", { className: "text-green-300 font-bold" }, "\u2705 No continuity problems found!"), /* @__PURE__ */ React.createElement("p", { className: "text-white/40 text-xs mt-1" }, "Roster names are unique, planned books exist, pacing is consistent.")), /* @__PURE__ */ React.createElement("p", { className: "text-white/20 text-xs" }, "Runs instantly with no API calls. Rename fixes edit book text directly \u2014 export a library backup (Settings \u2192 Backup) before bulk fixes. Pacing warnings need manual rewrites (no auto-fix)."))));
+}
+async function runReviewAgent(book) {
+  const outline = (() => {
+    try {
+      return JSON.parse(book.outline || "{}");
+    } catch {
+      return {};
+    }
+  })();
+  const raw = await callAI(
+    `You are a professional book publishing strategist and Amazon KDP expert with deep knowledge of what makes books bestsellers.
+
+Review this book for market-readiness and discoverability. Be critical, specific, and commercially minded.
+
+Book Details:
+Title: ${book.title}
+Subtitle: ${book.subtitle || "(none)"}
+Genre: ${book.genre}
+Target Audience: ${book.target_audience}
+SEO Title: ${book.seo_title || "(not set)"}
+SEO Description: ${book.seo_description || "(not set)"}
+Keywords: ${book.seo_keywords || "(not set)"}
+Description: ${outline.description || book.description}
+
+Evaluate:
+1. Title appeal & marketability
+2. Keyword strength & searchability
+3. SEO description quality
+4. Subtitle effectiveness
+5. Market differentiation
+
+Respond ONLY with valid JSON:
+{"overall_score":85,"title_score":80,"keyword_score":75,"seo_score":85,"differentiation_score":80,"verdict":"PASS","verdict_reason":"One sentence summary.","strengths":["strength 1","strength 2","strength 3"],"issues":["issue 1","issue 2"],"title_suggestions":["Better Title: Subtitle","Alternative Title 2"],"keyword_suggestions":["keyword 1","keyword 2","keyword 3","keyword 4","keyword 5"],"seo_rewrite":"A rewritten stronger SEO description.","subtitle_suggestion":"A stronger subtitle.","hook_strength_score":75,"hook_analysis":"Why the current hook does or does not grab readers in 2 seconds \u2014 be specific","top_3_fixes":["Single most impactful change to make right now","Second fix","Third fix"],"amazon_search_prediction":"The exact search query most likely to surface this book on Amazon","estimated_page_count":${Math.round((book.chapters || []).filter((c) => c.content).reduce((a, c) => a + (c.content || "").split(/\\s+/).length, 0) / 250) || 100}}
+Verdict must be "PASS" if overall_score>=75, otherwise "FAIL".`,
+    0.5
+  );
+  trackUsage();
+  const match = raw.match(/\{[\s\S]*\}/);
+  if (!match) throw { code: "PARSE", msg: "Could not parse review." };
+  try {
+    return JSON.parse(match[0]);
+  } catch (pe) {
+    throw { code: "PARSE", msg: "AI returned malformed JSON \u2014 please retry." };
+  }
 }
 function SettingsModal({ onClose }) {
   const [draft, setDraft] = useState(getKey());
@@ -2388,50 +2593,6 @@ function Header({ onBack, title, subtitle, onSettings, onTour, activeTab, setAct
   const groqPct = groqRate.remaining != null && groqRate.limit != null ? Math.round(groqRate.remaining / groqRate.limit * 100) : 100;
   const groqTokenPct = groqRate.tokensRemaining != null && groqRate.tokensLimit != null ? Math.round(groqRate.tokensRemaining / groqRate.tokensLimit * 100) : 100;
   return /* @__PURE__ */ React.createElement("div", { className: "border-b border-white/10 bg-black/30 backdrop-blur-sm sticky top-0 z-20" }, /* @__PURE__ */ React.createElement("div", { className: "max-w-7xl mx-auto px-4 sm:px-6 py-3 flex items-center justify-between gap-3" }, /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-3 min-w-0" }, onBack && /* @__PURE__ */ React.createElement("button", { onClick: onBack, className: "text-white/40 hover:text-white text-sm shrink-0" }, "\u2190 Back"), /* @__PURE__ */ React.createElement("div", { className: "w-9 h-9 bg-gradient-to-br from-purple-500 to-pink-500 rounded-xl flex items-center justify-center text-lg shrink-0" }, "\u{1F4DA}"), /* @__PURE__ */ React.createElement("div", { className: "min-w-0" }, /* @__PURE__ */ React.createElement("h1", { className: "text-white font-bold text-base leading-tight truncate" }, title || "BookForge AI"), subtitle && /* @__PURE__ */ React.createElement("p", { className: "text-white/30 text-xs truncate" }, subtitle))), /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-2 shrink-0" }, getBackend() === "gemini" && /* @__PURE__ */ React.createElement("div", { className: "bg-white/5 border border-white/10 rounded-lg px-3 py-1.5 flex items-center gap-2" }, /* @__PURE__ */ React.createElement("span", { className: `text-xs font-bold ${pct >= 90 ? "text-red-400" : pct >= 70 ? "text-amber-400" : "text-green-400"}` }, usage, "/", DAILY_LIMIT), /* @__PURE__ */ React.createElement("div", { className: "w-10 h-1 bg-white/10 rounded-full overflow-hidden" }, /* @__PURE__ */ React.createElement("div", { className: `h-full rounded-full ${pct >= 90 ? "bg-red-500" : pct >= 70 ? "bg-amber-500" : "bg-green-500"}`, style: { width: `${pct}%` } }))), getBackend() === "puter" && /* @__PURE__ */ React.createElement("span", { className: "text-xs text-purple-400 font-medium px-2 py-1 bg-purple-500/10 rounded-lg border border-purple-500/20" }, "\u26A1 Puter Free"), getBackend() === "cerebras" && /* @__PURE__ */ React.createElement("span", { className: "text-xs text-cyan-400 font-medium px-2 py-1 bg-cyan-500/10 rounded-lg border border-cyan-500/20" }, "\u{1F9E0} Cerebras 1M/day"), getBackend() === "kilo" && /* @__PURE__ */ React.createElement("span", { className: "text-xs text-green-400 font-medium px-2 py-1 bg-green-500/10 rounded-lg border border-green-500/20" }, "\u{1F381} Kilo Free"), getBackend() === "cloudflare" && /* @__PURE__ */ React.createElement("span", { className: "text-xs text-orange-400 font-medium px-2 py-1 bg-orange-500/10 rounded-lg border border-orange-500/20" }, "\u2601\uFE0F CF Workers AI"), getBackend() === "groq" && /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-2" }, /* @__PURE__ */ React.createElement("span", { className: "text-xs text-orange-400 font-medium px-2 py-1 bg-orange-500/10 rounded-lg border border-orange-500/20" }, "\u26A1 Groq Turbo"), groqRate.remaining != null && /* @__PURE__ */ React.createElement("div", { className: "bg-white/5 border border-white/10 rounded-lg px-2.5 py-1.5 flex items-center gap-2", title: `Groq rate limit: ${groqRate.remaining}/${groqRate.limit} requests left this minute` }, /* @__PURE__ */ React.createElement("span", { className: `text-xs font-bold ${groqPct >= 60 ? "text-green-400" : groqPct >= 30 ? "text-amber-400" : "text-red-400"}` }, groqRate.remaining, "/", groqRate.limit), /* @__PURE__ */ React.createElement("div", { className: "w-10 h-1 bg-white/10 rounded-full overflow-hidden" }, /* @__PURE__ */ React.createElement("div", { className: `h-full rounded-full ${groqPct >= 60 ? "bg-green-500" : groqPct >= 30 ? "bg-amber-500" : "bg-red-500"}`, style: { width: `${groqPct}%` } })), groqRate.tokensRemaining != null && /* @__PURE__ */ React.createElement("span", { className: `text-xs ${groqTokenPct >= 60 ? "text-green-400" : groqTokenPct >= 30 ? "text-amber-400" : "text-red-400"}`, title: "Token budget remaining" }, (groqRate.tokensRemaining / 1e3).toFixed(0), "K tok"))), qLen > 0 && /* @__PURE__ */ React.createElement("div", { className: "bg-cyan-500/20 border border-cyan-500/30 text-cyan-300 text-xs px-2.5 py-1.5 rounded-lg" }, "\u23F3 Queue: ", qLen), /* @__PURE__ */ React.createElement("button", { onClick: onSettings, "aria-label": "Settings", "data-close-btn": "true", className: "text-xs px-3 py-1.5 rounded-lg border border-white/20 text-white/50 hover:border-white/40 transition-all" }, "\u2699\uFE0F Settings"), onTour && /* @__PURE__ */ React.createElement("button", { onClick: onTour, title: "Page tour \u2014 learn how to use this page", className: "text-xs px-3 py-1.5 rounded-lg border border-purple-500/40 text-purple-300/70 hover:bg-purple-500/20 transition-all", id: "tour-btn" }, "\u2753 Tour"))), setActiveTab && /* @__PURE__ */ React.createElement("div", { id: "bf-home-tabs", className: "max-w-7xl mx-auto px-4 sm:px-6 flex gap-1" }, [["\u{1F4DA} Library", "library"], ["\u{1F4D7} Series", "series"], ["\u23F3 Queue", "queue"], ["\u{1F4AC} Help", "help"], ["\u{1F38C} Manga", "manga"]].map(([label, id]) => /* @__PURE__ */ React.createElement("button", { key: id, onClick: () => setActiveTab(id), className: `px-4 py-2.5 text-sm font-medium whitespace-nowrap rounded-t-lg transition-all ${activeTab === id ? "bg-white/10 text-white border-b-2 border-purple-500" : "text-white/35 hover:text-white/70"}` }, label))));
-}
-async function runReviewAgent(book) {
-  const outline = (() => {
-    try {
-      return JSON.parse(book.outline || "{}");
-    } catch {
-      return {};
-    }
-  })();
-  const raw = await callAI(
-    `You are a professional book publishing strategist and Amazon KDP expert with deep knowledge of what makes books bestsellers.
-
-Review this book for market-readiness and discoverability. Be critical, specific, and commercially minded.
-
-Book Details:
-Title: ${book.title}
-Subtitle: ${book.subtitle || "(none)"}
-Genre: ${book.genre}
-Target Audience: ${book.target_audience}
-SEO Title: ${book.seo_title || "(not set)"}
-SEO Description: ${book.seo_description || "(not set)"}
-Keywords: ${book.seo_keywords || "(not set)"}
-Description: ${outline.description || book.description}
-
-Evaluate:
-1. Title appeal & marketability
-2. Keyword strength & searchability
-3. SEO description quality
-4. Subtitle effectiveness
-5. Market differentiation
-
-Respond ONLY with valid JSON:
-{"overall_score":85,"title_score":80,"keyword_score":75,"seo_score":85,"differentiation_score":80,"verdict":"PASS","verdict_reason":"One sentence summary.","strengths":["strength 1","strength 2","strength 3"],"issues":["issue 1","issue 2"],"title_suggestions":["Better Title: Subtitle","Alternative Title 2"],"keyword_suggestions":["keyword 1","keyword 2","keyword 3","keyword 4","keyword 5"],"seo_rewrite":"A rewritten stronger SEO description.","subtitle_suggestion":"A stronger subtitle.","hook_strength_score":75,"hook_analysis":"Why the current hook does or does not grab readers in 2 seconds \u2014 be specific","top_3_fixes":["Single most impactful change to make right now","Second fix","Third fix"],"amazon_search_prediction":"The exact search query most likely to surface this book on Amazon","estimated_page_count":${Math.round((book.chapters || []).filter((c) => c.content).reduce((a, c) => a + (c.content || "").split(/\\s+/).length, 0) / 250) || 100}}
-Verdict must be "PASS" if overall_score>=75, otherwise "FAIL".`,
-    0.5
-  );
-  trackUsage();
-  const match = raw.match(/\{[\s\S]*\}/);
-  if (!match) throw { code: "PARSE", msg: "Could not parse review." };
-  try {
-    return JSON.parse(match[0]);
-  } catch (pe) {
-    throw { code: "PARSE", msg: "AI returned malformed JSON \u2014 please retry." };
-  }
 }
 function ReviewPanel({ book, onApply, onSettings }) {
   const [review, setReview] = useState(book.review || null);
@@ -3701,8 +3862,7 @@ Respond ONLY with valid JSON (no markdown):
     navigate("editor", book.id);
   };
   const bibleSeries = viewBible ? seriesList.find((s) => s.id === viewBible) : null;
-  const continuitySeries = continuityId ? seriesList.find((s) => s.id === continuityId) : null;
-  return /* @__PURE__ */ React.createElement("div", { className: "max-w-7xl mx-auto px-4 sm:px-6 py-8" }, continuitySeries && /* @__PURE__ */ React.createElement(SeriesContinuityModal, { series: continuitySeries, onClose: () => setContinuity(null) }), bibleSeries && /* @__PURE__ */ React.createElement("div", { className: "fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4" }, /* @__PURE__ */ React.createElement("div", { className: "bg-slate-800 border border-cyan-500/30 rounded-2xl max-w-3xl w-full max-h-[85vh] overflow-y-auto shadow-2xl" }, /* @__PURE__ */ React.createElement("div", { className: "sticky top-0 bg-slate-800 border-b border-white/10 px-6 py-4 flex items-center justify-between" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("h2", { className: "text-white font-bold text-lg" }, "\u{1F4D6} Series Bible"), /* @__PURE__ */ React.createElement("p", { className: "text-cyan-300 text-sm" }, bibleSeries.name)), /* @__PURE__ */ React.createElement("button", { onClick: () => setViewBible(null), className: "text-white/30 hover:text-white text-2xl" }, "\u2715")), /* @__PURE__ */ React.createElement("div", { className: "p-6 space-y-5" }, bibleSeries.plan?.series_description && /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("h3", { className: "text-cyan-300 text-xs uppercase tracking-wider font-semibold mb-2" }, "Overview"), /* @__PURE__ */ React.createElement("p", { className: "text-white/70 text-sm leading-relaxed" }, bibleSeries.plan.series_description)), bibleSeries.plan?.series_arc && /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("h3", { className: "text-cyan-300 text-xs uppercase tracking-wider font-semibold mb-2" }, "Series Arc"), /* @__PURE__ */ React.createElement("p", { className: "text-white/70 text-sm leading-relaxed" }, bibleSeries.plan.series_arc)), bibleSeries.plan?.world_setting && /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("h3", { className: "text-cyan-300 text-xs uppercase tracking-wider font-semibold mb-2" }, "World & Setting"), /* @__PURE__ */ React.createElement("p", { className: "text-white/70 text-sm leading-relaxed" }, bibleSeries.plan.world_setting)), bibleSeries.plan?.world_rules?.length > 0 && /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("h3", { className: "text-cyan-300 text-xs uppercase tracking-wider font-semibold mb-2" }, "World Rules & Lore"), /* @__PURE__ */ React.createElement("ul", { className: "space-y-1" }, bibleSeries.plan.world_rules.map((r, i) => /* @__PURE__ */ React.createElement("li", { key: i, className: "text-white/60 text-sm flex gap-2" }, /* @__PURE__ */ React.createElement("span", { className: "text-cyan-400" }, "\u2022"), r)))), bibleSeries.plan?.tone_style && /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("h3", { className: "text-cyan-300 text-xs uppercase tracking-wider font-semibold mb-2" }, "Tone & Style"), /* @__PURE__ */ React.createElement("p", { className: "text-white/70 text-sm" }, bibleSeries.plan.tone_style)), bibleSeries.character_roster?.length > 0 && /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("h3", { className: "text-cyan-300 text-xs uppercase tracking-wider font-semibold mb-3" }, "Character Roster (", bibleSeries.character_roster.length, ")"), /* @__PURE__ */ React.createElement("div", { className: "space-y-3" }, bibleSeries.character_roster.map((c, i) => /* @__PURE__ */ React.createElement("div", { key: i, className: "bg-white/5 border border-white/10 rounded-xl p-4" }, /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-2 mb-1" }, /* @__PURE__ */ React.createElement("span", { className: "text-white font-semibold text-sm" }, c.name), c.role && /* @__PURE__ */ React.createElement("span", { className: "text-xs bg-purple-500/20 text-purple-300 px-2 py-0.5 rounded-full border border-purple-500/30" }, c.role), /* @__PURE__ */ React.createElement("span", { className: "text-xs text-white/25" }, "\xB7 ", c.first_appears)), c.description && /* @__PURE__ */ React.createElement("p", { className: "text-white/55 text-xs leading-relaxed mb-1" }, c.description), c.arc && /* @__PURE__ */ React.createElement("p", { className: "text-cyan-300/50 text-xs italic" }, c.arc))))), bibleSeries.world_locations?.length > 0 && /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("h3", { className: "text-cyan-300 text-xs uppercase tracking-wider font-semibold mb-3" }, "Locations"), /* @__PURE__ */ React.createElement("div", { className: "space-y-2" }, bibleSeries.world_locations.map((l, i) => /* @__PURE__ */ React.createElement("div", { key: i, className: "bg-white/5 border border-white/10 rounded-xl p-4" }, /* @__PURE__ */ React.createElement("p", { className: "text-white font-semibold text-sm mb-1" }, l.name, /* @__PURE__ */ React.createElement("span", { className: "text-white/25 text-xs font-normal ml-2" }, "\xB7 ", l.first_appears)), l.description && /* @__PURE__ */ React.createElement("p", { className: "text-white/55 text-xs leading-relaxed" }, l.description))))), bibleSeries.plot_events?.length > 0 && /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("h3", { className: "text-cyan-300 text-xs uppercase tracking-wider font-semibold mb-3" }, "Series Timeline"), /* @__PURE__ */ React.createElement("div", { className: "space-y-2" }, bibleSeries.plot_events.map((e, i) => /* @__PURE__ */ React.createElement("div", { key: i, className: "flex gap-3" }, /* @__PURE__ */ React.createElement("span", { className: "text-cyan-400/50 text-xs shrink-0 pt-0.5" }, "[", e.book, "]"), /* @__PURE__ */ React.createElement("p", { className: "text-white/55 text-xs" }, e.event)))))))), /* @__PURE__ */ React.createElement("div", { className: "flex justify-between items-center mb-6" }, /* @__PURE__ */ React.createElement("h2", { className: "text-white text-xl font-bold" }, "\u{1F4D7} Series Manager"), /* @__PURE__ */ React.createElement("div", { className: "flex gap-2" }, seriesList.filter((s) => s.book_ids?.length > 0).length > 0 && /* @__PURE__ */ React.createElement("button", { onClick: () => {
+  return /* @__PURE__ */ React.createElement("div", { className: "max-w-7xl mx-auto px-4 sm:px-6 py-8" }, continuityId && /* @__PURE__ */ React.createElement(SeriesContinuityModal, { seriesId: continuityId, onClose: () => setContinuity(null) }), bibleSeries && /* @__PURE__ */ React.createElement("div", { className: "fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4" }, /* @__PURE__ */ React.createElement("div", { className: "bg-slate-800 border border-cyan-500/30 rounded-2xl max-w-3xl w-full max-h-[85vh] overflow-y-auto shadow-2xl" }, /* @__PURE__ */ React.createElement("div", { className: "sticky top-0 bg-slate-800 border-b border-white/10 px-6 py-4 flex items-center justify-between" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("h2", { className: "text-white font-bold text-lg" }, "\u{1F4D6} Series Bible"), /* @__PURE__ */ React.createElement("p", { className: "text-cyan-300 text-sm" }, bibleSeries.name)), /* @__PURE__ */ React.createElement("button", { onClick: () => setViewBible(null), className: "text-white/30 hover:text-white text-2xl" }, "\u2715")), /* @__PURE__ */ React.createElement("div", { className: "p-6 space-y-5" }, bibleSeries.plan?.series_description && /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("h3", { className: "text-cyan-300 text-xs uppercase tracking-wider font-semibold mb-2" }, "Overview"), /* @__PURE__ */ React.createElement("p", { className: "text-white/70 text-sm leading-relaxed" }, bibleSeries.plan.series_description)), bibleSeries.plan?.series_arc && /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("h3", { className: "text-cyan-300 text-xs uppercase tracking-wider font-semibold mb-2" }, "Series Arc"), /* @__PURE__ */ React.createElement("p", { className: "text-white/70 text-sm leading-relaxed" }, bibleSeries.plan.series_arc)), bibleSeries.plan?.world_setting && /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("h3", { className: "text-cyan-300 text-xs uppercase tracking-wider font-semibold mb-2" }, "World & Setting"), /* @__PURE__ */ React.createElement("p", { className: "text-white/70 text-sm leading-relaxed" }, bibleSeries.plan.world_setting)), bibleSeries.plan?.world_rules?.length > 0 && /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("h3", { className: "text-cyan-300 text-xs uppercase tracking-wider font-semibold mb-2" }, "World Rules & Lore"), /* @__PURE__ */ React.createElement("ul", { className: "space-y-1" }, bibleSeries.plan.world_rules.map((r, i) => /* @__PURE__ */ React.createElement("li", { key: i, className: "text-white/60 text-sm flex gap-2" }, /* @__PURE__ */ React.createElement("span", { className: "text-cyan-400" }, "\u2022"), r)))), bibleSeries.plan?.tone_style && /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("h3", { className: "text-cyan-300 text-xs uppercase tracking-wider font-semibold mb-2" }, "Tone & Style"), /* @__PURE__ */ React.createElement("p", { className: "text-white/70 text-sm" }, bibleSeries.plan.tone_style)), bibleSeries.character_roster?.length > 0 && /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("h3", { className: "text-cyan-300 text-xs uppercase tracking-wider font-semibold mb-3" }, "Character Roster (", bibleSeries.character_roster.length, ")"), /* @__PURE__ */ React.createElement("div", { className: "space-y-3" }, bibleSeries.character_roster.map((c, i) => /* @__PURE__ */ React.createElement("div", { key: i, className: "bg-white/5 border border-white/10 rounded-xl p-4" }, /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-2 mb-1" }, /* @__PURE__ */ React.createElement("span", { className: "text-white font-semibold text-sm" }, c.name), c.role && /* @__PURE__ */ React.createElement("span", { className: "text-xs bg-purple-500/20 text-purple-300 px-2 py-0.5 rounded-full border border-purple-500/30" }, c.role), /* @__PURE__ */ React.createElement("span", { className: "text-xs text-white/25" }, "\xB7 ", c.first_appears)), c.description && /* @__PURE__ */ React.createElement("p", { className: "text-white/55 text-xs leading-relaxed mb-1" }, c.description), c.arc && /* @__PURE__ */ React.createElement("p", { className: "text-cyan-300/50 text-xs italic" }, c.arc))))), bibleSeries.world_locations?.length > 0 && /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("h3", { className: "text-cyan-300 text-xs uppercase tracking-wider font-semibold mb-3" }, "Locations"), /* @__PURE__ */ React.createElement("div", { className: "space-y-2" }, bibleSeries.world_locations.map((l, i) => /* @__PURE__ */ React.createElement("div", { key: i, className: "bg-white/5 border border-white/10 rounded-xl p-4" }, /* @__PURE__ */ React.createElement("p", { className: "text-white font-semibold text-sm mb-1" }, l.name, /* @__PURE__ */ React.createElement("span", { className: "text-white/25 text-xs font-normal ml-2" }, "\xB7 ", l.first_appears)), l.description && /* @__PURE__ */ React.createElement("p", { className: "text-white/55 text-xs leading-relaxed" }, l.description))))), bibleSeries.plot_events?.length > 0 && /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("h3", { className: "text-cyan-300 text-xs uppercase tracking-wider font-semibold mb-3" }, "Series Timeline"), /* @__PURE__ */ React.createElement("div", { className: "space-y-2" }, bibleSeries.plot_events.map((e, i) => /* @__PURE__ */ React.createElement("div", { key: i, className: "flex gap-3" }, /* @__PURE__ */ React.createElement("span", { className: "text-cyan-400/50 text-xs shrink-0 pt-0.5" }, "[", e.book, "]"), /* @__PURE__ */ React.createElement("p", { className: "text-white/55 text-xs" }, e.event)))))))), /* @__PURE__ */ React.createElement("div", { className: "flex justify-between items-center mb-6" }, /* @__PURE__ */ React.createElement("h2", { className: "text-white text-xl font-bold" }, "\u{1F4D7} Series Manager"), /* @__PURE__ */ React.createElement("div", { className: "flex gap-2" }, seriesList.filter((s) => s.book_ids?.length > 0).length > 0 && /* @__PURE__ */ React.createElement("button", { onClick: () => {
     const s = seriesList.find((s2) => s2.book_ids?.length > 0);
     if (s) exportSeriesBooks(s);
   }, className: "bg-white/10 hover:bg-white/20 text-white/70 px-4 py-2.5 rounded-xl text-sm font-medium transition-colors" }, "\u{1F4E6} Export Series"), /* @__PURE__ */ React.createElement("button", { onClick: () => setShowCreate(!showCreate), className: "bg-gradient-to-r from-cyan-500 to-blue-500 text-white px-5 py-2.5 rounded-xl font-semibold hover:opacity-90" }, "+ New Series"))), showCreate && /* @__PURE__ */ React.createElement("div", { className: "bg-white/5 border border-cyan-500/30 rounded-2xl p-6 mb-8" }, /* @__PURE__ */ React.createElement("h3", { className: "text-white font-bold text-lg mb-1" }, "Plan Your Series"), /* @__PURE__ */ React.createElement("p", { className: "text-white/40 text-sm mb-5" }, "Generates a full world bible \u2014 setting, lore, character roster, locations, and individual book plans."), error && /* @__PURE__ */ React.createElement("div", { className: "bg-red-500/20 border border-red-500/30 text-red-300 rounded-xl p-4 mb-4 text-sm" }, error), /* @__PURE__ */ React.createElement("div", { className: "space-y-4" }, /* @__PURE__ */ React.createElement("div", { className: "grid grid-cols-1 sm:grid-cols-2 gap-4" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("label", { className: "text-white/60 text-sm font-medium block mb-2" }, "Series Name *"), /* @__PURE__ */ React.createElement("div", { className: "flex gap-2 mb-2" }, /* @__PURE__ */ React.createElement("button", { onClick: suggestSeriesTitles, disabled: suggestingSeriesTitles || !form.genre, className: "text-xs px-3 py-1.5 rounded-lg bg-cyan-500/20 border border-cyan-500/30 text-cyan-300 hover:bg-cyan-500/30 transition-all disabled:opacity-40 flex items-center gap-1.5" }, suggestingSeriesTitles ? /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement(Spin, { size: "h-3 w-3" }), "Suggesting\u2026") : "\u2728 AI Suggest Titles")), seriesTitleError && /* @__PURE__ */ React.createElement("div", { className: "bg-red-500/15 border border-red-500/30 text-red-300 rounded-lg p-2 mb-2 text-xs" }, seriesTitleError), seriesTitles && /* @__PURE__ */ React.createElement("div", { className: "bg-cyan-500/5 border border-cyan-500/20 rounded-xl p-3 mb-2 space-y-2 max-h-60 overflow-y-auto" }, /* @__PURE__ */ React.createElement("p", { className: "text-cyan-300 text-xs font-medium mb-1" }, "Tap a title for your series:"), seriesTitles.map((t, i) => /* @__PURE__ */ React.createElement("button", { key: i, onClick: () => useSeriesTitle(t), className: "w-full text-left p-2.5 rounded-lg bg-white/5 hover:bg-cyan-500/10 border border-white/10 hover:border-cyan-500/30 transition-all" }, /* @__PURE__ */ React.createElement("p", { className: "text-white text-sm font-medium" }, t.title), t.why && /* @__PURE__ */ React.createElement("p", { className: "text-white/40 text-xs mt-0.5" }, t.why)))), /* @__PURE__ */ React.createElement("input", { value: form.name, onChange: (e) => setForm({ ...form, name: e.target.value }), placeholder: 'E.g. "The Rival Hearts Series"', className: "w-full bg-white/10 border border-white/20 rounded-xl px-4 py-3 text-white placeholder-white/25 focus:outline-none focus:border-cyan-500 text-sm" })), /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("label", { className: "text-white/60 text-sm font-medium block mb-2" }, "Number of Books *"), /* @__PURE__ */ React.createElement("select", { value: form.book_count, onChange: (e) => setForm({ ...form, book_count: Number(e.target.value) }), className: "w-full bg-white/10 border border-white/20 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-cyan-500 text-sm" }, [2, 3, 4, 5, 6, 7, 8, 9, 10].map((n) => /* @__PURE__ */ React.createElement("option", { key: n, value: n }, n, " Books"))))), /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("label", { className: "text-white/60 text-sm font-medium block mb-2" }, "Series Concept *"), /* @__PURE__ */ React.createElement("textarea", { rows: 3, value: form.concept, onChange: (e) => setForm({ ...form, concept: e.target.value }), placeholder: 'E.g. "Standalone gay romance novels set in a competitive sports world, each book a different couple"', className: "w-full bg-white/10 border border-white/20 rounded-xl px-4 py-3 text-white placeholder-white/25 focus:outline-none focus:border-cyan-500 resize-none text-sm" })), /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("label", { className: "text-white/60 text-sm font-medium block mb-2" }, "Tone & Style ", /* @__PURE__ */ React.createElement("span", { className: "text-white/25" }, "(optional)")), /* @__PURE__ */ React.createElement("input", { value: form.tone, onChange: (e) => setForm({ ...form, tone: e.target.value }), placeholder: 'E.g. "Steamy, emotionally intense, HEA guaranteed, slow burn"', className: "w-full bg-white/10 border border-white/20 rounded-xl px-4 py-3 text-white placeholder-white/25 focus:outline-none focus:border-cyan-500 text-sm" })), /* @__PURE__ */ React.createElement("div", { className: "grid grid-cols-1 sm:grid-cols-2 gap-4" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("label", { className: "text-white/60 text-sm font-medium block mb-2" }, "Genre *"), /* @__PURE__ */ React.createElement("select", { value: form.genre, onChange: (e) => setForm({ ...form, genre: e.target.value }), className: "w-full bg-white/10 border border-white/20 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-cyan-500 text-sm" }, /* @__PURE__ */ React.createElement("option", { value: "" }, "Select\u2026"), GENRES.map((g) => /* @__PURE__ */ React.createElement("option", { key: g, value: g }, g)))), /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("label", { className: "text-white/60 text-sm font-medium block mb-2" }, "Target Audience *"), /* @__PURE__ */ React.createElement("select", { value: form.audience, onChange: (e) => setForm({ ...form, audience: e.target.value }), className: "w-full bg-white/10 border border-white/20 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-cyan-500 text-sm" }, /* @__PURE__ */ React.createElement("option", { value: "" }, "Select\u2026"), AUDIENCES.map((a) => /* @__PURE__ */ React.createElement("option", { key: a, value: a }, a))))), /* @__PURE__ */ React.createElement("div", { className: "flex gap-3" }, /* @__PURE__ */ React.createElement("button", { onClick: () => {
@@ -6172,14 +6332,14 @@ function FindReplaceModal({ book, onClose, onUpdateBook, flash: flash2 }) {
   const [replaceText, setReplaceText] = useState("");
   const [caseSensitive, setCaseSensitive] = useState(false);
   const [replacedMsg, setReplacedMsg] = useState("");
-  const escapeRegExp = (str) => {
+  const escapeRegExp2 = (str) => {
     return str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   };
   const getChapterMatches = () => {
     if (!findText) return [];
     try {
       const flags = caseSensitive ? "g" : "gi";
-      const regex = new RegExp(escapeRegExp(findText), flags);
+      const regex = new RegExp(escapeRegExp2(findText), flags);
       return (book?.chapters || []).map((ch2, idx) => {
         const content = ch2.content || "";
         const matches = content ? (content.match(regex) || []).length : 0;
@@ -6201,7 +6361,7 @@ function FindReplaceModal({ book, onClose, onUpdateBook, flash: flash2 }) {
     if (!findText || totalMatches === 0) return;
     try {
       const flags = caseSensitive ? "g" : "gi";
-      const regex = new RegExp(escapeRegExp(findText), flags);
+      const regex = new RegExp(escapeRegExp2(findText), flags);
       let totalReplaced = 0;
       let chaptersModified = 0;
       const chapterCounts = [];

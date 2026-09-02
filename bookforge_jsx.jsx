@@ -2151,15 +2151,26 @@ function checkSeriesContinuity(series){
   const allBooks=getBooks().filter(b=>b.series_id===series.id);
   const written=allBooks.filter(b=>b.chapters?.some(c=>c.content)).sort((a,b)=>(a.series_number||0)-(b.series_number||0));
   const bookTexts=written.map(b=>({book:b,text:(b.chapters||[]).map(c=>c.content).join(" ")}));
+  const countName=n=>bookTexts.reduce((sum,bt)=>sum+(bt.text.toLowerCase().split(n.toLowerCase()).length-1),0);
 
-  // 1. Character roster consistency
+  // 1. Character roster consistency — fuzzy duplicate detection + rename fix
   const roster=series.character_roster||[];
   const names=roster.map(c=>c.name).filter(Boolean);
+  const renamedPairs=new Set();
   for(let i=0;i<names.length;i++){
     for(let j=i+1;j<names.length;j++){
       const sim=nameSimilarity(names[i],names[j]);
       if(sim>0.72&&names[i]!==names[j]){
-        issues.push({type:"Name",msg:`Possible duplicate character: "${names[i]}" and "${names[j]}" in roster — ${Math.round(sim*100)}% similar. Verify spelling.`});
+        const ci=countName(names[i]),cj=countName(names[j]);
+        const keep=ci>=cj?names[i]:names[j];
+        const drop=ci>=cj?names[j]:names[i];
+        const key=[names[i],names[j]].sort().join("|");
+        if(renamedPairs.has(key))continue;
+        renamedPairs.add(key);
+        issues.push({
+          type:"Name",msg:`Possible duplicate character: "${names[i]}" and "${names[j]}" in roster — ${Math.round(sim*100)}% similar.`,
+          fix:{kind:"rename",from:drop,to:keep,reason:`"${keep}" appears ${Math.max(ci,cj)}× in text vs "${drop}" ${Math.min(ci,cj)}×`}
+        });
       }
     }
   }
@@ -2168,9 +2179,8 @@ function checkSeriesContinuity(series){
   names.forEach(name=>{
     const inBooks=bookTexts.filter(bt=>bt.text.toLowerCase().includes(name.toLowerCase().split(" ")[0]));
     if(bookTexts.length>0&&inBooks.length===0){
-      warnings.push({type:"Character",msg:`"${name}" is in the roster but never appears in any written book ${bookTexts.length>1?"— did they get cut, or are the books unwritten yet? ":""}(of ${bookTexts.length} written).`});
+      warnings.push({type:"Character",msg:`"${name}" is in the roster but never appears in any written book (of ${bookTexts.length} written).`,fix:{kind:"removeChar",name}});
     }else if(inBooks.length>0&&inBooks.length<bookTexts.length&&bookTexts.length>1){
-      // Character vanishes between books — only flag for main-ish characters
       const nums=inBooks.map(bt=>bt.book.series_number);
       ok.push({type:"Character",msg:`"${name}" appears in book(s) ${nums.join(", ")} of ${written.map(b=>b.series_number).join(", ")} written.`});
     }
@@ -2181,19 +2191,19 @@ function checkSeriesContinuity(series){
     if(!loc.name)return;
     const first=loc.name.toLowerCase().split(" ")[0];
     if(bookTexts.length>0&&!bookTexts.some(bt=>bt.text.toLowerCase().includes(first))){
-      warnings.push({type:"Location",msg:`Location "${loc.name}" from the world bible never appears in any written book.`});
+      warnings.push({type:"Location",msg:`Location "${loc.name}" from the world bible never appears in any written book.`,fix:{kind:"removeLoc",name:loc.name}});
     }
   });
 
-  // 4. Series number gaps
+  // 4. Series number gaps — auto-create missing planned books
   const planned=series.plan?.books||[];
   planned.forEach(bp=>{
     const exists=allBooks.find(b=>b.series_number===bp.number);
-    if(!exists)issues.push({type:"Missing Book",msg:`Book ${bp.number} ("${bp.title}") is planned but hasn't been created yet.`});
+    if(!exists)issues.push({type:"Missing Book",msg:`Book ${bp.number} ("${bp.title}") is planned but hasn't been created yet.`,fix:{kind:"createBook",number:bp.number,bookPlan:bp}});
     else if(!exists.chapters?.some(c=>c.content)&&exists.status!=="published")warnings.push({type:"Unwritten",msg:`Book ${bp.number} ("${bp.title}") exists but has no written chapters.`});
   });
 
-  // 5. Word count outliers across written books
+  // 5. Word count outliers across written books (informational — no auto-fix)
   if(written.length>=2){
     const counts=written.map(b=>b.word_count||0);
     const nonZero=counts.filter(c=>c>0);
@@ -2207,28 +2217,165 @@ function checkSeriesContinuity(series){
     }
   }
 
-  // 6. Genre consistency
-  const genres=new Set(written.map(b=>b.genre));
-  if(genres.size>1)warnings.push({type:"Genre",msg:`Books in this series have different genres: ${[...genres].join(", ")} — fine if intentional (e.g. romantic suspense), confusing if not.`});
+  // 6. Genre consistency — sync all books to series genre
+  const genres=new Set(written.map(b=>b.genre).filter(Boolean));
+  if(genres.size>1)warnings.push({type:"Genre",msg:`Books in this series have different genres: ${[...genres].join(", ")} — fine if intentional, confusing if not.`,fix:{kind:"syncGenre",genre:series.genre}});
 
   // 7. Plot events referencing nonexistent books
-  (series.plot_events||[]).forEach(ev=>{
+  (series.plot_events||[]).forEach((ev,idx)=>{
     const ref=ev.book;
     if(ref&&!planned.some(bp=>String(bp.number)===String(ref))&&!allBooks.some(b=>String(b.series_number)===String(ref))){
-      warnings.push({type:"Timeline",msg:`Plot event references book ${ref} but no book ${ref} exists in the plan.`});
+      warnings.push({type:"Timeline",msg:`Plot event references book ${ref} but no book ${ref} exists in the plan.`,fix:{kind:"removeEvent",book:ev.book,event:ev.event}});
     }
   });
 
-  // Score: start at 100, -8 per issue, -3 per warning
   const score=Math.max(0,100-issues.length*8-warnings.length*3);
   return{issues,warnings,ok,score,writtenCount:written.length,totalPlanned:planned.length||series.book_count};
 }
 
-function SeriesContinuityModal({series,onClose}){
-  const [result,setResult]=React.useState(null);
-  React.useEffect(()=>{setResult(checkSeriesContinuity(series));},[series.id]);
-  if(!result)return null;
+// ── Continuity Fix Engine ──
+function escapeRegExp(s){return s.replace(/[.*+?^${}()|[\]\\]/g,"\\$&");}
+
+function applySeriesFix(series,fix){
+  if(!fix)return{series,changed:0,msg:""};
+  let changed=0;
+  const books=getBooks();
+  const seriesBooks=books.filter(b=>b.series_id===series.id);
+
+  if(fix.kind==="rename"){
+    const re=new RegExp(escapeRegExp(fix.from),"gi");
+    seriesBooks.forEach(b=>{
+      let hits=0;
+      const chapters=(b.chapters||[]).map(ch=>{
+        if(!ch.content)return ch;
+        const before=ch.content;
+        const after=before.replace(re,m=>{hits++;return m[0]===m[0].toLowerCase()?fix.to.charAt(0).toLowerCase()+fix.to.slice(1):fix.to;});
+        return after===before?ch:{...ch,content:after};
+      });
+      if(hits>0){
+        const idx=books.findIndex(x=>x.id===b.id);
+        books[idx]={...books[idx],chapters};
+        changed+=hits;
+      }
+    });
+    setBooks(books);
+    const roster=(series.character_roster||[]).map(c=>c.name===fix.from?{...c,name:fix.to}:c);
+    series={...series,character_roster:roster};
+    return{series,changed,msg:`Renamed "${fix.from}" → "${fix.to}" (${changed} replacement${changed===1?"":"s"} across the series)`};
+  }
+
+  if(fix.kind==="removeChar"){
+    const roster=(series.character_roster||[]).filter(c=>c.name!==fix.name);
+    series={...series,character_roster:roster};
+    return{series,changed:1,msg:`Removed "${fix.name}" from the roster`};
+  }
+
+  if(fix.kind==="removeLoc"){
+    const locs=(series.world_locations||[]).filter(l=>l.name!==fix.name);
+    series={...series,world_locations:locs};
+    return{series,changed:1,msg:`Removed location "${fix.name}" from the world bible`};
+  }
+
+  if(fix.kind==="createBook"){
+    const bp=fix.bookPlan;
+    const book={
+      id:"book_"+Date.now()+"_"+Math.random().toString(36).slice(2,7),
+      title:bp.title,subtitle:bp.subtitle||"",
+      genre:series.genre,target_audience:series.audience,
+      description:bp.description,
+      series_id:series.id,series_name:series.name,series_number:fix.number,
+      chapters:[],outline:"",status:"outlining",word_count:0,
+      cover_image_url:"",seo_title:"",seo_description:"",seo_keywords:"",notes:"",review:null,
+      book_plan:bp,created_date:new Date().toISOString()
+    };
+    books.unshift(book);setBooks(books);
+    series={...series,book_ids:[...(series.book_ids||[]),book.id]};
+    return{series,changed:1,msg:`Created book ${fix.number}: "${bp.title}" (outline not generated yet)`};
+  }
+
+  if(fix.kind==="syncGenre"){
+    seriesBooks.forEach(b=>{
+      if(b.genre!==fix.genre){
+        const idx=books.findIndex(x=>x.id===b.id);
+        books[idx]={...books[idx],genre:fix.genre};
+        changed++;
+      }
+    });
+    if(changed>0)setBooks(books);
+    return{series,changed,msg:changed>0?`Synced ${changed} book${changed===1?"":"s"} to genre "${fix.genre}"`:"All books already match"};
+  }
+
+  if(fix.kind==="removeEvent"){
+    const events=(series.plot_events||[]).filter(e=>!(String(e.book)===String(fix.book)&&e.event===fix.event));
+    series={...series,plot_events:events};
+    return{series,changed:1,msg:`Removed orphan plot event (book ${fix.book})`};
+  }
+
+  return{series,changed:0,msg:"Unknown fix"};
+}
+
+function SeriesContinuityModal({seriesId,onClose}){
+  const [rev,setRev]=React.useState(0);
+  const [log,setLog]=React.useState([]);
+  const [fixing,setFixing]=React.useState(false);
+  const series=getSeries().find(s=>s.id===seriesId)||null;
+  const result=React.useMemo(()=>series?checkSeriesContinuity(series):null,[seriesId,rev]);
+
+  const persist=updated=>{
+    const all=getSeries();
+    const idx=all.findIndex(s=>s.id===updated.id);
+    if(idx>-1){all[idx]=updated;setSeries(all);}
+    setRev(r=>r+1);
+  };
+
+  const runFix=fix=>{
+    setFixing(true);
+    try{
+      const{series:updated,changed,msg}=applySeriesFix(series,fix);
+      persist(updated);
+      setLog(l=>[{msg,ts:Date.now()},...l].slice(0,8));
+    }catch(e){
+      setLog(l=>[{msg:"Fix failed: "+(e?.message||"unknown error"),ts:Date.now()},...l].slice(0,8));
+    }
+    finally{setFixing(false);}
+  };
+
+  const fixAll=()=>{
+    if(!result)return;
+    const seen=new Set();const fixable=[...result.issues,...result.warnings].filter(x=>x.fix).map(x=>x.fix).filter(f=>{
+      const key=f.kind+"|"+(f.from||f.name||f.number||f.genre||f.book)+"|"+(f.to||f.event||"");
+      if(seen.has(key))return false;seen.add(key);return true;
+    });
+    if(fixable.length===0)return;
+    const kinds={rename:0,removeChar:0,removeLoc:0,createBook:0,syncGenre:0,removeEvent:0};
+    fixable.forEach(f=>kinds[f.kind]=(kinds[f.kind]||0)+1);
+    const summary=Object.entries(kinds).filter(([,n])=>n>0).map(([k,n])=>`${n}× ${k}`).join(", ");
+    if(!confirm(`Apply ALL auto-fixes?\n\n${summary}\n\nCharacter renames edit book text directly. This cannot be undone — export a library backup first if unsure.`))return;
+    setFixing(true);
+    let current=series;
+    try{
+      const messages=[];
+      for(const fix of fixable){
+        const{series:updated,msg}=applySeriesFix(current,fix);
+        if(msg)messages.push(msg);
+        current=updated;
+      }
+      persist(current);
+      setLog(()=>messages.map(msg=>({msg,ts:Date.now()})));
+    }catch(e){
+      setLog(l=>[{msg:"Fix failed: "+(e?.message||"unknown error"),ts:Date.now()},...l]);
+    }
+    finally{setFixing(false);}
+  };
+
+  if(!series||!result)return null;
   const scoreColor=result.score>=85?"text-green-400":result.score>=60?"text-amber-400":"text-red-400";
+  const fixableCount=[...result.issues,...result.warnings].filter(x=>x.fix).length;
+
+  const FixBtn=({fix})=>(
+    <button onClick={()=>runFix(fix)} disabled={fixing} className="shrink-0 text-xs bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 px-2.5 py-1.5 rounded-lg hover:bg-emerald-500/30 disabled:opacity-40 transition-colors">🔧 Fix</button>
+  );
+
   return(
     <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
       <div className="bg-slate-800 border border-cyan-500/30 rounded-2xl max-w-2xl w-full max-h-[85vh] overflow-y-auto shadow-2xl">
@@ -2245,29 +2392,88 @@ function SeriesContinuityModal({series,onClose}){
             <div className="text-right text-xs text-white/40">
               <p>{result.writtenCount} of {result.totalPlanned} books written</p>
               <p className="mt-1">{result.issues.length} issues · {result.warnings.length} warnings</p>
+              {fixableCount>0&&<p className="text-emerald-400 mt-1 font-medium">🔧 {fixableCount} auto-fixable</p>}
             </div>
           </div>
+
+          {fixableCount>0&&(
+            <button onClick={fixAll} disabled={fixing} className="w-full bg-gradient-to-r from-emerald-500 to-teal-500 text-white py-3 rounded-xl font-semibold hover:opacity-90 disabled:opacity-50 flex items-center justify-center gap-2 text-sm">
+              {fixing?<><Spin size="h-4 w-4"/>Fixing…</>:`🚀 Fix All — ${fixableCount} Auto-Fix${fixableCount===1?"":"es"}`}
+            </button>
+          )}
+
+          {log.length>0&&(
+            <div className="bg-emerald-500/10 border border-emerald-500/30 rounded-xl p-3">
+              <p className="text-emerald-300 text-xs font-bold uppercase tracking-wider mb-2">Applied Fixes</p>
+              <div className="space-y-1">{log.map((l,i)=><p key={l.ts+"-"+i} className="text-white/60 text-xs">✅ {l.msg}</p>)}</div>
+            </div>
+          )}
 
           {result.issues.length>0&&(
             <div>
               <h3 className="text-red-300 text-sm font-bold mb-2">❌ Issues ({result.issues.length})</h3>
-              <div className="space-y-2">{result.issues.map((iss,i)=><div key={i} className="bg-red-500/10 border border-red-500/30 rounded-lg p-3"><span className="text-red-400 text-xs font-bold uppercase">{iss.type}</span><p className="text-white/70 text-sm mt-0.5">{iss.msg}</p></div>)}</div>
+              <div className="space-y-2">{result.issues.map((iss,i)=>(
+                <div key={i} className="bg-red-500/10 border border-red-500/30 rounded-lg p-3 flex items-start justify-between gap-3">
+                  <div><span className="text-red-400 text-xs font-bold uppercase">{iss.type}</span><p className="text-white/70 text-sm mt-0.5">{iss.msg}</p>{iss.fix?.reason&&<p className="text-white/30 text-xs mt-0.5 italic">{iss.fix.reason}</p>}</div>
+                  {iss.fix&&<FixBtn fix={iss.fix}/>}
+                </div>
+              ))}</div>
             </div>
           )}
           {result.warnings.length>0&&(
             <div>
               <h3 className="text-amber-300 text-sm font-bold mb-2">⚠️ Warnings ({result.warnings.length})</h3>
-              <div className="space-y-2">{result.warnings.map((w,i)=><div key={i} className="bg-amber-500/10 border border-amber-500/30 rounded-lg p-3"><span className="text-amber-400 text-xs font-bold uppercase">{w.type}</span><p className="text-white/70 text-sm mt-0.5">{w.msg}</p></div>)}</div>
+              <div className="space-y-2">{result.warnings.map((w,i)=>(
+                <div key={i} className="bg-amber-500/10 border border-amber-500/30 rounded-lg p-3 flex items-start justify-between gap-3">
+                  <div><span className="text-amber-400 text-xs font-bold uppercase">{w.type}</span><p className="text-white/70 text-sm mt-0.5">{w.msg}</p></div>
+                  {w.fix&&<FixBtn fix={w.fix}/>}
+                </div>
+              ))}</div>
             </div>
           )}
           {result.issues.length===0&&result.warnings.length===0&&(
             <div className="bg-green-500/10 border border-green-500/30 rounded-xl p-4 text-center"><p className="text-green-300 font-bold">✅ No continuity problems found!</p><p className="text-white/40 text-xs mt-1">Roster names are unique, planned books exist, pacing is consistent.</p></div>
           )}
-          <p className="text-white/20 text-xs">Runs instantly with no API calls. Re-check after writing more books in the series.</p>
+          <p className="text-white/20 text-xs">Runs instantly with no API calls. Rename fixes edit book text directly — export a library backup (Settings → Backup) before bulk fixes. Pacing warnings need manual rewrites (no auto-fix).</p>
         </div>
       </div>
     </div>
   );
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// REVIEW AGENT
+// ══════════════════════════════════════════════════════════════════════════════
+async function runReviewAgent(book){
+  const outline=(()=>{try{return JSON.parse(book.outline||"{}");}catch{return {};}})();
+  const raw=await callAI(
+    `You are a professional book publishing strategist and Amazon KDP expert with deep knowledge of what makes books bestsellers.\n\n`+
+    `Review this book for market-readiness and discoverability. Be critical, specific, and commercially minded.\n\n`+
+    `Book Details:\nTitle: ${book.title}\nSubtitle: ${book.subtitle||"(none)"}\nGenre: ${book.genre}\n`+
+    `Target Audience: ${book.target_audience}\nSEO Title: ${book.seo_title||"(not set)"}\n`+
+    `SEO Description: ${book.seo_description||"(not set)"}\nKeywords: ${book.seo_keywords||"(not set)"}\n`+
+    `Description: ${outline.description||book.description}\n\n`+
+    `Evaluate:\n1. Title appeal & marketability\n2. Keyword strength & searchability\n3. SEO description quality\n4. Subtitle effectiveness\n5. Market differentiation\n\n`+
+    `Respond ONLY with valid JSON:\n`+
+    `{"overall_score":85,"title_score":80,"keyword_score":75,"seo_score":85,"differentiation_score":80,`+
+    `"verdict":"PASS","verdict_reason":"One sentence summary.",`+
+    `"strengths":["strength 1","strength 2","strength 3"],`+
+    `"issues":["issue 1","issue 2"],`+
+    `"title_suggestions":["Better Title: Subtitle","Alternative Title 2"],`+
+    `"keyword_suggestions":["keyword 1","keyword 2","keyword 3","keyword 4","keyword 5"],`+
+    `"seo_rewrite":"A rewritten stronger SEO description.",`+
+    `"subtitle_suggestion":"A stronger subtitle.",`+
+    `"hook_strength_score":75,`+
+    `"hook_analysis":"Why the current hook does or does not grab readers in 2 seconds — be specific",`+
+    `"top_3_fixes":["Single most impactful change to make right now","Second fix","Third fix"],`+
+    `"amazon_search_prediction":"The exact search query most likely to surface this book on Amazon",`+
+    `"estimated_page_count":${Math.round(((book.chapters||[]).filter(c=>c.content).reduce((a,c)=>a+(c.content||"").split(/\\s+/).length,0))/250)||100}}`+
+    `\nVerdict must be "PASS" if overall_score>=75, otherwise "FAIL".`,0.5
+  );
+  trackUsage();
+  const match=raw.match(/\{[\s\S]*\}/);
+  if(!match)throw{code:"PARSE",msg:"Could not parse review."};
+  try{return JSON.parse(match[0]);}catch(pe){throw{code:"PARSE",msg:"AI returned malformed JSON — please retry."};}
 }
 
 function SettingsModal({onClose}){
@@ -2512,41 +2718,6 @@ function Header({onBack,title,subtitle,onSettings,onTour,activeTab,setActiveTab}
       )}
     </div>
   );
-}
-
-// ══════════════════════════════════════════════════════════════════════════════
-// REVIEW AGENT
-// ══════════════════════════════════════════════════════════════════════════════
-async function runReviewAgent(book){
-  const outline=(()=>{try{return JSON.parse(book.outline||"{}");}catch{return {};}})();
-  const raw=await callAI(
-    `You are a professional book publishing strategist and Amazon KDP expert with deep knowledge of what makes books bestsellers.\n\n`+
-    `Review this book for market-readiness and discoverability. Be critical, specific, and commercially minded.\n\n`+
-    `Book Details:\nTitle: ${book.title}\nSubtitle: ${book.subtitle||"(none)"}\nGenre: ${book.genre}\n`+
-    `Target Audience: ${book.target_audience}\nSEO Title: ${book.seo_title||"(not set)"}\n`+
-    `SEO Description: ${book.seo_description||"(not set)"}\nKeywords: ${book.seo_keywords||"(not set)"}\n`+
-    `Description: ${outline.description||book.description}\n\n`+
-    `Evaluate:\n1. Title appeal & marketability\n2. Keyword strength & searchability\n3. SEO description quality\n4. Subtitle effectiveness\n5. Market differentiation\n\n`+
-    `Respond ONLY with valid JSON:\n`+
-    `{"overall_score":85,"title_score":80,"keyword_score":75,"seo_score":85,"differentiation_score":80,`+
-    `"verdict":"PASS","verdict_reason":"One sentence summary.",`+
-    `"strengths":["strength 1","strength 2","strength 3"],`+
-    `"issues":["issue 1","issue 2"],`+
-    `"title_suggestions":["Better Title: Subtitle","Alternative Title 2"],`+
-    `"keyword_suggestions":["keyword 1","keyword 2","keyword 3","keyword 4","keyword 5"],`+
-    `"seo_rewrite":"A rewritten stronger SEO description.",`+
-    `"subtitle_suggestion":"A stronger subtitle.",`+
-    `"hook_strength_score":75,`+
-    `"hook_analysis":"Why the current hook does or does not grab readers in 2 seconds — be specific",`+
-    `"top_3_fixes":["Single most impactful change to make right now","Second fix","Third fix"],`+
-    `"amazon_search_prediction":"The exact search query most likely to surface this book on Amazon",`+
-    `"estimated_page_count":${Math.round(((book.chapters||[]).filter(c=>c.content).reduce((a,c)=>a+(c.content||"").split(/\\s+/).length,0))/250)||100}}`+
-    `\nVerdict must be "PASS" if overall_score>=75, otherwise "FAIL".`,0.5
-  );
-  trackUsage();
-  const match=raw.match(/\{[\s\S]*\}/);
-  if(!match)throw{code:"PARSE",msg:"Could not parse review."};
-  try{return JSON.parse(match[0]);}catch(pe){throw{code:"PARSE",msg:"AI returned malformed JSON — please retry."};}
 }
 
 function ReviewPanel({book,onApply,onSettings}){
@@ -3905,11 +4076,9 @@ function SeriesPage({navigate,onSettings}){
 
   const bibleSeries=viewBible?seriesList.find(s=>s.id===viewBible):null;
 
-  const continuitySeries=continuityId?seriesList.find(s=>s.id===continuityId):null;
-
   return(
     <div className="max-w-7xl mx-auto px-4 sm:px-6 py-8">
-      {continuitySeries&&<SeriesContinuityModal series={continuitySeries} onClose={()=>setContinuity(null)}/>}
+      {continuityId&&<SeriesContinuityModal seriesId={continuityId} onClose={()=>setContinuity(null)}/>}
       {/* World Bible Modal */}
       {bibleSeries&&(
         <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
