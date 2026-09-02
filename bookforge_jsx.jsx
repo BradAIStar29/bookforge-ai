@@ -529,16 +529,29 @@ async function callGemini(prompt,temperature=0.85,opts={}){
 }
 
 // ── Puter.js AI call (free, no API key needed) ──
+// Puter.js has no built-in timeout — race it so a hung call (e.g. guest
+// sign-in popup blocked) can't spin the UI forever.
+async function puterWithTimeout(fn,ms){
+  let timer;
+  try{
+    return await Promise.race([
+      fn(),
+      new Promise((_,rej)=>{timer=setTimeout(()=>rej({code:"TIMEOUT",msg:`⏱️ Puter.js request timed out (${Math.round(ms/1000)}s). If a Puter sign-in popup appeared, complete it and click Retry.`}),ms);})
+    ]);
+  }finally{clearTimeout(timer);}
+}
+
 async function callPuter(prompt,temperature=0.85,opts={}){
   if(typeof puter==="undefined")throw{code:"PUTER_NOT_LOADED"};
   const model=resolveModel(prompt,opts)||getPuterTextModel();
   const maxRetries=opts.maxRetries??2;
+  const timeoutMs=opts.timeoutMs??180000; // 3 min — Puter free models can be slow
   let lastErr=null;
   for(let attempt=0;attempt<=maxRetries;attempt++){
     try{
       // Streaming mode — Puter.js supports async iterators when stream:true
       if(opts.onStream){
-        const resp=await puter.ai.chat(prompt,{model,temperature:Math.min(temperature,1),stream:true});
+        const resp=await puterWithTimeout(()=>puter.ai.chat(prompt,{model,temperature:Math.min(temperature,1),stream:true}),timeoutMs);
         let fullText="";
         // Puter returns an async iterable for streaming
         if(resp&&typeof resp[Symbol.asyncIterator]==="function"){
@@ -559,7 +572,7 @@ async function callPuter(prompt,temperature=0.85,opts={}){
         if(!fullText)throw{code:"EMPTY"};
         return fullText;
       }
-      const resp=await puter.ai.chat(prompt,{model,temperature:Math.min(temperature,1)});
+      const resp=await puterWithTimeout(()=>puter.ai.chat(prompt,{model,temperature:Math.min(temperature,1)}),timeoutMs);
       // Puter returns text directly or in message.content
       let text="";
       if(typeof resp==="string")text=resp;
