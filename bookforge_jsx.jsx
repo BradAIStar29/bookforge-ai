@@ -85,7 +85,7 @@ const getCerebrasKey=()=>localStorage.getItem("cerebras_api_key")||"";
 const setCerebrasKey=k=>safeLS("cerebras_api_key",k.trim());
 const getCerebrasModel=()=>localStorage.getItem("bfai_cerebras_model")||"llama-4-scout-17b-16e-instruct";
 const setCerebrasModel=m=>safeLS("bfai_cerebras_model",m);
-const getBackend=()=>localStorage.getItem("bfai_backend")||"kilo";
+const getBackend=()=>localStorage.getItem("bfai_backend")||"puter"; // kilo default removed 2026-09-02: gateway dropped browser CORS
 const setBackend=b=>safeLS("bfai_backend",b);
 
 // Puter text model options
@@ -975,9 +975,19 @@ async function callCloudflare(prompt,temperature=0.85,opts={}){
   throw{code:"CF_ERROR",msg:"Cloudflare request failed after retries."};
 }
 
-// ── Unified AI call — routes to Gemini or Puter based on settings ──
-async function callAI(prompt,temperature=0.85,opts={}){
-  const backend=getBackend();
+// ── Unified AI call — routes to backend, with auto-failover ──
+// Kilo's gateway dropped browser CORS support (verified 2026-09-02) — fetches
+// from a browser fail with "Failed to fetch" permanently, not transiently.
+// Once Kilo hard-fails we flag it dead for the session and route to Puter.js
+// (the only other zero-key backend) so generation never stalls.
+let KILO_SESSION_DEAD=false;
+function notifyBackendSwitch(){
+  try{window.dispatchEvent(new CustomEvent("bfai:retry",{detail:{reason:"notice",msg:"🔌 Kilo Code is unreachable from browsers right now — auto-switched to Puter.js for this session."}}));}catch(e){}
+}
+function kiloFailureShouldFailover(e){
+  return e?.code==="KILO_ERROR"||e?.code==="TIMEOUT"; // NOT QUOTA (rate-limit = alive, just busy)
+}
+async function dispatchAICall(backend,prompt,temperature,opts){
   if(backend==="puter")return callPuter(prompt,temperature,opts);
   if(backend==="groq")return callGroq(prompt,temperature,opts);
   if(backend==="cerebras")return callCerebras(prompt,temperature,opts);
@@ -985,14 +995,29 @@ async function callAI(prompt,temperature=0.85,opts={}){
   if(backend==="cloudflare")return callCloudflare(prompt,temperature,opts);
   return callGemini(prompt,temperature,opts);
 }
+async function callAI(prompt,temperature=0.85,opts={}){
+  let backend=getBackend();
+  if(backend==="kilo"&&KILO_SESSION_DEAD)backend="puter";
+  try{
+    return await dispatchAICall(backend,prompt,temperature,opts);
+  }catch(e){
+    if(backend==="kilo"&&kiloFailureShouldFailover(e)){
+      KILO_SESSION_DEAD=true;
+      notifyBackendSwitch();
+      return callPuter(prompt,temperature,opts);
+    }
+    throw e;
+  }
+}
 
 // Streaming version — only Groq supports true streaming; others fall back to batch + onStream at end
 async function callAIStream(prompt,temperature=0.85,opts={}){
-  const backend=getBackend();
+  let backend=getBackend();
+  if(backend==="kilo"&&KILO_SESSION_DEAD)backend="puter";
   if(backend==="groq"&&opts.onStream)return callGroq(prompt,temperature,opts);
   if(backend==="puter"&&opts.onStream)return callPuter(prompt,temperature,opts);
   if(backend==="cerebras"&&opts.onStream)return callCerebras(prompt,temperature,opts);
-  if(backend==="kilo"&&opts.onStream)return callKilo(prompt,temperature,opts);
+  if(backend==="kilo"&&opts.onStream)return callKilo(prompt,temperature,opts).catch(e=>{if(kiloFailureShouldFailover(e)){KILO_SESSION_DEAD=true;notifyBackendSwitch();return callPuter(prompt,temperature,opts);}throw e;});
   if(backend==="cloudflare"&&opts.onStream)return callCloudflare(prompt,temperature,opts);
   // Gemini doesn't support SSE — generate all at once, then deliver
   const text=await callAI(prompt,temperature,opts);
@@ -1025,8 +1050,12 @@ async function testConnection(){
       return{ok:true,msg:"✅ Cerebras API key works! Model: "+getCerebrasModel()+" — Response: "+(r||"OK").slice(0,50)};
     }
     if(backend==="kilo"){
-      const r=await callKilo("Say OK",0.1,{max_tokens:5});
-      return{ok:true,msg:"✅ Kilo Code works! Model: "+getKiloModel()+" — Response: "+(r||"OK").slice(0,50)};
+      try{
+        const r=await callKilo("Say OK",0.1,{max_tokens:5});
+        return{ok:true,msg:"✅ Kilo Code works! Model: "+getKiloModel()+" — Response: "+(r||"OK").slice(0,50)};
+      }catch(e){
+        return{ok:false,msg:"❌ Kilo Code is unreachable from browsers right now (their gateway dropped CORS). BookForge will auto-fall back to Puter.js — or pick another backend: Settings → API Key."};
+      }
     }
     if(backend==="cloudflare"){
       if(!getCloudflareAccountId()||!getCloudflareToken())return{ok:false,msg:"Cloudflare account ID + API token required — add in Settings."};
@@ -7548,7 +7577,7 @@ function App(){
     // First-run welcome for zero-config backends (Kilo Code)
     if(!localStorage.getItem("bfai_visited")){
       localStorage.setItem("bfai_visited","1");
-      if(getBackend()==="kilo")setShowWelcome(true);
+      if(getBackend()==="puter"||getBackend()==="kilo")setShowWelcome(true);
     }
   },[]);
   // Keyboard shortcuts
@@ -7568,10 +7597,17 @@ function App(){
   },[]);
   useEffect(()=>{
     const onRetry=e=>{
-      const{attempt,totalAttempts,reason}=e.detail||{};
-      const label=reason==="timeout"?"⏱️ Timed out":reason==="network"?"📡 Network hiccup":"⚠️ Server hiccup";
+      const{attempt,totalAttempts,reason,msg}=e.detail||{};
+      const total=totalAttempts||3;
+      const label=reason==="timeout"?"⏱️ Timed out":reason==="network"?"📡 Network hiccup":reason==="notice"?null:"⚠️ Server hiccup";
+      if(label===null){
+        const nid=Date.now()+Math.random();
+        setRetryToasts(prev=>[...prev,{id:nid,msg}]);
+        setTimeout(()=>setRetryToasts(prev=>prev.filter(t=>t.id!==nid)),9000);
+        return;
+      }
       const id=Date.now()+Math.random();
-      setRetryToasts(prev=>[...prev,{id,msg:`${label} — auto-retrying (${attempt}/${totalAttempts})…`}]);
+      setRetryToasts(prev=>[...prev,{id,msg:`${label} — auto-retrying (${attempt}/${total})…`}]);
       setTimeout(()=>setRetryToasts(prev=>prev.filter(t=>t.id!==id)),4000);
     };
     window.addEventListener("bfai:retry",onRetry);
@@ -7591,7 +7627,7 @@ function App(){
             <span className="text-2xl">🎉</span>
             <div>
               <p className="text-green-300 text-sm font-semibold">You're ready to go! No setup needed.</p>
-              <p className="text-white/40 text-xs mt-0.5">BookForge is using <strong className="text-green-400/70">Kilo Code</strong> — a free AI engine with no API key required. Just start creating! Want more power? Switch to Cerebras (1M tok/day) or Groq in Settings.</p>
+              <p className="text-white/40 text-xs mt-0.5">BookForge is using <strong className="text-green-400/70">Puter.js</strong> — a free AI engine with no API key required. Just start creating! Want more power? Switch to Cerebras (1M tok/day) or Groq in Settings.</p>
             </div>
           </div>
           <div className="flex gap-2 shrink-0">

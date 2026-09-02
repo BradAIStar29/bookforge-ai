@@ -127,7 +127,7 @@ const getCerebrasKey = () => localStorage.getItem("cerebras_api_key") || "";
 const setCerebrasKey = (k) => safeLS("cerebras_api_key", k.trim());
 const getCerebrasModel = () => localStorage.getItem("bfai_cerebras_model") || "llama-4-scout-17b-16e-instruct";
 const setCerebrasModel = (m) => safeLS("bfai_cerebras_model", m);
-const getBackend = () => localStorage.getItem("bfai_backend") || "kilo";
+const getBackend = () => localStorage.getItem("bfai_backend") || "puter";
 const setBackend = (b) => safeLS("bfai_backend", b);
 const PUTER_TEXT_MODELS = [
   { id: "openai/gpt-5.6-sol", label: "GPT-5.6 Sol", desc: "OpenAI's newest flagship \u2014 best overall quality" },
@@ -1082,8 +1082,17 @@ async function callCloudflare(prompt2, temperature = 0.85, opts = {}) {
   }
   throw { code: "CF_ERROR", msg: "Cloudflare request failed after retries." };
 }
-async function callAI(prompt2, temperature = 0.85, opts = {}) {
-  const backend = getBackend();
+let KILO_SESSION_DEAD = false;
+function notifyBackendSwitch() {
+  try {
+    window.dispatchEvent(new CustomEvent("bfai:retry", { detail: { reason: "notice", msg: "\u{1F50C} Kilo Code is unreachable from browsers right now \u2014 auto-switched to Puter.js for this session." } }));
+  } catch (e) {
+  }
+}
+function kiloFailureShouldFailover(e) {
+  return e?.code === "KILO_ERROR" || e?.code === "TIMEOUT";
+}
+async function dispatchAICall(backend, prompt2, temperature, opts) {
   if (backend === "puter") return callPuter(prompt2, temperature, opts);
   if (backend === "groq") return callGroq(prompt2, temperature, opts);
   if (backend === "cerebras") return callCerebras(prompt2, temperature, opts);
@@ -1091,12 +1100,34 @@ async function callAI(prompt2, temperature = 0.85, opts = {}) {
   if (backend === "cloudflare") return callCloudflare(prompt2, temperature, opts);
   return callGemini(prompt2, temperature, opts);
 }
+async function callAI(prompt2, temperature = 0.85, opts = {}) {
+  let backend = getBackend();
+  if (backend === "kilo" && KILO_SESSION_DEAD) backend = "puter";
+  try {
+    return await dispatchAICall(backend, prompt2, temperature, opts);
+  } catch (e) {
+    if (backend === "kilo" && kiloFailureShouldFailover(e)) {
+      KILO_SESSION_DEAD = true;
+      notifyBackendSwitch();
+      return callPuter(prompt2, temperature, opts);
+    }
+    throw e;
+  }
+}
 async function callAIStream(prompt2, temperature = 0.85, opts = {}) {
-  const backend = getBackend();
+  let backend = getBackend();
+  if (backend === "kilo" && KILO_SESSION_DEAD) backend = "puter";
   if (backend === "groq" && opts.onStream) return callGroq(prompt2, temperature, opts);
   if (backend === "puter" && opts.onStream) return callPuter(prompt2, temperature, opts);
   if (backend === "cerebras" && opts.onStream) return callCerebras(prompt2, temperature, opts);
-  if (backend === "kilo" && opts.onStream) return callKilo(prompt2, temperature, opts);
+  if (backend === "kilo" && opts.onStream) return callKilo(prompt2, temperature, opts).catch((e) => {
+    if (kiloFailureShouldFailover(e)) {
+      KILO_SESSION_DEAD = true;
+      notifyBackendSwitch();
+      return callPuter(prompt2, temperature, opts);
+    }
+    throw e;
+  });
   if (backend === "cloudflare" && opts.onStream) return callCloudflare(prompt2, temperature, opts);
   const text = await callAI(prompt2, temperature, opts);
   if (opts.onStream) opts.onStream(text);
@@ -1126,8 +1157,12 @@ async function testConnection() {
       return { ok: true, msg: "\u2705 Cerebras API key works! Model: " + getCerebrasModel() + " \u2014 Response: " + (r || "OK").slice(0, 50) };
     }
     if (backend === "kilo") {
-      const r = await callKilo("Say OK", 0.1, { max_tokens: 5 });
-      return { ok: true, msg: "\u2705 Kilo Code works! Model: " + getKiloModel() + " \u2014 Response: " + (r || "OK").slice(0, 50) };
+      try {
+        const r = await callKilo("Say OK", 0.1, { max_tokens: 5 });
+        return { ok: true, msg: "\u2705 Kilo Code works! Model: " + getKiloModel() + " \u2014 Response: " + (r || "OK").slice(0, 50) };
+      } catch (e) {
+        return { ok: false, msg: "\u274C Kilo Code is unreachable from browsers right now (their gateway dropped CORS). BookForge will auto-fall back to Puter.js \u2014 or pick another backend: Settings \u2192 API Key." };
+      }
     }
     if (backend === "cloudflare") {
       if (!getCloudflareAccountId() || !getCloudflareToken()) return { ok: false, msg: "Cloudflare account ID + API token required \u2014 add in Settings." };
@@ -6998,7 +7033,7 @@ function App() {
     }
     if (!localStorage.getItem("bfai_visited")) {
       localStorage.setItem("bfai_visited", "1");
-      if (getBackend() === "kilo") setShowWelcome(true);
+      if (getBackend() === "puter" || getBackend() === "kilo") setShowWelcome(true);
     }
   }, []);
   useEffect(() => {
@@ -7017,10 +7052,17 @@ function App() {
   }, []);
   useEffect(() => {
     const onRetry = (e) => {
-      const { attempt, totalAttempts, reason } = e.detail || {};
-      const label = reason === "timeout" ? "\u23F1\uFE0F Timed out" : reason === "network" ? "\u{1F4E1} Network hiccup" : "\u26A0\uFE0F Server hiccup";
+      const { attempt, totalAttempts, reason, msg } = e.detail || {};
+      const total = totalAttempts || 3;
+      const label = reason === "timeout" ? "\u23F1\uFE0F Timed out" : reason === "network" ? "\u{1F4E1} Network hiccup" : reason === "notice" ? null : "\u26A0\uFE0F Server hiccup";
+      if (label === null) {
+        const nid = Date.now() + Math.random();
+        setRetryToasts((prev) => [...prev, { id: nid, msg }]);
+        setTimeout(() => setRetryToasts((prev) => prev.filter((t) => t.id !== nid)), 9e3);
+        return;
+      }
       const id = Date.now() + Math.random();
-      setRetryToasts((prev) => [...prev, { id, msg: `${label} \u2014 auto-retrying (${attempt}/${totalAttempts})\u2026` }]);
+      setRetryToasts((prev) => [...prev, { id, msg: `${label} \u2014 auto-retrying (${attempt}/${total})\u2026` }]);
       setTimeout(() => setRetryToasts((prev) => prev.filter((t) => t.id !== id)), 4e3);
     };
     window.addEventListener("bfai:retry", onRetry);
@@ -7036,7 +7078,7 @@ function App() {
   const isHome = page === "home";
   const isEditor = page === "editor";
   const isCreate = page === "create";
-  return /* @__PURE__ */ React.createElement("div", { className: "min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900" }, typeof navigator !== "undefined" && !navigator.onLine && /* @__PURE__ */ React.createElement("div", { className: "bg-amber-500/15 border-b border-amber-500/30 px-4 py-1.5 text-center text-amber-300 text-xs font-medium" }, "\u{1F4E1} You're offline \u2014 BookForge works in offline mode, but AI generation needs internet."), showWelcome && /* @__PURE__ */ React.createElement("div", { className: "bg-green-500/10 border-b border-green-500/20 px-4 py-3 flex items-center justify-between gap-4" }, /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-3" }, /* @__PURE__ */ React.createElement("span", { className: "text-2xl" }, "\u{1F389}"), /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("p", { className: "text-green-300 text-sm font-semibold" }, "You're ready to go! No setup needed."), /* @__PURE__ */ React.createElement("p", { className: "text-white/40 text-xs mt-0.5" }, "BookForge is using ", /* @__PURE__ */ React.createElement("strong", { className: "text-green-400/70" }, "Kilo Code"), " \u2014 a free AI engine with no API key required. Just start creating! Want more power? Switch to Cerebras (1M tok/day) or Groq in Settings."))), /* @__PURE__ */ React.createElement("div", { className: "flex gap-2 shrink-0" }, /* @__PURE__ */ React.createElement("button", { onClick: () => setShowSettings(true), className: "text-xs px-3 py-1.5 rounded-lg bg-green-500/20 text-green-300 border border-green-500/30 hover:bg-green-500/30 transition-all" }, "\u2699\uFE0F Settings"), /* @__PURE__ */ React.createElement("button", { onClick: () => setShowWelcome(false), className: "text-xs px-3 py-1.5 rounded-lg text-white/40 hover:text-white/70 transition-all" }, "Got it \u2715"))), /* @__PURE__ */ React.createElement("div", { className: "fixed top-4 right-4 z-[9999] flex flex-col gap-2 pointer-events-none" }, retryToasts.map((t) => /* @__PURE__ */ React.createElement("div", { key: t.id, className: "bg-cyan-500/95 text-white text-xs font-semibold px-4 py-2.5 rounded-lg shadow-lg backdrop-blur-sm animate-pulse" }, t.msg))), showSettings && /* @__PURE__ */ React.createElement(SettingsModal, { onClose: () => setShowSettings(false) }), /* @__PURE__ */ React.createElement(
+  return /* @__PURE__ */ React.createElement("div", { className: "min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900" }, typeof navigator !== "undefined" && !navigator.onLine && /* @__PURE__ */ React.createElement("div", { className: "bg-amber-500/15 border-b border-amber-500/30 px-4 py-1.5 text-center text-amber-300 text-xs font-medium" }, "\u{1F4E1} You're offline \u2014 BookForge works in offline mode, but AI generation needs internet."), showWelcome && /* @__PURE__ */ React.createElement("div", { className: "bg-green-500/10 border-b border-green-500/20 px-4 py-3 flex items-center justify-between gap-4" }, /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-3" }, /* @__PURE__ */ React.createElement("span", { className: "text-2xl" }, "\u{1F389}"), /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("p", { className: "text-green-300 text-sm font-semibold" }, "You're ready to go! No setup needed."), /* @__PURE__ */ React.createElement("p", { className: "text-white/40 text-xs mt-0.5" }, "BookForge is using ", /* @__PURE__ */ React.createElement("strong", { className: "text-green-400/70" }, "Puter.js"), " \u2014 a free AI engine with no API key required. Just start creating! Want more power? Switch to Cerebras (1M tok/day) or Groq in Settings."))), /* @__PURE__ */ React.createElement("div", { className: "flex gap-2 shrink-0" }, /* @__PURE__ */ React.createElement("button", { onClick: () => setShowSettings(true), className: "text-xs px-3 py-1.5 rounded-lg bg-green-500/20 text-green-300 border border-green-500/30 hover:bg-green-500/30 transition-all" }, "\u2699\uFE0F Settings"), /* @__PURE__ */ React.createElement("button", { onClick: () => setShowWelcome(false), className: "text-xs px-3 py-1.5 rounded-lg text-white/40 hover:text-white/70 transition-all" }, "Got it \u2715"))), /* @__PURE__ */ React.createElement("div", { className: "fixed top-4 right-4 z-[9999] flex flex-col gap-2 pointer-events-none" }, retryToasts.map((t) => /* @__PURE__ */ React.createElement("div", { key: t.id, className: "bg-cyan-500/95 text-white text-xs font-semibold px-4 py-2.5 rounded-lg shadow-lg backdrop-blur-sm animate-pulse" }, t.msg))), showSettings && /* @__PURE__ */ React.createElement(SettingsModal, { onClose: () => setShowSettings(false) }), /* @__PURE__ */ React.createElement(
     Header,
     {
       onBack: !isHome ? () => navigate("home") : null,
