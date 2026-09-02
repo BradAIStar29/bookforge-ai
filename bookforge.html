@@ -84,10 +84,39 @@ const getKey = () => localStorage.getItem("gemini_api_key") || "";
 const setKey = (k) => localStorage.setItem("gemini_api_key", k.trim());
 const BACKENDS = [
   { id: "gemini", label: "Gemini API Key", desc: "Bring your own free Google AI Studio key. 1,500 req/day." },
+  { id: "kilo", label: "Kilo Code (No Key! 200/hr)", desc: "Zero config \u2014 no API key, no account. Auto-routes to Nemotron 550B, Tencent Hy3, and more. 200 req/hr free." },
   { id: "cerebras", label: "Cerebras (1M tok/day FREE)", desc: "Wafer-scale inference \u2014 ultra-fast. 1M tokens/day free, no credit card." },
+  { id: "cloudflare", label: "Cloudflare Workers AI (10K/day)", desc: "75+ models incl. Llama 4 Scout, gpt-oss-120B, Mistral, DeepSeek. 10K Neurons/day free, no credit card." },
   { id: "puter", label: "Puter.js (Free \u2014 No Key)", desc: "400+ models incl. GPT-5.5, Claude Opus 5, Gemini 3.6. User-pays model \u2014 you pay nothing." },
   { id: "groq", label: "Groq Turbo (\u26A1 Fastest)", desc: "500+ tokens/sec with GPT-OSS 120B. Free API key, 14,400 req/day." }
 ];
+const KILO_URL = "https://api.kilo.ai/api/gateway";
+const KILO_MODELS = [
+  { id: "kilo-auto/free", label: "Kilo Auto (auto-route)", desc: "Auto-selects best available free model \u2014 recommended" },
+  { id: "nvidia/nemotron-3-ultra-550b-a55b:free", label: "Nemotron 3 Ultra 550B", desc: "NVIDIA \u2014 1M context, 65K output. Best quality free model" },
+  { id: "tencent/hy3:free", label: "Tencent Hy3", desc: "262K context, 128K output \u2014 strong multilingual" },
+  { id: "nvidia/nemotron-3-super-120b-a12b:free", label: "Nemotron 3 Super 120B", desc: "NVIDIA \u2014 fast, strong reasoning" },
+  { id: "stepfun/step-3.7-flash:free", label: "StepFun 3.7 Flash", desc: "262K context, multimodal \u2014 fast & capable" },
+  { id: "nvidia/nemotron-3.5-lightning:free", label: "Nemotron 3.5 Lightning", desc: "1M context, 65K output \u2014 ultra-fast" },
+  { id: "liquid/lfm-2.5-2.6b:free", label: "Liquid LFM 2.5 2.6B", desc: "Tiny & fast \u2014 good for metadata/short tasks" }
+];
+const getKiloModel = () => localStorage.getItem("bfai_kilo_model") || "kilo-auto/free";
+const setKiloModel = (m) => safeLS("bfai_kilo_model", m);
+const CLOUDFLARE_MODELS = [
+  { id: "@cf/meta/llama-4-scout-17b-16e-instruct", label: "Llama 4 Scout 17B", desc: "Meta \u2014 131K context, multimodal \u2014 best for creative writing" },
+  { id: "@cf/openai/gpt-oss-120b", label: "GPT-OSS 120B", desc: "OpenAI open-weight \u2014 128K context, strong reasoning" },
+  { id: "@cf/openai/gpt-oss-20b", label: "GPT-OSS 20B", desc: "Smaller, faster \u2014 good for metadata & short tasks" },
+  { id: "@cf/zai-org/glm-4.7-flash", label: "GLM 4.7 Flash", desc: "Z.AI \u2014 131K context, strong reasoning" },
+  { id: "@cf/mistralai/mistral-small-3.1-24b-instruct", label: "Mistral Small 3.1 24B", desc: "Efficient European model \u2014 128K context" },
+  { id: "@cf/deepseek-ai/deepseek-r1-distill-qwen-32b", label: "DeepSeek R1 Distill 32B", desc: "Reasoning model \u2014 great for outlines" },
+  { id: "@cf/google/gemma-4-26b-a4b-it", label: "Gemma 4 26B", desc: "Google \u2014 256K context, text + vision" }
+];
+const getCloudflareAccountId = () => localStorage.getItem("cf_account_id") || "";
+const setCloudflareAccountId = (v) => safeLS("cf_account_id", v.trim());
+const getCloudflareToken = () => localStorage.getItem("cf_api_token") || "";
+const setCloudflareToken = (v) => safeLS("cf_api_token", v.trim());
+const getCloudflareModel = () => localStorage.getItem("bfai_cf_model") || "@cf/meta/llama-4-scout-17b-16e-instruct";
+const setCloudflareModel = (m) => safeLS("bfai_cf_model", m);
 const CEREBRAS_URL = "https://api.cerebras.ai/v1/chat/completions";
 const CEREBRAS_MODELS = [
   { id: "llama-4-scout-17b-16e-instruct", label: "Llama 4 Scout 17B", desc: "Meta \u2014 131K context, multimodal, best for creative writing" },
@@ -304,12 +333,14 @@ const trackUsage = () => {
   ls.set("bfai_usage", { date: today, count: c });
   return c;
 };
-const quotaBlocked = () => getBackend() !== "puter" && getBackend() !== "groq" && getBackend() !== "cerebras" && getUsage() >= DAILY_LIMIT;
+const quotaBlocked = () => getBackend() !== "puter" && getBackend() !== "groq" && getBackend() !== "cerebras" && getBackend() !== "kilo" && getBackend() !== "cloudflare" && getUsage() >= DAILY_LIMIT;
 const hasCredentials = () => {
   const b = getBackend();
   if (b === "gemini") return !!getKey();
   if (b === "groq") return !!getGroqKey();
   if (b === "cerebras") return !!getCerebrasKey();
+  if (b === "kilo") return true;
+  if (b === "cloudflare") return !!getCloudflareAccountId() && !!getCloudflareToken();
   if (b === "puter") return typeof puter !== "undefined";
   return false;
 };
@@ -746,11 +777,202 @@ async function callCerebras(prompt, temperature = 0.85, opts = {}) {
   }
   throw { code: "CEREBRAS_ERROR", msg: "Cerebras request failed after retries." };
 }
+async function callKilo(prompt, temperature = 0.85, opts = {}) {
+  const model = resolveModel(prompt, opts) || getKiloModel();
+  let retries = 0, controller, timeout;
+  while (retries <= 2) {
+    controller = new AbortController();
+    timeout = setTimeout(() => controller.abort(), 9e4);
+    try {
+      const resp = await fetch(KILO_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        signal: controller.signal,
+        body: JSON.stringify({
+          model,
+          messages: [{ role: "user", content: prompt }],
+          temperature: Math.min(temperature, 1),
+          max_tokens: opts.max_tokens || 32768,
+          stream: !!opts.onStream
+        })
+      });
+      clearTimeout(timeout);
+      if (opts.onStream && resp.ok) {
+        const reader = resp.body.getReader();
+        const decoder = new TextDecoder();
+        let fullText = "", buffer = "";
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split("\n");
+          buffer = lines.pop() || "";
+          for (const line of lines) {
+            if (line.startsWith("data: ")) {
+              const data2 = line.slice(6).trim();
+              if (data2 === "[DONE]") continue;
+              try {
+                const json = JSON.parse(data2);
+                const delta = json?.choices?.[0]?.delta?.content || "";
+                if (delta) {
+                  fullText += delta;
+                  opts.onStream(fullText);
+                }
+              } catch (e) {
+              }
+            }
+          }
+        }
+        if (!fullText) throw { code: "EMPTY", msg: "Kilo returned empty stream \u2014 please retry." };
+        return fullText;
+      }
+      if (!resp.ok) {
+        const errBody = await resp.text().catch(() => "");
+        if (resp.status === 429) {
+          if (retries < 2) {
+            window.dispatchEvent(new CustomEvent("bfai:retry", { detail: { attempt: retries + 1 } }));
+            playRetryChime();
+            await sleep(RETRY_DELAYS_MS[retries] || 5e3);
+            retries++;
+            continue;
+          }
+          throw { code: "QUOTA", msg: "Kilo rate limit reached (200/hr). Try again shortly." };
+        }
+        throw { code: "KILO_ERROR", msg: "Kilo API error (" + resp.status + "): " + errBody.slice(0, 200) };
+      }
+      const data = await resp.json();
+      const text = data?.choices?.[0]?.message?.content || data?.choices?.[0]?.delta?.content || "";
+      if (!text) throw { code: "EMPTY", msg: "Kilo returned empty response \u2014 please retry." };
+      return text;
+    } catch (e) {
+      if (timeout) clearTimeout(timeout);
+      if (e?.name === "AbortError") {
+        if (retries < 2) {
+          window.dispatchEvent(new CustomEvent("bfai:retry", { detail: { attempt: retries + 1 } }));
+          playRetryChime();
+          await sleep(RETRY_DELAYS_MS[retries] || 5e3);
+          retries++;
+          continue;
+        }
+        throw { code: "TIMEOUT", msg: "Kilo request timed out (90s). Retried 2x \u2014 please try again." };
+      }
+      if (e?.code === "QUOTA" || e?.code === "EMPTY") throw e;
+      if (retries < 2 && (e?.message?.includes("fetch") || e?.message?.includes("network"))) {
+        window.dispatchEvent(new CustomEvent("bfai:retry", { detail: { attempt: retries + 1 } }));
+        playRetryChime();
+        await sleep(RETRY_DELAYS_MS[retries] || 5e3);
+        retries++;
+        continue;
+      }
+      throw { code: "KILO_ERROR", msg: e?.message || "Kilo request failed" };
+    }
+  }
+  throw { code: "KILO_ERROR", msg: "Kilo request failed after retries." };
+}
+async function callCloudflare(prompt, temperature = 0.85, opts = {}) {
+  const accountId = getCloudflareAccountId();
+  const token = getCloudflareToken();
+  if (!accountId || !token) throw { code: "NO_KEY", msg: "Cloudflare account ID + API token required \u2014 add in Settings." };
+  const model = resolveModel(prompt, opts) || getCloudflareModel();
+  const url = `https://api.cloudflare.com/client/v4/accounts/${accountId}/ai/v1/chat/completions`;
+  let retries = 0, controller, timeout;
+  while (retries <= 2) {
+    controller = new AbortController();
+    timeout = setTimeout(() => controller.abort(), 9e4);
+    try {
+      const resp = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Authorization": "Bearer " + token },
+        signal: controller.signal,
+        body: JSON.stringify({
+          model,
+          messages: [{ role: "user", content: prompt }],
+          temperature: Math.min(temperature, 1),
+          max_tokens: opts.max_tokens || 32768,
+          stream: !!opts.onStream
+        })
+      });
+      clearTimeout(timeout);
+      if (opts.onStream && resp.ok) {
+        const reader = resp.body.getReader();
+        const decoder = new TextDecoder();
+        let fullText = "", buffer = "";
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split("\n");
+          buffer = lines.pop() || "";
+          for (const line of lines) {
+            if (line.startsWith("data: ")) {
+              const data2 = line.slice(6).trim();
+              if (data2 === "[DONE]") continue;
+              try {
+                const json = JSON.parse(data2);
+                const delta = json?.choices?.[0]?.delta?.content || "";
+                if (delta) {
+                  fullText += delta;
+                  opts.onStream(fullText);
+                }
+              } catch (e) {
+              }
+            }
+          }
+        }
+        if (!fullText) throw { code: "EMPTY", msg: "Cloudflare returned empty stream \u2014 please retry." };
+        return fullText;
+      }
+      if (!resp.ok) {
+        const errBody = await resp.text().catch(() => "");
+        if (resp.status === 429) {
+          if (retries < 2) {
+            window.dispatchEvent(new CustomEvent("bfai:retry", { detail: { attempt: retries + 1 } }));
+            playRetryChime();
+            await sleep(RETRY_DELAYS_MS[retries] || 5e3);
+            retries++;
+            continue;
+          }
+          throw { code: "QUOTA", msg: "Cloudflare daily Neuron limit reached (10K/day). Try again tomorrow." };
+        }
+        if (resp.status === 401) throw { code: "BAD_KEY", msg: "Invalid Cloudflare credentials \u2014 check Settings." };
+        throw { code: "CF_ERROR", msg: "Cloudflare API error (" + resp.status + "): " + errBody.slice(0, 200) };
+      }
+      const data = await resp.json();
+      const text = data?.response || data?.result?.response || data?.choices?.[0]?.message?.content || "";
+      if (!text) throw { code: "EMPTY", msg: "Cloudflare returned empty response \u2014 please retry." };
+      return text;
+    } catch (e) {
+      if (timeout) clearTimeout(timeout);
+      if (e?.name === "AbortError") {
+        if (retries < 2) {
+          window.dispatchEvent(new CustomEvent("bfai:retry", { detail: { attempt: retries + 1 } }));
+          playRetryChime();
+          await sleep(RETRY_DELAYS_MS[retries] || 5e3);
+          retries++;
+          continue;
+        }
+        throw { code: "TIMEOUT", msg: "Cloudflare request timed out (90s). Retried 2x \u2014 please try again." };
+      }
+      if (e?.code === "QUOTA" || e?.code === "BAD_KEY" || e?.code === "EMPTY") throw e;
+      if (retries < 2 && (e?.message?.includes("fetch") || e?.message?.includes("network"))) {
+        window.dispatchEvent(new CustomEvent("bfai:retry", { detail: { attempt: retries + 1 } }));
+        playRetryChime();
+        await sleep(RETRY_DELAYS_MS[retries] || 5e3);
+        retries++;
+        continue;
+      }
+      throw { code: "CF_ERROR", msg: e?.message || "Cloudflare request failed" };
+    }
+  }
+  throw { code: "CF_ERROR", msg: "Cloudflare request failed after retries." };
+}
 async function callAI(prompt, temperature = 0.85, opts = {}) {
   const backend = getBackend();
   if (backend === "puter") return callPuter(prompt, temperature, opts);
   if (backend === "groq") return callGroq(prompt, temperature, opts);
   if (backend === "cerebras") return callCerebras(prompt, temperature, opts);
+  if (backend === "kilo") return callKilo(prompt, temperature, opts);
+  if (backend === "cloudflare") return callCloudflare(prompt, temperature, opts);
   return callGemini(prompt, temperature, opts);
 }
 async function callAIStream(prompt, temperature = 0.85, opts = {}) {
@@ -758,6 +980,8 @@ async function callAIStream(prompt, temperature = 0.85, opts = {}) {
   if (backend === "groq" && opts.onStream) return callGroq(prompt, temperature, opts);
   if (backend === "puter" && opts.onStream) return callPuter(prompt, temperature, opts);
   if (backend === "cerebras" && opts.onStream) return callCerebras(prompt, temperature, opts);
+  if (backend === "kilo" && opts.onStream) return callKilo(prompt, temperature, opts);
+  if (backend === "cloudflare" && opts.onStream) return callCloudflare(prompt, temperature, opts);
   const text = await callAI(prompt, temperature, opts);
   if (opts.onStream) opts.onStream(text);
   return text;
@@ -785,6 +1009,15 @@ async function testConnection() {
       const r = await callCerebras("Say OK", 0.1, { max_tokens: 5 });
       return { ok: true, msg: "\u2705 Cerebras API key works! Model: " + getCerebrasModel() + " \u2014 Response: " + (r || "OK").slice(0, 50) };
     }
+    if (backend === "kilo") {
+      const r = await callKilo("Say OK", 0.1, { max_tokens: 5 });
+      return { ok: true, msg: "\u2705 Kilo Code works! Model: " + getKiloModel() + " \u2014 Response: " + (r || "OK").slice(0, 50) };
+    }
+    if (backend === "cloudflare") {
+      if (!getCloudflareAccountId() || !getCloudflareToken()) return { ok: false, msg: "Cloudflare account ID + API token required \u2014 add in Settings." };
+      const r = await callCloudflare("Say OK", 0.1, { max_tokens: 5 });
+      return { ok: true, msg: "\u2705 Cloudflare Workers AI works! Model: " + getCloudflareModel() + " \u2014 Response: " + (r || "OK").slice(0, 50) };
+    }
     return { ok: false, msg: "Unknown backend: " + backend };
   } catch (e) {
     return { ok: false, msg: errMsg(e) };
@@ -796,6 +1029,8 @@ const errMsg = (e) => {
   if (e?.code === "PUTER_ERROR") return "\u26A0\uFE0F Puter AI error: " + (e?.msg || "unknown error");
   if (e?.code === "GROQ_ERROR") return "\u26A0\uFE0F Groq error: " + (e?.msg || "unknown error");
   if (e?.code === "CEREBRAS_ERROR") return "\u26A0\uFE0F Cerebras error: " + (e?.msg || "unknown error");
+  if (e?.code === "KILO_ERROR") return "\u26A0\uFE0F Kilo Code error: " + (e?.msg || "unknown error");
+  if (e?.code === "CF_ERROR") return "\u26A0\uFE0F Cloudflare error: " + (e?.msg || "unknown error");
   if (e?.code === "TIMEOUT") return "\u23F1\uFE0F " + (e?.msg || "Request timed out \u2014 please retry.");
   const c = e?.code || "ERROR";
   if (c === "NO_KEY" || c === "BAD_KEY") return "\u{1F511} API key missing or invalid \u2014 check Settings.";
@@ -1323,6 +1558,15 @@ function SettingsModal({ onClose }) {
     setCerebrasKeySaved(true);
     setTimeout(() => setCerebrasKeySaved(false), 2e3);
   };
+  const [cfAccountIdDraft, setCfAccountIdDraft] = useState(getCloudflareAccountId());
+  const [cfTokenDraft, setCfTokenDraft] = useState(getCloudflareToken());
+  const [cfSaved, setCfSaved] = useState(false);
+  const saveCf = () => {
+    setCloudflareAccountId(cfAccountIdDraft);
+    setCloudflareToken(cfTokenDraft);
+    setCfSaved(true);
+    setTimeout(() => setCfSaved(false), 2e3);
+  };
   const testKey = async () => {
     if (!draft.trim()) return;
     setTestStatus("testing");
@@ -1375,7 +1619,7 @@ function Header({ onBack, title, subtitle, onSettings, onTour, activeTab, setAct
   const isGroq = getBackend() === "groq";
   const groqPct = groqRate.remaining != null && groqRate.limit != null ? Math.round(groqRate.remaining / groqRate.limit * 100) : 100;
   const groqTokenPct = groqRate.tokensRemaining != null && groqRate.tokensLimit != null ? Math.round(groqRate.tokensRemaining / groqRate.tokensLimit * 100) : 100;
-  return /* @__PURE__ */ React.createElement("div", { className: "border-b border-white/10 bg-black/30 backdrop-blur-sm sticky top-0 z-20" }, /* @__PURE__ */ React.createElement("div", { className: "max-w-7xl mx-auto px-4 sm:px-6 py-3 flex items-center justify-between gap-3" }, /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-3 min-w-0" }, onBack && /* @__PURE__ */ React.createElement("button", { onClick: onBack, className: "text-white/40 hover:text-white text-sm shrink-0" }, "\u2190 Back"), /* @__PURE__ */ React.createElement("div", { className: "w-9 h-9 bg-gradient-to-br from-purple-500 to-pink-500 rounded-xl flex items-center justify-center text-lg shrink-0" }, "\u{1F4DA}"), /* @__PURE__ */ React.createElement("div", { className: "min-w-0" }, /* @__PURE__ */ React.createElement("h1", { className: "text-white font-bold text-base leading-tight truncate" }, title || "BookForge AI"), subtitle && /* @__PURE__ */ React.createElement("p", { className: "text-white/30 text-xs truncate" }, subtitle))), /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-2 shrink-0" }, getBackend() === "gemini" && /* @__PURE__ */ React.createElement("div", { className: "bg-white/5 border border-white/10 rounded-lg px-3 py-1.5 flex items-center gap-2" }, /* @__PURE__ */ React.createElement("span", { className: `text-xs font-bold ${pct >= 90 ? "text-red-400" : pct >= 70 ? "text-amber-400" : "text-green-400"}` }, usage, "/", DAILY_LIMIT), /* @__PURE__ */ React.createElement("div", { className: "w-10 h-1 bg-white/10 rounded-full overflow-hidden" }, /* @__PURE__ */ React.createElement("div", { className: `h-full rounded-full ${pct >= 90 ? "bg-red-500" : pct >= 70 ? "bg-amber-500" : "bg-green-500"}`, style: { width: `${pct}%` } }))), getBackend() === "puter" && /* @__PURE__ */ React.createElement("span", { className: "text-xs text-purple-400 font-medium px-2 py-1 bg-purple-500/10 rounded-lg border border-purple-500/20" }, "\u26A1 Puter Free"), getBackend() === "cerebras" && /* @__PURE__ */ React.createElement("span", { className: "text-xs text-cyan-400 font-medium px-2 py-1 bg-cyan-500/10 rounded-lg border border-cyan-500/20" }, "\u{1F9E0} Cerebras 1M/day"), getBackend() === "groq" && /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-2" }, /* @__PURE__ */ React.createElement("span", { className: "text-xs text-orange-400 font-medium px-2 py-1 bg-orange-500/10 rounded-lg border border-orange-500/20" }, "\u26A1 Groq Turbo"), groqRate.remaining != null && /* @__PURE__ */ React.createElement("div", { className: "bg-white/5 border border-white/10 rounded-lg px-2.5 py-1.5 flex items-center gap-2", title: `Groq rate limit: ${groqRate.remaining}/${groqRate.limit} requests left this minute` }, /* @__PURE__ */ React.createElement("span", { className: `text-xs font-bold ${groqPct >= 60 ? "text-green-400" : groqPct >= 30 ? "text-amber-400" : "text-red-400"}` }, groqRate.remaining, "/", groqRate.limit), /* @__PURE__ */ React.createElement("div", { className: "w-10 h-1 bg-white/10 rounded-full overflow-hidden" }, /* @__PURE__ */ React.createElement("div", { className: `h-full rounded-full ${groqPct >= 60 ? "bg-green-500" : groqPct >= 30 ? "bg-amber-500" : "bg-red-500"}`, style: { width: `${groqPct}%` } })), groqRate.tokensRemaining != null && /* @__PURE__ */ React.createElement("span", { className: `text-xs ${groqTokenPct >= 60 ? "text-green-400" : groqTokenPct >= 30 ? "text-amber-400" : "text-red-400"}`, title: "Token budget remaining" }, (groqRate.tokensRemaining / 1e3).toFixed(0), "K tok"))), qLen > 0 && /* @__PURE__ */ React.createElement("div", { className: "bg-cyan-500/20 border border-cyan-500/30 text-cyan-300 text-xs px-2.5 py-1.5 rounded-lg" }, "\u23F3 Queue: ", qLen), /* @__PURE__ */ React.createElement("button", { onClick: onSettings, "aria-label": "Settings", "data-close-btn": "true", className: `text-xs px-3 py-1.5 rounded-lg border transition-all ${hasCredentials() ? "border-white/20 text-white/50 hover:border-white/40" : "border-red-500/50 text-red-400 bg-red-500/10 pulse-a"}` }, hasCredentials() ? "\u2699\uFE0F Settings" : "\u26A0\uFE0F Set API Key"), onTour && /* @__PURE__ */ React.createElement("button", { onClick: onTour, title: "Page tour \u2014 learn how to use this page", className: "text-xs px-3 py-1.5 rounded-lg border border-purple-500/40 text-purple-300/70 hover:bg-purple-500/20 transition-all", id: "tour-btn" }, "\u2753 Tour"))), setActiveTab && /* @__PURE__ */ React.createElement("div", { id: "bf-home-tabs", className: "max-w-7xl mx-auto px-4 sm:px-6 flex gap-1" }, [["\u{1F4DA} Library", "library"], ["\u{1F4D7} Series", "series"], ["\u23F3 Queue", "queue"], ["\u{1F4AC} Help", "help"], ["\u{1F38C} Manga", "manga"]].map(([label, id]) => /* @__PURE__ */ React.createElement("button", { key: id, onClick: () => setActiveTab(id), className: `px-4 py-2.5 text-sm font-medium whitespace-nowrap rounded-t-lg transition-all ${activeTab === id ? "bg-white/10 text-white border-b-2 border-purple-500" : "text-white/35 hover:text-white/70"}` }, label))));
+  return /* @__PURE__ */ React.createElement("div", { className: "border-b border-white/10 bg-black/30 backdrop-blur-sm sticky top-0 z-20" }, /* @__PURE__ */ React.createElement("div", { className: "max-w-7xl mx-auto px-4 sm:px-6 py-3 flex items-center justify-between gap-3" }, /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-3 min-w-0" }, onBack && /* @__PURE__ */ React.createElement("button", { onClick: onBack, className: "text-white/40 hover:text-white text-sm shrink-0" }, "\u2190 Back"), /* @__PURE__ */ React.createElement("div", { className: "w-9 h-9 bg-gradient-to-br from-purple-500 to-pink-500 rounded-xl flex items-center justify-center text-lg shrink-0" }, "\u{1F4DA}"), /* @__PURE__ */ React.createElement("div", { className: "min-w-0" }, /* @__PURE__ */ React.createElement("h1", { className: "text-white font-bold text-base leading-tight truncate" }, title || "BookForge AI"), subtitle && /* @__PURE__ */ React.createElement("p", { className: "text-white/30 text-xs truncate" }, subtitle))), /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-2 shrink-0" }, getBackend() === "gemini" && /* @__PURE__ */ React.createElement("div", { className: "bg-white/5 border border-white/10 rounded-lg px-3 py-1.5 flex items-center gap-2" }, /* @__PURE__ */ React.createElement("span", { className: `text-xs font-bold ${pct >= 90 ? "text-red-400" : pct >= 70 ? "text-amber-400" : "text-green-400"}` }, usage, "/", DAILY_LIMIT), /* @__PURE__ */ React.createElement("div", { className: "w-10 h-1 bg-white/10 rounded-full overflow-hidden" }, /* @__PURE__ */ React.createElement("div", { className: `h-full rounded-full ${pct >= 90 ? "bg-red-500" : pct >= 70 ? "bg-amber-500" : "bg-green-500"}`, style: { width: `${pct}%` } }))), getBackend() === "puter" && /* @__PURE__ */ React.createElement("span", { className: "text-xs text-purple-400 font-medium px-2 py-1 bg-purple-500/10 rounded-lg border border-purple-500/20" }, "\u26A1 Puter Free"), getBackend() === "cerebras" && /* @__PURE__ */ React.createElement("span", { className: "text-xs text-cyan-400 font-medium px-2 py-1 bg-cyan-500/10 rounded-lg border border-cyan-500/20" }, "\u{1F9E0} Cerebras 1M/day"), getBackend() === "kilo" && /* @__PURE__ */ React.createElement("span", { className: "text-xs text-green-400 font-medium px-2 py-1 bg-green-500/10 rounded-lg border border-green-500/20" }, "\u{1F381} Kilo Free"), getBackend() === "cloudflare" && /* @__PURE__ */ React.createElement("span", { className: "text-xs text-orange-400 font-medium px-2 py-1 bg-orange-500/10 rounded-lg border border-orange-500/20" }, "\u2601\uFE0F CF Workers AI"), getBackend() === "groq" && /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-2" }, /* @__PURE__ */ React.createElement("span", { className: "text-xs text-orange-400 font-medium px-2 py-1 bg-orange-500/10 rounded-lg border border-orange-500/20" }, "\u26A1 Groq Turbo"), groqRate.remaining != null && /* @__PURE__ */ React.createElement("div", { className: "bg-white/5 border border-white/10 rounded-lg px-2.5 py-1.5 flex items-center gap-2", title: `Groq rate limit: ${groqRate.remaining}/${groqRate.limit} requests left this minute` }, /* @__PURE__ */ React.createElement("span", { className: `text-xs font-bold ${groqPct >= 60 ? "text-green-400" : groqPct >= 30 ? "text-amber-400" : "text-red-400"}` }, groqRate.remaining, "/", groqRate.limit), /* @__PURE__ */ React.createElement("div", { className: "w-10 h-1 bg-white/10 rounded-full overflow-hidden" }, /* @__PURE__ */ React.createElement("div", { className: `h-full rounded-full ${groqPct >= 60 ? "bg-green-500" : groqPct >= 30 ? "bg-amber-500" : "bg-red-500"}`, style: { width: `${groqPct}%` } })), groqRate.tokensRemaining != null && /* @__PURE__ */ React.createElement("span", { className: `text-xs ${groqTokenPct >= 60 ? "text-green-400" : groqTokenPct >= 30 ? "text-amber-400" : "text-red-400"}`, title: "Token budget remaining" }, (groqRate.tokensRemaining / 1e3).toFixed(0), "K tok"))), qLen > 0 && /* @__PURE__ */ React.createElement("div", { className: "bg-cyan-500/20 border border-cyan-500/30 text-cyan-300 text-xs px-2.5 py-1.5 rounded-lg" }, "\u23F3 Queue: ", qLen), /* @__PURE__ */ React.createElement("button", { onClick: onSettings, "aria-label": "Settings", "data-close-btn": "true", className: `text-xs px-3 py-1.5 rounded-lg border transition-all ${hasCredentials() ? "border-white/20 text-white/50 hover:border-white/40" : "border-red-500/50 text-red-400 bg-red-500/10 pulse-a"}` }, hasCredentials() ? "\u2699\uFE0F Settings" : "\u26A0\uFE0F Set API Key"), onTour && /* @__PURE__ */ React.createElement("button", { onClick: onTour, title: "Page tour \u2014 learn how to use this page", className: "text-xs px-3 py-1.5 rounded-lg border border-purple-500/40 text-purple-300/70 hover:bg-purple-500/20 transition-all", id: "tour-btn" }, "\u2753 Tour"))), setActiveTab && /* @__PURE__ */ React.createElement("div", { id: "bf-home-tabs", className: "max-w-7xl mx-auto px-4 sm:px-6 flex gap-1" }, [["\u{1F4DA} Library", "library"], ["\u{1F4D7} Series", "series"], ["\u23F3 Queue", "queue"], ["\u{1F4AC} Help", "help"], ["\u{1F38C} Manga", "manga"]].map(([label, id]) => /* @__PURE__ */ React.createElement("button", { key: id, onClick: () => setActiveTab(id), className: `px-4 py-2.5 text-sm font-medium whitespace-nowrap rounded-t-lg transition-all ${activeTab === id ? "bg-white/10 text-white border-b-2 border-purple-500" : "text-white/35 hover:text-white/70"}` }, label))));
 }
 async function runReviewAgent(book) {
   const outline = (() => {

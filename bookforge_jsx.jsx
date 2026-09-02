@@ -40,10 +40,41 @@ const setKey=k=>localStorage.setItem("gemini_api_key",k.trim());
 // ── AI Backend selector (Gemini API key OR Puter.js free) ──
 const BACKENDS=[
   {id:"gemini",label:"Gemini API Key",desc:"Bring your own free Google AI Studio key. 1,500 req/day."},
+  {id:"kilo",label:"Kilo Code (No Key! 200/hr)",desc:"Zero config — no API key, no account. Auto-routes to Nemotron 550B, Tencent Hy3, and more. 200 req/hr free."},
   {id:"cerebras",label:"Cerebras (1M tok/day FREE)",desc:"Wafer-scale inference — ultra-fast. 1M tokens/day free, no credit card."},
+  {id:"cloudflare",label:"Cloudflare Workers AI (10K/day)",desc:"75+ models incl. Llama 4 Scout, gpt-oss-120B, Mistral, DeepSeek. 10K Neurons/day free, no credit card."},
   {id:"puter",label:"Puter.js (Free — No Key)",desc:"400+ models incl. GPT-5.5, Claude Opus 5, Gemini 3.6. User-pays model — you pay nothing."},
   {id:"groq",label:"Groq Turbo (⚡ Fastest)",desc:"500+ tokens/sec with GPT-OSS 120B. Free API key, 14,400 req/day."}
 ];
+// ── Kilo Code (no API key needed, auto-routes to free models) ──
+const KILO_URL="https://api.kilo.ai/api/gateway";
+const KILO_MODELS=[
+  {id:"kilo-auto/free",label:"Kilo Auto (auto-route)",desc:"Auto-selects best available free model — recommended"},
+  {id:"nvidia/nemotron-3-ultra-550b-a55b:free",label:"Nemotron 3 Ultra 550B",desc:"NVIDIA — 1M context, 65K output. Best quality free model"},
+  {id:"tencent/hy3:free",label:"Tencent Hy3",desc:"262K context, 128K output — strong multilingual"},
+  {id:"nvidia/nemotron-3-super-120b-a12b:free",label:"Nemotron 3 Super 120B",desc:"NVIDIA — fast, strong reasoning"},
+  {id:"stepfun/step-3.7-flash:free",label:"StepFun 3.7 Flash",desc:"262K context, multimodal — fast & capable"},
+  {id:"nvidia/nemotron-3.5-lightning:free",label:"Nemotron 3.5 Lightning",desc:"1M context, 65K output — ultra-fast"},
+  {id:"liquid/lfm-2.5-2.6b:free",label:"Liquid LFM 2.5 2.6B",desc:"Tiny & fast — good for metadata/short tasks"}
+];
+const getKiloModel=()=>localStorage.getItem("bfai_kilo_model")||"kilo-auto/free";
+const setKiloModel=m=>safeLS("bfai_kilo_model",m);
+// ── Cloudflare Workers AI ────────────────────────────────────────────────────
+const CLOUDFLARE_MODELS=[
+  {id:"@cf/meta/llama-4-scout-17b-16e-instruct",label:"Llama 4 Scout 17B",desc:"Meta — 131K context, multimodal — best for creative writing"},
+  {id:"@cf/openai/gpt-oss-120b",label:"GPT-OSS 120B",desc:"OpenAI open-weight — 128K context, strong reasoning"},
+  {id:"@cf/openai/gpt-oss-20b",label:"GPT-OSS 20B",desc:"Smaller, faster — good for metadata & short tasks"},
+  {id:"@cf/zai-org/glm-4.7-flash",label:"GLM 4.7 Flash",desc:"Z.AI — 131K context, strong reasoning"},
+  {id:"@cf/mistralai/mistral-small-3.1-24b-instruct",label:"Mistral Small 3.1 24B",desc:"Efficient European model — 128K context"},
+  {id:"@cf/deepseek-ai/deepseek-r1-distill-qwen-32b",label:"DeepSeek R1 Distill 32B",desc:"Reasoning model — great for outlines"},
+  {id:"@cf/google/gemma-4-26b-a4b-it",label:"Gemma 4 26B",desc:"Google — 256K context, text + vision"}
+];
+const getCloudflareAccountId=()=>localStorage.getItem("cf_account_id")||"";
+const setCloudflareAccountId=v=>safeLS("cf_account_id",v.trim());
+const getCloudflareToken=()=>localStorage.getItem("cf_api_token")||"";
+const setCloudflareToken=v=>safeLS("cf_api_token",v.trim());
+const getCloudflareModel=()=>localStorage.getItem("bfai_cf_model")||"@cf/meta/llama-4-scout-17b-16e-instruct";
+const setCloudflareModel=m=>safeLS("bfai_cf_model",m);
 // ── Cerebras Models ────────────────────────────────────────────────────────────
 const CEREBRAS_URL="https://api.cerebras.ai/v1/chat/completions";
 const CEREBRAS_MODELS=[
@@ -219,13 +250,15 @@ const migrateBooks=()=>{
 const getUsage=()=>{const today=new Date().toISOString().split("T")[0];const d=ls.get("bfai_usage",{});return d.date===today?(d.count||0):0;};
 const trackUsage=()=>{const today=new Date().toISOString().split("T")[0];const d=ls.get("bfai_usage",{});const c=(d.date===today?d.count:0)+1;ls.set("bfai_usage",{date:today,count:c});return c;};
 // Quota check — Puter mode has no daily limit
-const quotaBlocked=()=>getBackend()!=="puter"&&getBackend()!=="groq"&&getBackend()!=="cerebras"&&getUsage()>=DAILY_LIMIT;
+const quotaBlocked=()=>getBackend()!=="puter"&&getBackend()!=="groq"&&getBackend()!=="cerebras"&&getBackend()!=="kilo"&&getBackend()!=="cloudflare"&&getUsage()>=DAILY_LIMIT;
 // Unified credential check — returns true if the current backend has valid credentials
 const hasCredentials=()=>{
   const b=getBackend();
   if(b==="gemini")return!!getKey();
   if(b==="groq")return!!getGroqKey();
   if(b==="cerebras")return!!getCerebrasKey();
+  if(b==="kilo")return true; // no key needed!
+  if(b==="cloudflare")return!!getCloudflareAccountId()&&!!getCloudflareToken();
   if(b==="puter")return typeof puter!=="undefined";
   return false;
 };
@@ -668,12 +701,195 @@ async function callCerebras(prompt,temperature=0.85,opts={}){
   throw{code:"CEREBRAS_ERROR",msg:"Cerebras request failed after retries."};
 }
 
+// ── Kilo Code API (no API key needed, auto-routes to free models) ──
+async function callKilo(prompt,temperature=0.85,opts={}){
+  const model=resolveModel(prompt,opts)||getKiloModel();
+  let retries=0,controller,timeout;
+  while(retries<=2){
+    controller=new AbortController();
+    timeout=setTimeout(()=>controller.abort(),90000);
+    try{
+      const resp=await fetch(KILO_URL,{
+        method:"POST",
+        headers:{"Content-Type":"application/json"},
+        signal:controller.signal,
+        body:JSON.stringify({
+          model:model,
+          messages:[{role:"user",content:prompt}],
+          temperature:Math.min(temperature,1),
+          max_tokens:opts.max_tokens||32768,
+          stream:!!opts.onStream
+        })
+      });
+      clearTimeout(timeout);
+      // Streaming
+      if(opts.onStream&&resp.ok){
+        const reader=resp.body.getReader();
+        const decoder=new TextDecoder();
+        let fullText="",buffer="";
+        while(true){
+          const{done,value}=await reader.read();
+          if(done)break;
+          buffer+=decoder.decode(value,{stream:true});
+          const lines=buffer.split("\n");
+          buffer=lines.pop()||"";
+          for(const line of lines){
+            if(line.startsWith("data: ")){
+              const data=line.slice(6).trim();
+              if(data==="[DONE]")continue;
+              try{
+                const json=JSON.parse(data);
+                const delta=json?.choices?.[0]?.delta?.content||"";
+                if(delta){fullText+=delta;opts.onStream(fullText);}
+              }catch(e){}
+            }
+          }
+        }
+        if(!fullText)throw{code:"EMPTY",msg:"Kilo returned empty stream — please retry."};
+        return fullText;
+      }
+      if(!resp.ok){
+        const errBody=await resp.text().catch(()=>"");
+        if(resp.status===429){
+          if(retries<2){
+            window.dispatchEvent(new CustomEvent("bfai:retry",{detail:{attempt:retries+1}}));
+            playRetryChime();
+            await sleep(RETRY_DELAYS_MS[retries]||5000);
+            retries++;continue;
+          }
+          throw{code:"QUOTA",msg:"Kilo rate limit reached (200/hr). Try again shortly."};
+        }
+        throw{code:"KILO_ERROR",msg:"Kilo API error ("+resp.status+"): "+errBody.slice(0,200)};
+      }
+      const data=await resp.json();
+      const text=data?.choices?.[0]?.message?.content||data?.choices?.[0]?.delta?.content||"";
+      if(!text)throw{code:"EMPTY",msg:"Kilo returned empty response — please retry."};
+      return text;
+    }catch(e){
+      if(timeout)clearTimeout(timeout);
+      if(e?.name==="AbortError"){
+        if(retries<2){
+          window.dispatchEvent(new CustomEvent("bfai:retry",{detail:{attempt:retries+1}}));
+          playRetryChime();
+          await sleep(RETRY_DELAYS_MS[retries]||5000);
+          retries++;continue;
+        }
+        throw{code:"TIMEOUT",msg:"Kilo request timed out (90s). Retried 2x — please try again."};
+      }
+      if(e?.code==="QUOTA"||e?.code==="EMPTY")throw e;
+      if(retries<2&&(e?.message?.includes("fetch")||e?.message?.includes("network"))){
+        window.dispatchEvent(new CustomEvent("bfai:retry",{detail:{attempt:retries+1}}));
+        playRetryChime();
+        await sleep(RETRY_DELAYS_MS[retries]||5000);
+        retries++;continue;
+      }
+      throw{code:"KILO_ERROR",msg:e?.message||"Kilo request failed"};
+    }
+  }
+  throw{code:"KILO_ERROR",msg:"Kilo request failed after retries."};
+}
+
+// ── Cloudflare Workers AI (OpenAI-compatible endpoint) ──
+async function callCloudflare(prompt,temperature=0.85,opts={}){
+  const accountId=getCloudflareAccountId();
+  const token=getCloudflareToken();
+  if(!accountId||!token)throw{code:"NO_KEY",msg:"Cloudflare account ID + API token required — add in Settings."};
+  const model=resolveModel(prompt,opts)||getCloudflareModel();
+  const url=`https://api.cloudflare.com/client/v4/accounts/${accountId}/ai/v1/chat/completions`;
+  let retries=0,controller,timeout;
+  while(retries<=2){
+    controller=new AbortController();
+    timeout=setTimeout(()=>controller.abort(),90000);
+    try{
+      const resp=await fetch(url,{
+        method:"POST",
+        headers:{"Content-Type":"application/json","Authorization":"Bearer "+token},
+        signal:controller.signal,
+        body:JSON.stringify({
+          model:model,
+          messages:[{role:"user",content:prompt}],
+          temperature:Math.min(temperature,1),
+          max_tokens:opts.max_tokens||32768,
+          stream:!!opts.onStream
+        })
+      });
+      clearTimeout(timeout);
+      // Streaming
+      if(opts.onStream&&resp.ok){
+        const reader=resp.body.getReader();
+        const decoder=new TextDecoder();
+        let fullText="",buffer="";
+        while(true){
+          const{done,value}=await reader.read();
+          if(done)break;
+          buffer+=decoder.decode(value,{stream:true});
+          const lines=buffer.split("\n");
+          buffer=lines.pop()||"";
+          for(const line of lines){
+            if(line.startsWith("data: ")){
+              const data=line.slice(6).trim();
+              if(data==="[DONE]")continue;
+              try{
+                const json=JSON.parse(data);
+                const delta=json?.choices?.[0]?.delta?.content||"";
+                if(delta){fullText+=delta;opts.onStream(fullText);}
+              }catch(e){}
+            }
+          }
+        }
+        if(!fullText)throw{code:"EMPTY",msg:"Cloudflare returned empty stream — please retry."};
+        return fullText;
+      }
+      if(!resp.ok){
+        const errBody=await resp.text().catch(()=>"");
+        if(resp.status===429){
+          if(retries<2){
+            window.dispatchEvent(new CustomEvent("bfai:retry",{detail:{attempt:retries+1}}));
+            playRetryChime();
+            await sleep(RETRY_DELAYS_MS[retries]||5000);
+            retries++;continue;
+          }
+          throw{code:"QUOTA",msg:"Cloudflare daily Neuron limit reached (10K/day). Try again tomorrow."};
+        }
+        if(resp.status===401)throw{code:"BAD_KEY",msg:"Invalid Cloudflare credentials — check Settings."};
+        throw{code:"CF_ERROR",msg:"Cloudflare API error ("+resp.status+"): "+errBody.slice(0,200)};
+      }
+      const data=await resp.json();
+      const text=data?.response||data?.result?.response||data?.choices?.[0]?.message?.content||"";
+      if(!text)throw{code:"EMPTY",msg:"Cloudflare returned empty response — please retry."};
+      return text;
+    }catch(e){
+      if(timeout)clearTimeout(timeout);
+      if(e?.name==="AbortError"){
+        if(retries<2){
+          window.dispatchEvent(new CustomEvent("bfai:retry",{detail:{attempt:retries+1}}));
+          playRetryChime();
+          await sleep(RETRY_DELAYS_MS[retries]||5000);
+          retries++;continue;
+        }
+        throw{code:"TIMEOUT",msg:"Cloudflare request timed out (90s). Retried 2x — please try again."};
+      }
+      if(e?.code==="QUOTA"||e?.code==="BAD_KEY"||e?.code==="EMPTY")throw e;
+      if(retries<2&&(e?.message?.includes("fetch")||e?.message?.includes("network"))){
+        window.dispatchEvent(new CustomEvent("bfai:retry",{detail:{attempt:retries+1}}));
+        playRetryChime();
+        await sleep(RETRY_DELAYS_MS[retries]||5000);
+        retries++;continue;
+      }
+      throw{code:"CF_ERROR",msg:e?.message||"Cloudflare request failed"};
+    }
+  }
+  throw{code:"CF_ERROR",msg:"Cloudflare request failed after retries."};
+}
+
 // ── Unified AI call — routes to Gemini or Puter based on settings ──
 async function callAI(prompt,temperature=0.85,opts={}){
   const backend=getBackend();
   if(backend==="puter")return callPuter(prompt,temperature,opts);
   if(backend==="groq")return callGroq(prompt,temperature,opts);
   if(backend==="cerebras")return callCerebras(prompt,temperature,opts);
+  if(backend==="kilo")return callKilo(prompt,temperature,opts);
+  if(backend==="cloudflare")return callCloudflare(prompt,temperature,opts);
   return callGemini(prompt,temperature,opts);
 }
 
@@ -683,6 +899,8 @@ async function callAIStream(prompt,temperature=0.85,opts={}){
   if(backend==="groq"&&opts.onStream)return callGroq(prompt,temperature,opts);
   if(backend==="puter"&&opts.onStream)return callPuter(prompt,temperature,opts);
   if(backend==="cerebras"&&opts.onStream)return callCerebras(prompt,temperature,opts);
+  if(backend==="kilo"&&opts.onStream)return callKilo(prompt,temperature,opts);
+  if(backend==="cloudflare"&&opts.onStream)return callCloudflare(prompt,temperature,opts);
   // Gemini doesn't support SSE — generate all at once, then deliver
   const text=await callAI(prompt,temperature,opts);
   if(opts.onStream)opts.onStream(text);
@@ -713,6 +931,15 @@ async function testConnection(){
       const r=await callCerebras("Say OK",0.1,{max_tokens:5});
       return{ok:true,msg:"✅ Cerebras API key works! Model: "+getCerebrasModel()+" — Response: "+(r||"OK").slice(0,50)};
     }
+    if(backend==="kilo"){
+      const r=await callKilo("Say OK",0.1,{max_tokens:5});
+      return{ok:true,msg:"✅ Kilo Code works! Model: "+getKiloModel()+" — Response: "+(r||"OK").slice(0,50)};
+    }
+    if(backend==="cloudflare"){
+      if(!getCloudflareAccountId()||!getCloudflareToken())return{ok:false,msg:"Cloudflare account ID + API token required — add in Settings."};
+      const r=await callCloudflare("Say OK",0.1,{max_tokens:5});
+      return{ok:true,msg:"✅ Cloudflare Workers AI works! Model: "+getCloudflareModel()+" — Response: "+(r||"OK").slice(0,50)};
+    }
     return{ok:false,msg:"Unknown backend: "+backend};
   }catch(e){
     return{ok:false,msg:errMsg(e)};
@@ -725,6 +952,8 @@ const errMsg=e=>{
   if(e?.code==="PUTER_ERROR")return "⚠️ Puter AI error: "+(e?.msg||"unknown error");
   if(e?.code==="GROQ_ERROR")return "⚠️ Groq error: "+(e?.msg||"unknown error");
   if(e?.code==="CEREBRAS_ERROR")return "⚠️ Cerebras error: "+(e?.msg||"unknown error");
+  if(e?.code==="KILO_ERROR")return "⚠️ Kilo Code error: "+(e?.msg||"unknown error");
+  if(e?.code==="CF_ERROR")return "⚠️ Cloudflare error: "+(e?.msg||"unknown error");
   if(e?.code==="TIMEOUT")return "⏱️ "+(e?.msg||"Request timed out — please retry.");
   const c=e?.code||"ERROR";
   if(c==="NO_KEY"||c==="BAD_KEY")return"🔑 API key missing or invalid — check Settings.";
@@ -1213,7 +1442,11 @@ function SettingsModal({onClose}){
   const saveGroqKey=()=>{setGroqKey(groqKeyDraft);setGroqKeySaved(true);setTimeout(()=>setGroqKeySaved(false),2000);};
   const [cerebrasKeyDraft,setCerebrasKeyDraft]=useState(getCerebrasKey());
   const [cerebrasKeySaved,setCerebrasKeySaved]=useState(false);
-  const saveCerebrasKey=()=>{setCerebrasKey(cerebrasKeyDraft);setCerebrasKeySaved(true);setTimeout(()=>setCerebrasKeySaved(false),2000);}; // null | "testing" | "ok" | "fail"
+  const saveCerebrasKey=()=>{setCerebrasKey(cerebrasKeyDraft);setCerebrasKeySaved(true);setTimeout(()=>setCerebrasKeySaved(false),2000);};
+  const [cfAccountIdDraft,setCfAccountIdDraft]=useState(getCloudflareAccountId());
+  const [cfTokenDraft,setCfTokenDraft]=useState(getCloudflareToken());
+  const [cfSaved,setCfSaved]=useState(false);
+  const saveCf=()=>{setCloudflareAccountId(cfAccountIdDraft);setCloudflareToken(cfTokenDraft);setCfSaved(true);setTimeout(()=>setCfSaved(false),2000);}; // null | "testing" | "ok" | "fail"
   const testKey=async()=>{
     if(!draft.trim())return;
     setTestStatus("testing");
@@ -1401,6 +1634,8 @@ function Header({onBack,title,subtitle,onSettings,onTour,activeTab,setActiveTab}
           )}
           {getBackend()==="puter"&&<span className="text-xs text-purple-400 font-medium px-2 py-1 bg-purple-500/10 rounded-lg border border-purple-500/20">⚡ Puter Free</span>}
           {getBackend()==="cerebras"&&<span className="text-xs text-cyan-400 font-medium px-2 py-1 bg-cyan-500/10 rounded-lg border border-cyan-500/20">🧠 Cerebras 1M/day</span>}
+          {getBackend()==="kilo"&&<span className="text-xs text-green-400 font-medium px-2 py-1 bg-green-500/10 rounded-lg border border-green-500/20">🎁 Kilo Free</span>}
+          {getBackend()==="cloudflare"&&<span className="text-xs text-orange-400 font-medium px-2 py-1 bg-orange-500/10 rounded-lg border border-orange-500/20">☁️ CF Workers AI</span>}
           {getBackend()==="groq"&&(
             <div className="flex items-center gap-2">
               <span className="text-xs text-orange-400 font-medium px-2 py-1 bg-orange-500/10 rounded-lg border border-orange-500/20">⚡ Groq Turbo</span>
