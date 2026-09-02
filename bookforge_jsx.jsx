@@ -115,15 +115,22 @@ const PUTER_IMAGE_MODELS=[
   {id:"google/gemini-3-pro-image-preview",label:"Gemini 3 Pro Image",desc:"Google — fast, vibrant"},
   {id:"google/imagen-4.0",label:"Imagen 4.0",desc:"Google — photorealistic"},
   {id:"stabilityai/stable-diffusion-3-medium",label:"Stable Diffusion 3",desc:"Open-source — reliable"},
-  {id:"black-forest-labs/flux-2-pro",label:"FLUX.2 Pro ⭐ BEST",desc:"Black Forest Labs — highest quality, photorealistic, best for covers"},
+  {id:"black-forest-labs/flux-2-pro",label:"FLUX.2 Pro ⭐ BEST",desc:"Black Forest Labs — highest quality. Auto-selected for Puter.js users (free Puter account)"},
   {id:"black-forest-labs/flux-2-max",label:"FLUX.2 Max",desc:"Black Forest Labs — maximum quality & realism, premium tier"},
   {id:"black-forest-labs/flux-schnell",label:"FLUX.1 Schnell (Fast)",desc:"Black Forest Labs — fastest generation, great for drafts"},
   {id:"bytedance-seed/seedream-4.5",label:"Seedream 4.5",desc:"ByteDance — strong artistic quality"},
   {id:"bytedance-seed/seedream-4.0",label:"Seedream 4.0",desc:"ByteDance — artistic styles"},
   {id:"ideogram/ideogram-3.0",label:"Ideogram 3.0",desc:"Best at rendering text on images"},
-  {id:"pollinations",label:"Pollinations.ai (No Key)",desc:"No Puter account needed — URL-based, lower quality"}
+  {id:"pollinations",label:"Pollinations.ai (No Sign-in)",desc:"Default — zero friction, URL-based, no account needed"}
 ];
-const getPuterImageModel=()=>localStorage.getItem("bfai_puter_image_model")||"pollinations";
+const getPuterImageModel=()=>{
+  const saved=localStorage.getItem("bfai_puter_image_model");
+  if(saved)return saved;
+  // Auto-upgrade: Puter.js users get FLUX.2 Pro by default (they're already signed in)
+  if(getBackend()==="puter")return "black-forest-labs/flux-2-pro";
+  // Everyone else (Kilo Code, Gemini, Groq, Cerebras, Cloudflare) gets Pollinations (zero friction, no sign-in)
+  return "pollinations";
+};
 const setPuterImageModel=m=>safeLS("bfai_puter_image_model",m);
 // ── Groq Models ──────────────────────────────────────────────────────────────────
 const GROQ_MODELS=[
@@ -4183,8 +4190,10 @@ async function genCoverImage(prompt,opts={}){
   const imgModel=getPuterImageModel();
   const w=opts.width||832,h=opts.height||1216;
   
-  if(imgModel==="pollinations"||getBackend()==="gemini"||getBackend()==="groq"){
-    // Pollinations URL-based approach — no Puter account needed
+  // Smart routing: if user hasn't explicitly chosen a model, auto-pick based on backend
+  const effectiveModel=imgModel==="pollinations"&&getBackend()==="puter"?"black-forest-labs/flux-2-pro":imgModel;
+  if(effectiveModel==="pollinations"||getBackend()==="gemini"||getBackend()==="groq"||getBackend()==="kilo"||getBackend()==="cerebras"||getBackend()==="cloudflare"){
+    // Pollinations URL-based approach — no Puter account needed, zero friction
     try{
       const url=`https://image.pollinations.ai/prompt/${encodeURIComponent(prompt.trim())}?width=${w}&height=${h}&model=flux&nologo=true&seed=${Date.now()}`;
       // Verify the URL is reachable with a quick HEAD check (3s timeout)
@@ -4197,7 +4206,7 @@ async function genCoverImage(prompt,opts={}){
       // Pollinations unreachable — fall through to Puter.js txt2img if available
       if(typeof puter!=="undefined"){
         try{
-          const imgEl=await puter.ai.txt2img(prompt,{model:"openai/gpt-image-2"});
+          const imgEl=await puter.ai.txt2img(prompt,{model:"black-forest-labs/flux-2-pro"});
           let src="";
           if(typeof imgEl==="string")src=imgEl;
           else if(imgEl?.src)src=imgEl.src;
@@ -4225,7 +4234,7 @@ async function genCoverImage(prompt,opts={}){
   
   // Puter.js image generation — returns an <img> element, convert to data URL
   if(typeof puter==="undefined")throw{code:"PUTER_NOT_LOADED"};
-  const imgEl=await puter.ai.txt2img(prompt,{model:imgModel});
+  const imgEl=await puter.ai.txt2img(prompt,{model:effectiveModel});
   // Convert image element to canvas then data URL
   const canvas=document.createElement("canvas");
   canvas.width=w;canvas.height=h;

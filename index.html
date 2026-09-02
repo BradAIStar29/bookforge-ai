@@ -152,15 +152,20 @@ const PUTER_IMAGE_MODELS = [
   { id: "google/gemini-3-pro-image-preview", label: "Gemini 3 Pro Image", desc: "Google \u2014 fast, vibrant" },
   { id: "google/imagen-4.0", label: "Imagen 4.0", desc: "Google \u2014 photorealistic" },
   { id: "stabilityai/stable-diffusion-3-medium", label: "Stable Diffusion 3", desc: "Open-source \u2014 reliable" },
-  { id: "black-forest-labs/flux-2-pro", label: "FLUX.2 Pro \u2B50 BEST", desc: "Black Forest Labs \u2014 highest quality, photorealistic, best for covers" },
+  { id: "black-forest-labs/flux-2-pro", label: "FLUX.2 Pro \u2B50 BEST", desc: "Black Forest Labs \u2014 highest quality. Auto-selected for Puter.js users (free Puter account)" },
   { id: "black-forest-labs/flux-2-max", label: "FLUX.2 Max", desc: "Black Forest Labs \u2014 maximum quality & realism, premium tier" },
   { id: "black-forest-labs/flux-schnell", label: "FLUX.1 Schnell (Fast)", desc: "Black Forest Labs \u2014 fastest generation, great for drafts" },
   { id: "bytedance-seed/seedream-4.5", label: "Seedream 4.5", desc: "ByteDance \u2014 strong artistic quality" },
   { id: "bytedance-seed/seedream-4.0", label: "Seedream 4.0", desc: "ByteDance \u2014 artistic styles" },
   { id: "ideogram/ideogram-3.0", label: "Ideogram 3.0", desc: "Best at rendering text on images" },
-  { id: "pollinations", label: "Pollinations.ai (No Key)", desc: "No Puter account needed \u2014 URL-based, lower quality" }
+  { id: "pollinations", label: "Pollinations.ai (No Sign-in)", desc: "Default \u2014 zero friction, URL-based, no account needed" }
 ];
-const getPuterImageModel = () => localStorage.getItem("bfai_puter_image_model") || "pollinations";
+const getPuterImageModel = () => {
+  const saved = localStorage.getItem("bfai_puter_image_model");
+  if (saved) return saved;
+  if (getBackend() === "puter") return "black-forest-labs/flux-2-pro";
+  return "pollinations";
+};
 const setPuterImageModel = (m) => safeLS("bfai_puter_image_model", m);
 const GROQ_MODELS = [
   { id: "openai/gpt-oss-120b", label: "GPT-OSS 120B", desc: "OpenAI open-weight flagship \u2014 best for creative writing, 500 tok/s" },
@@ -4367,7 +4372,8 @@ Respond ONLY with valid JSON: {"alternatives":[{"title":"","subtitle":"","ration
   async function genCoverImage2(prompt, opts = {}) {
     const imgModel = getPuterImageModel();
     const w = opts.width || 832, h = opts.height || 1216;
-    if (imgModel === "pollinations" || getBackend() === "gemini" || getBackend() === "groq") {
+    const effectiveModel = imgModel === "pollinations" && getBackend() === "puter" ? "black-forest-labs/flux-2-pro" : imgModel;
+    if (effectiveModel === "pollinations" || getBackend() === "gemini" || getBackend() === "groq" || getBackend() === "kilo" || getBackend() === "cerebras" || getBackend() === "cloudflare") {
       try {
         const url = `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt.trim())}?width=${w}&height=${h}&model=flux&nologo=true&seed=${Date.now()}`;
         const probe = await Promise.race([
@@ -4378,7 +4384,7 @@ Respond ONLY with valid JSON: {"alternatives":[{"title":"","subtitle":"","ration
       } catch (e) {
         if (typeof puter !== "undefined") {
           try {
-            const imgEl2 = await puter.ai.txt2img(prompt, { model: "openai/gpt-image-2" });
+            const imgEl2 = await puter.ai.txt2img(prompt, { model: "black-forest-labs/flux-2-pro" });
             let src2 = "";
             if (typeof imgEl2 === "string") src2 = imgEl2;
             else if (imgEl2?.src) src2 = imgEl2.src;
@@ -4402,7 +4408,7 @@ Respond ONLY with valid JSON: {"alternatives":[{"title":"","subtitle":"","ration
       }
     }
     if (typeof puter === "undefined") throw { code: "PUTER_NOT_LOADED" };
-    const imgEl = await puter.ai.txt2img(prompt, { model: imgModel });
+    const imgEl = await puter.ai.txt2img(prompt, { model: effectiveModel });
     const canvas = document.createElement("canvas");
     canvas.width = w;
     canvas.height = h;
