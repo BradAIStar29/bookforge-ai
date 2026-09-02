@@ -229,12 +229,85 @@ const resolveModel=(prompt,opts={})=>{
 };
 
 
-const getBooks=()=>ls.get("bfai_books",[]);
-const setBooks=b=>ls.set("bfai_books",b);
+// ── IndexedDB storage layer (Dexie.js) — escapes the 5MB localStorage ceiling ──
+// Books + series live in IndexedDB (~GBs available); small settings stay in localStorage.
+// In-memory cache keeps getBooks()/setBooks() synchronous — zero changes at call sites.
+let BOOKS_MEM=[];
+let SERIES_MEM=[];
+let DB=null;
+let DB_MODE="idb"; // "idb" or "localstorage" fallback (Dexie missing / IDB blocked)
+let persistTimer=null;
+
+function initStorage(){
+  return new Promise(resolve=>{
+    const fallback=()=>{
+      DB_MODE="localstorage";
+      BOOKS_MEM=ls.get("bfai_books",[]);
+      SERIES_MEM=ls.get("bfai_series",[]);
+      resolve();
+    };
+    if(typeof Dexie==="undefined"){fallback();return;}
+    try{
+      DB=new Dexie("BookForgeDB");
+      DB.version(1).stores({books:"id",series:"id",meta:"key"});
+      DB.open().then(async()=>{
+        // One-time migration: merge any legacy localStorage books into IDB, then free the quota
+        const lsBooks=ls.get("bfai_books",null);
+        if(Array.isArray(lsBooks)&&lsBooks.length>0){
+          const existing=await DB.books.toArray();
+          const ids=new Set(existing.map(b=>b.id));
+          const toAdd=lsBooks.filter(b=>b.id&&!ids.has(b.id));
+          if(toAdd.length>0)await DB.books.bulkPut(toAdd);
+          localStorage.removeItem("bfai_books");
+          console.log(`[BookForge] Migrated ${toAdd.length} book(s) from localStorage to IndexedDB`);
+        }
+        const lsSeries=ls.get("bfai_series",null);
+        if(Array.isArray(lsSeries)&&lsSeries.length>0){
+          const existingS=await DB.series.toArray();
+          const sIds=new Set(existingS.map(s=>s.id));
+          const toAddS=lsSeries.filter(s=>s.id&&!sIds.has(s.id));
+          if(toAddS.length>0)await DB.series.bulkPut(toAddS);
+          localStorage.removeItem("bfai_series");
+          console.log(`[BookForge] Migrated ${toAddS.length} series to IndexedDB`);
+        }
+        BOOKS_MEM=await DB.books.toArray();
+        SERIES_MEM=await DB.series.toArray();
+        resolve();
+      }).catch(e=>{console.warn("[BookForge] IndexedDB unavailable, using localStorage:",e);fallback();});
+    }catch(e){console.warn("[BookForge] IndexedDB init failed:",e);fallback();}
+  });
+}
+
+async function flushDB(){
+  if(!DB||DB_MODE!=="idb")return;
+  try{
+    await DB.transaction("rw",DB.books,DB.series,async()=>{
+      await DB.books.clear();
+      await DB.books.bulkPut(BOOKS_MEM.filter(b=>b&&b.id));
+      await DB.series.clear();
+      await DB.series.bulkPut(SERIES_MEM.filter(s=>s&&s.id));
+    });
+  }catch(e){console.warn("[BookForge] IndexedDB persist failed:",e);}
+}
+
+function schedulePersist(){
+  if(DB_MODE!=="idb")return;
+  if(persistTimer)return;
+  // Bigger libraries get a longer debounce to avoid write thrash
+  const delay=BOOKS_MEM.length>500?1500:300;
+  persistTimer=setTimeout(()=>{persistTimer=null;flushDB();},delay);
+}
+
+// Flush pending writes when the tab is hidden/closed (limits data-loss window)
+window.addEventListener("pagehide",()=>{if(persistTimer){clearTimeout(persistTimer);persistTimer=null;}flushDB();});
+document.addEventListener("visibilitychange",()=>{if(document.visibilityState==="hidden"&&persistTimer){clearTimeout(persistTimer);persistTimer=null;flushDB();}});
+
+const getBooks=()=>BOOKS_MEM;
+const setBooks=b=>{BOOKS_MEM=b;if(DB_MODE==="localstorage")ls.set("bfai_books",b);else schedulePersist();};
 const getBook=id=>getBooks().find(b=>b.id===id)||null;
 function getSeriesById(id){return getSeries().find(s=>s.id===id)||null;}
-const getSeries=()=>ls.get("bfai_series",[]);
-const setSeries=s=>ls.set("bfai_series",s);
+const getSeries=()=>SERIES_MEM;
+const setSeries=s=>{SERIES_MEM=s;if(DB_MODE==="localstorage")ls.set("bfai_series",s);else schedulePersist();};
 const getQueue=()=>ls.get("bfai_queue",[]);
 const setQueue=q=>ls.set("bfai_queue",q);
 const getNavState=()=>ls.get("bfai_nav",null);
@@ -1052,7 +1125,7 @@ function downloadBookJSON(book){
 function importBookJSON(file){
   return new Promise((resolve,reject)=>{
     const reader=new FileReader();
-    reader.onload=()=>{
+    reader.onload=async()=>{
       try{
         const book=JSON.parse(reader.result);
         if(!book.title||!book.chapters)throw new Error("Invalid book backup");
@@ -1714,7 +1787,8 @@ function exportLibraryBackup(){
       version:2,
       exported_at:new Date().toISOString(),
       app:"BookForge AI",
-      books:JSON.parse(localStorage.getItem("books")||"[]"),
+      books:getBooks(),
+      series:getSeries(),
       settings:{
         author_profile:localStorage.getItem("author_profile"),
         voice_fingerprint:localStorage.getItem("voice_fingerprint"),
@@ -1724,7 +1798,6 @@ function exportLibraryBackup(){
         cloudflare_account:localStorage.getItem("cf_account_id"),
         cloudflare_token:localStorage.getItem("cf_api_token"),
         language:localStorage.getItem("bfai_language"),
-        series:localStorage.getItem("bfai_series"),
         characters:localStorage.getItem("bfai_characters"),
         usage:localStorage.getItem("bfai_usage"),
         manga_projects:localStorage.getItem("bfai_manga")
@@ -1747,7 +1820,7 @@ function exportLibraryBackup(){
 function importLibraryBackup(file){
   return new Promise((resolve,reject)=>{
     const reader=new FileReader();
-    reader.onload=()=>{
+    reader.onload=async()=>{
       try{
         const backup=JSON.parse(reader.result);
         if(!backup.books||!Array.isArray(backup.books)){
@@ -1755,18 +1828,25 @@ function importLibraryBackup(file){
           return;
         }
         // Merge: keep existing books, add backup books that don't exist by ID
-        const existing=JSON.parse(localStorage.getItem("books")||"[]");
+        const existing=getBooks();
         const existingIds=new Set(existing.map(b=>b.id));
-        const newBooks=backup.books.filter(b=>!existingIds.has(b.id));
+        const newBooks=backup.books.filter(b=>b.id&&!existingIds.has(b.id));
         // Restore settings (don't overwrite if user already has them)
         if(backup.settings){
           Object.entries(backup.settings).forEach(([key,val])=>{
             if(val&&!localStorage.getItem(key))localStorage.setItem(key,val);
           });
         }
-        if(newBooks.length>0){
-          localStorage.setItem("books",JSON.stringify([...existing,...newBooks]));
+        if(backup.series&&Array.isArray(backup.series)&&!backup.settings?.series){
+          // restore series data if the backup carries it at top level
+          const exSeries=getSeries();const exSIds=new Set(exSeries.map(s=>s.id));
+          const newSeries=backup.series.filter(s=>s.id&&!exSIds.has(s.id));
+          if(newSeries.length>0)setSeries([...exSeries,...newSeries]);
         }
+        if(newBooks.length>0){
+          setBooks([...existing,...newBooks]);
+        }
+        if(DB_MODE==="idb"){await flushDB();}
         resolve({added:newBooks.length,skipped:backup.books.length-newBooks.length,total:existing.length+newBooks.length});
       }catch(e){
         reject(new Error("Could not parse backup file: "+e.message));
@@ -2577,6 +2657,64 @@ async function runReviewAgent(book){
   try{return JSON.parse(match[0]);}catch(pe){throw{code:"PARSE",msg:"AI returned malformed JSON — please retry."};}
 }
 
+// ── Data Management Panel: backup/restore + storage meter ──
+function DataManagementPanel(){
+  const [est,setEst]=React.useState(null);
+  const [busy,setBusy]=React.useState(false);
+  const [msg,setMsg]=React.useState("");
+  React.useEffect(()=>{
+    if(navigator.storage?.estimate){
+      navigator.storage.estimate().then(e=>setEst(e)).catch(()=>{});
+    }
+  },[]);
+  const books=getBooks();
+  const totalWords=books.reduce((sum,b)=>sum+(b.word_count||0),0);
+  const fmtMB=n=>(n/1024/1024).toFixed(1)+" MB";
+  const doExport=()=>{
+    setBusy(true);setMsg("");
+    try{
+      exportLibraryBackup();
+      setMsg("✅ Backup downloaded — keep it somewhere safe (cloud drive, USB).");
+    }catch(e){setMsg("❌ Backup failed: "+(e?.message||"unknown error"));}
+    finally{setBusy(false);}
+  };
+  const doImport=async e=>{
+    const file=e.target.files?.[0];if(!file)return;
+    setBusy(true);setMsg("");
+    try{
+      const res=await importLibraryBackup(file);
+      setMsg(`✅ Restored ${res.added} book(s)${res.skipped>0?`, skipped ${res.skipped} duplicate(s)`:""}. Library now has ${res.total} book(s).`);
+    }catch(err){setMsg("❌ Import failed: "+err.message);}
+    finally{setBusy(false);e.target.value="";}
+  };
+  return(
+    <div className="space-y-4">
+      <div><h3 className="text-white font-bold text-lg mb-1">💾 Data & Storage</h3><p className="text-white/40 text-sm">Books are stored in IndexedDB — thousands of books fit. Settings stay in localStorage.</p></div>
+
+      <div className="bg-white/5 border border-white/10 rounded-xl p-4 space-y-2">
+        <div className="flex justify-between text-sm"><span className="text-white/50">📚 Books</span><span className="text-white font-semibold">{books.length}</span></div>
+        <div className="flex justify-between text-sm"><span className="text-white/50">✍️ Total words</span><span className="text-white font-semibold">{totalWords.toLocaleString()}</span></div>
+        <div className="flex justify-between text-sm"><span className="text-white/50">🗄️ Storage engine</span><span className={DB_MODE==="idb"?"text-green-400 font-semibold":"text-amber-400 font-semibold"}>{DB_MODE==="idb"?"IndexedDB ✓":"localStorage (fallback)"}</span></div>
+        {est&&<div className="flex justify-between text-sm"><span className="text-white/50">📦 Used / available</span><span className="text-white font-semibold">{fmtMB(est.usage)} / {est.quota?fmtMB(est.quota):"large"}</span></div>}
+        {est&&est.quota&&<div className="h-1.5 bg-white/10 rounded-full overflow-hidden"><div className="h-full bg-gradient-to-r from-purple-500 to-pink-500" style={{width:Math.min(100,(est.usage/est.quota)*100)+"%"}}/></div>}
+      </div>
+
+      <div className="bg-white/5 border border-white/10 rounded-xl p-4 space-y-3">
+        <p className="text-white/60 text-sm font-medium">🔐 Backup & Restore</p>
+        <p className="text-white/35 text-xs">Export your entire library (all books, series, settings) as one JSON file. Restore merges into the current library — no duplicates.</p>
+        <div className="flex gap-2">
+          <button onClick={doExport} disabled={busy} className="flex-1 bg-gradient-to-r from-purple-500 to-pink-500 text-white py-2.5 rounded-xl font-medium hover:opacity-90 disabled:opacity-50 text-sm">⬇️ Export Full Backup</button>
+          <label className="flex-1 bg-white/10 border border-white/20 text-white/80 py-2.5 rounded-xl font-medium hover:bg-white/15 cursor-pointer text-sm text-center flex items-center justify-center">
+            {busy?"Working…":"⬆️ Restore Backup"}
+            <input type="file" accept=".json" className="hidden" onChange={doImport}/>
+          </label>
+        </div>
+        {msg&&<p className="text-white/60 text-xs">{msg}</p>}
+      </div>
+    </div>
+  );
+}
+
 function SettingsModal({onClose}){
   const [draft,setDraft]=useState(getKey());
   const [saved,setSaved]=useState(false);
@@ -2623,7 +2761,7 @@ function SettingsModal({onClose}){
         {/* Settings tabs */}
         <div className="px-6 pt-4">
           <div className="bg-white/5 border border-white/10 rounded-xl p-1 flex gap-1 mb-5">
-            {[["api","🔑 API Key"],["voice","🎙️ Voice"],["author","👤 Author"],["build","🔧 Build"]].map(([id,label])=>(
+            {[["api","🔑 API Key"],["voice","🎙️ Voice"],["author","👤 Author"],["build","🔧 Build"],["data","💾 Data"]].map(([id,label])=>(
               <button key={id} onClick={()=>setSTab(id)} className={`flex-1 py-2 rounded-lg text-xs font-medium transition-all ${sTab===id?"bg-purple-500 text-white":"text-white/40 hover:text-white"}`}>{label}</button>
             ))}
           </div>
@@ -2715,6 +2853,7 @@ function SettingsModal({onClose}){
               <button onClick={saveAuthor} className={`w-full py-3 rounded-xl font-semibold transition-all ${authorSaved?"bg-green-500 text-white":"bg-gradient-to-r from-purple-500 to-pink-500 text-white hover:opacity-90"}`}>{authorSaved?"✅ Saved!":"Save Author Profile"}</button>
             </div>
           )}
+          {sTab==="data"&&<DataManagementPanel/>}
           {sTab==="build"&&(
             <div className="space-y-5">
               <div><h3 className="text-white font-bold text-lg mb-1">🔧 Build Settings</h3><p className="text-white/40 text-sm">Control how auto-build handles quality gates.</p></div>
@@ -5638,7 +5777,7 @@ const genCover=async()=>{if(quotaHit||isBuilding)return;setBusy(true);setError("
     <button onClick={e=>{e.stopPropagation();downloadChapterTxt(book,i);}} className="text-white/30 hover:text-white/60 text-xs">📄 Export TXT</button>
   </div>;
 })():<span className="text-white/20 text-xs shrink-0">Pending</span>}</div>)}</div><div className="mt-5"><ChapterPacingChart book={book}/></div>
-            <div className="mt-3 bg-white/5 rounded-xl p-4"><div className="flex justify-between text-xs text-white/40 mb-2"><span>Progress</span><span>{book.chapters.filter(c=>c.generated).length}/{book.chapters.length} chapters</span></div><div className="h-2 bg-white/10 rounded-full overflow-hidden"><div className="h-full bg-gradient-to-r from-purple-500 to-pink-500 rounded-full" style={{width:`${(book.chapters.filter(c=>c.generated).length/book.chapters.length)*100}%`}}/></div></div></>}{(!book.chapters||book.chapters.length===0)&&isBuilding&&<div className="text-center py-8 text-white/30"><Spin/><p className="mt-3 text-sm">Generating outline…</p></div>}<div className="mt-5 flex items-center gap-3 pt-4 border-t border-white/10"><button onClick={()=>setReadingMode(true)} disabled={!book.chapters?.some(c=>c.generated)} className="text-xs px-3 py-2 rounded-lg bg-purple-500/20 border border-purple-500/30 text-purple-300 hover:bg-purple-500/30 hover:text-purple-200 transition-all flex items-center gap-2 disabled:opacity-40">📖 Read Book</button><button onClick={()=>downloadPDF(book)} className="text-xs px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-white/60 hover:bg-white/10 hover:text-white/90 transition-all flex items-center gap-2">📄 Export PDF</button><button onClick={()=>downloadMarkdown(book)} className="text-xs px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-white/60 hover:bg-white/10 hover:text-white/90 transition-all flex items-center gap-2">📝 Export Markdown</button><button onClick={()=>downloadBookJSON(book)} className="text-xs px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-white/60 hover:bg-white/10 hover:text-white/90 transition-all flex items-center gap-2">💾 Export Backup (JSON)</button><label className="text-xs px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-white/60 hover:bg-white/10 hover:text-white/90 transition-all flex items-center gap-2 cursor-pointer">📥 Import Backup<input type="file" accept=".json" className="hidden" onChange={async(e)=>{const file=e.target.files?.[0];if(!file)return;try{const imported=await importBookJSON(file);const books=JSON.parse(localStorage.getItem("bfai_books")||"[]");books.unshift(imported);localStorage.setItem("bfai_books",JSON.stringify(books));alert("Imported \""+imported.title+"\" successfully!");window.location.reload();}catch(err){alert("Import failed: "+err.message);}}}/></label></div></Card></div>}
+            <div className="mt-3 bg-white/5 rounded-xl p-4"><div className="flex justify-between text-xs text-white/40 mb-2"><span>Progress</span><span>{book.chapters.filter(c=>c.generated).length}/{book.chapters.length} chapters</span></div><div className="h-2 bg-white/10 rounded-full overflow-hidden"><div className="h-full bg-gradient-to-r from-purple-500 to-pink-500 rounded-full" style={{width:`${(book.chapters.filter(c=>c.generated).length/book.chapters.length)*100}%`}}/></div></div></>}{(!book.chapters||book.chapters.length===0)&&isBuilding&&<div className="text-center py-8 text-white/30"><Spin/><p className="mt-3 text-sm">Generating outline…</p></div>}<div className="mt-5 flex items-center gap-3 pt-4 border-t border-white/10"><button onClick={()=>setReadingMode(true)} disabled={!book.chapters?.some(c=>c.generated)} className="text-xs px-3 py-2 rounded-lg bg-purple-500/20 border border-purple-500/30 text-purple-300 hover:bg-purple-500/30 hover:text-purple-200 transition-all flex items-center gap-2 disabled:opacity-40">📖 Read Book</button><button onClick={()=>downloadPDF(book)} className="text-xs px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-white/60 hover:bg-white/10 hover:text-white/90 transition-all flex items-center gap-2">📄 Export PDF</button><button onClick={()=>downloadMarkdown(book)} className="text-xs px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-white/60 hover:bg-white/10 hover:text-white/90 transition-all flex items-center gap-2">📝 Export Markdown</button><button onClick={()=>downloadBookJSON(book)} className="text-xs px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-white/60 hover:bg-white/10 hover:text-white/90 transition-all flex items-center gap-2">💾 Export Backup (JSON)</button><label className="text-xs px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-white/60 hover:bg-white/10 hover:text-white/90 transition-all flex items-center gap-2 cursor-pointer">📥 Import Backup<input type="file" accept=".json" className="hidden" onChange={async(e)=>{const file=e.target.files?.[0];if(!file)return;try{const imported=await importBookJSON(file);const books=getBooks();books.unshift(imported);setBooks(books);await flushDB();alert("Imported \""+imported.title+"\" successfully!");window.location.reload();}catch(err){alert("Import failed: "+err.message);}}}/></label></div></Card></div>}
 
         {/* CHAPTERS */}
         {tab===1&&<div className="grid grid-cols-1 lg:grid-cols-3 gap-5"><div className="lg:col-span-1"><div className="bg-white/5 border border-white/10 rounded-2xl p-4 sticky top-24"><div className="flex items-center justify-between mb-3"><h3 className="text-white font-semibold text-sm">Chapters</h3><div className="flex gap-1.5"><button onClick={()=>setReadingMode(true)} disabled={!book.chapters?.some(c=>c.generated)} className="text-xs text-purple-300 hover:text-purple-200 disabled:opacity-30 px-2 py-1 rounded bg-purple-500/10">📖 Read</button><button onClick={()=>setShowFindReplace(true)} className="text-xs text-purple-300 hover:text-purple-200 disabled:opacity-30 px-2 py-1 rounded bg-purple-500/10 flex items-center gap-1">🔍 Find & Replace</button>{!isBuilding&&<button onClick={async()=>{
@@ -7522,7 +7661,9 @@ if("serviceWorker" in navigator){
   navigator.serviceWorker.register(swUrl).catch(()=>{});
 }
 
-createRoot(document.getElementById("root")).render(<ErrorBoundary><App/></ErrorBoundary>);
+initStorage().catch(()=>{}).finally(()=>{
+  createRoot(document.getElementById("root")).render(<ErrorBoundary><App/></ErrorBoundary>);
+});
 
 // ══════════════════════════════════════════════════════════════════════════════
 // 🎌 MANGA / MANHWA CREATOR — FULL SYSTEM

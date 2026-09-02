@@ -8,6 +8,7 @@
 <script src="https://unpkg.com/react@18.3.1/umd/react.production.min.js" crossorigin></script>
 <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js" crossorigin></script>
 <script src="https://js.puter.com/v2/"></script>
+<script src="https://cdn.jsdelivr.net/npm/dexie@4.0.8/dist/dexie.min.js"></script>
 <style>
 *{box-sizing:border-box}
 body{margin:0;font-family:system-ui,-apple-system,sans-serif;background:#0f0a1e}
@@ -262,14 +263,110 @@ const resolveModel = (prompt2, opts = {}) => {
   const task = detectTask(prompt2);
   return getBestModel(task);
 };
-const getBooks = () => ls.get("bfai_books", []);
-const setBooks = (b) => ls.set("bfai_books", b);
+let BOOKS_MEM = [];
+let SERIES_MEM = [];
+let DB = null;
+let DB_MODE = "idb";
+let persistTimer = null;
+function initStorage() {
+  return new Promise((resolve) => {
+    const fallback = () => {
+      DB_MODE = "localstorage";
+      BOOKS_MEM = ls.get("bfai_books", []);
+      SERIES_MEM = ls.get("bfai_series", []);
+      resolve();
+    };
+    if (typeof Dexie === "undefined") {
+      fallback();
+      return;
+    }
+    try {
+      DB = new Dexie("BookForgeDB");
+      DB.version(1).stores({ books: "id", series: "id", meta: "key" });
+      DB.open().then(async () => {
+        const lsBooks = ls.get("bfai_books", null);
+        if (Array.isArray(lsBooks) && lsBooks.length > 0) {
+          const existing = await DB.books.toArray();
+          const ids = new Set(existing.map((b) => b.id));
+          const toAdd = lsBooks.filter((b) => b.id && !ids.has(b.id));
+          if (toAdd.length > 0) await DB.books.bulkPut(toAdd);
+          localStorage.removeItem("bfai_books");
+          console.log(`[BookForge] Migrated ${toAdd.length} book(s) from localStorage to IndexedDB`);
+        }
+        const lsSeries = ls.get("bfai_series", null);
+        if (Array.isArray(lsSeries) && lsSeries.length > 0) {
+          const existingS = await DB.series.toArray();
+          const sIds = new Set(existingS.map((s) => s.id));
+          const toAddS = lsSeries.filter((s) => s.id && !sIds.has(s.id));
+          if (toAddS.length > 0) await DB.series.bulkPut(toAddS);
+          localStorage.removeItem("bfai_series");
+          console.log(`[BookForge] Migrated ${toAddS.length} series to IndexedDB`);
+        }
+        BOOKS_MEM = await DB.books.toArray();
+        SERIES_MEM = await DB.series.toArray();
+        resolve();
+      }).catch((e) => {
+        console.warn("[BookForge] IndexedDB unavailable, using localStorage:", e);
+        fallback();
+      });
+    } catch (e) {
+      console.warn("[BookForge] IndexedDB init failed:", e);
+      fallback();
+    }
+  });
+}
+async function flushDB() {
+  if (!DB || DB_MODE !== "idb") return;
+  try {
+    await DB.transaction("rw", DB.books, DB.series, async () => {
+      await DB.books.clear();
+      await DB.books.bulkPut(BOOKS_MEM.filter((b) => b && b.id));
+      await DB.series.clear();
+      await DB.series.bulkPut(SERIES_MEM.filter((s) => s && s.id));
+    });
+  } catch (e) {
+    console.warn("[BookForge] IndexedDB persist failed:", e);
+  }
+}
+function schedulePersist() {
+  if (DB_MODE !== "idb") return;
+  if (persistTimer) return;
+  const delay = BOOKS_MEM.length > 500 ? 1500 : 300;
+  persistTimer = setTimeout(() => {
+    persistTimer = null;
+    flushDB();
+  }, delay);
+}
+window.addEventListener("pagehide", () => {
+  if (persistTimer) {
+    clearTimeout(persistTimer);
+    persistTimer = null;
+  }
+  flushDB();
+});
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "hidden" && persistTimer) {
+    clearTimeout(persistTimer);
+    persistTimer = null;
+    flushDB();
+  }
+});
+const getBooks = () => BOOKS_MEM;
+const setBooks = (b) => {
+  BOOKS_MEM = b;
+  if (DB_MODE === "localstorage") ls.set("bfai_books", b);
+  else schedulePersist();
+};
 const getBook = (id) => getBooks().find((b) => b.id === id) || null;
 function getSeriesById(id) {
   return getSeries().find((s) => s.id === id) || null;
 }
-const getSeries = () => ls.get("bfai_series", []);
-const setSeries = (s) => ls.set("bfai_series", s);
+const getSeries = () => SERIES_MEM;
+const setSeries = (s) => {
+  SERIES_MEM = s;
+  if (DB_MODE === "localstorage") ls.set("bfai_series", s);
+  else schedulePersist();
+};
 const getQueue = () => ls.get("bfai_queue", []);
 const setQueue = (q) => ls.set("bfai_queue", q);
 const getNavState = () => ls.get("bfai_nav", null);
@@ -1142,7 +1239,7 @@ function downloadBookJSON(book) {
 function importBookJSON(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
-    reader.onload = () => {
+    reader.onload = async () => {
       try {
         const book = JSON.parse(reader.result);
         if (!book.title || !book.chapters) throw new Error("Invalid book backup");
@@ -1792,7 +1889,8 @@ function exportLibraryBackup() {
       version: 2,
       exported_at: (/* @__PURE__ */ new Date()).toISOString(),
       app: "BookForge AI",
-      books: JSON.parse(localStorage.getItem("books") || "[]"),
+      books: getBooks(),
+      series: getSeries(),
       settings: {
         author_profile: localStorage.getItem("author_profile"),
         voice_fingerprint: localStorage.getItem("voice_fingerprint"),
@@ -1802,7 +1900,6 @@ function exportLibraryBackup() {
         cloudflare_account: localStorage.getItem("cf_account_id"),
         cloudflare_token: localStorage.getItem("cf_api_token"),
         language: localStorage.getItem("bfai_language"),
-        series: localStorage.getItem("bfai_series"),
         characters: localStorage.getItem("bfai_characters"),
         usage: localStorage.getItem("bfai_usage"),
         manga_projects: localStorage.getItem("bfai_manga")
@@ -1824,23 +1921,32 @@ function exportLibraryBackup() {
 function importLibraryBackup(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
-    reader.onload = () => {
+    reader.onload = async () => {
       try {
         const backup = JSON.parse(reader.result);
         if (!backup.books || !Array.isArray(backup.books)) {
           reject(new Error("Invalid backup file \u2014 no books found"));
           return;
         }
-        const existing = JSON.parse(localStorage.getItem("books") || "[]");
+        const existing = getBooks();
         const existingIds = new Set(existing.map((b) => b.id));
-        const newBooks = backup.books.filter((b) => !existingIds.has(b.id));
+        const newBooks = backup.books.filter((b) => b.id && !existingIds.has(b.id));
         if (backup.settings) {
           Object.entries(backup.settings).forEach(([key, val]) => {
             if (val && !localStorage.getItem(key)) localStorage.setItem(key, val);
           });
         }
+        if (backup.series && Array.isArray(backup.series) && !backup.settings?.series) {
+          const exSeries = getSeries();
+          const exSIds = new Set(exSeries.map((s) => s.id));
+          const newSeries = backup.series.filter((s) => s.id && !exSIds.has(s.id));
+          if (newSeries.length > 0) setSeries([...exSeries, ...newSeries]);
+        }
         if (newBooks.length > 0) {
-          localStorage.setItem("books", JSON.stringify([...existing, ...newBooks]));
+          setBooks([...existing, ...newBooks]);
+        }
+        if (DB_MODE === "idb") {
+          await flushDB();
         }
         resolve({ added: newBooks.length, skipped: backup.books.length - newBooks.length, total: existing.length + newBooks.length });
       } catch (e) {
@@ -2589,6 +2695,48 @@ Verdict must be "PASS" if overall_score>=75, otherwise "FAIL".`,
     throw { code: "PARSE", msg: "AI returned malformed JSON \u2014 please retry." };
   }
 }
+function DataManagementPanel() {
+  const [est, setEst] = React.useState(null);
+  const [busy, setBusy] = React.useState(false);
+  const [msg, setMsg] = React.useState("");
+  React.useEffect(() => {
+    if (navigator.storage?.estimate) {
+      navigator.storage.estimate().then((e) => setEst(e)).catch(() => {
+      });
+    }
+  }, []);
+  const books = getBooks();
+  const totalWords = books.reduce((sum, b) => sum + (b.word_count || 0), 0);
+  const fmtMB = (n) => (n / 1024 / 1024).toFixed(1) + " MB";
+  const doExport = () => {
+    setBusy(true);
+    setMsg("");
+    try {
+      exportLibraryBackup();
+      setMsg("\u2705 Backup downloaded \u2014 keep it somewhere safe (cloud drive, USB).");
+    } catch (e) {
+      setMsg("\u274C Backup failed: " + (e?.message || "unknown error"));
+    } finally {
+      setBusy(false);
+    }
+  };
+  const doImport = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setBusy(true);
+    setMsg("");
+    try {
+      const res = await importLibraryBackup(file);
+      setMsg(`\u2705 Restored ${res.added} book(s)${res.skipped > 0 ? `, skipped ${res.skipped} duplicate(s)` : ""}. Library now has ${res.total} book(s).`);
+    } catch (err) {
+      setMsg("\u274C Import failed: " + err.message);
+    } finally {
+      setBusy(false);
+      e.target.value = "";
+    }
+  };
+  return /* @__PURE__ */ React.createElement("div", { className: "space-y-4" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("h3", { className: "text-white font-bold text-lg mb-1" }, "\u{1F4BE} Data & Storage"), /* @__PURE__ */ React.createElement("p", { className: "text-white/40 text-sm" }, "Books are stored in IndexedDB \u2014 thousands of books fit. Settings stay in localStorage.")), /* @__PURE__ */ React.createElement("div", { className: "bg-white/5 border border-white/10 rounded-xl p-4 space-y-2" }, /* @__PURE__ */ React.createElement("div", { className: "flex justify-between text-sm" }, /* @__PURE__ */ React.createElement("span", { className: "text-white/50" }, "\u{1F4DA} Books"), /* @__PURE__ */ React.createElement("span", { className: "text-white font-semibold" }, books.length)), /* @__PURE__ */ React.createElement("div", { className: "flex justify-between text-sm" }, /* @__PURE__ */ React.createElement("span", { className: "text-white/50" }, "\u270D\uFE0F Total words"), /* @__PURE__ */ React.createElement("span", { className: "text-white font-semibold" }, totalWords.toLocaleString())), /* @__PURE__ */ React.createElement("div", { className: "flex justify-between text-sm" }, /* @__PURE__ */ React.createElement("span", { className: "text-white/50" }, "\u{1F5C4}\uFE0F Storage engine"), /* @__PURE__ */ React.createElement("span", { className: DB_MODE === "idb" ? "text-green-400 font-semibold" : "text-amber-400 font-semibold" }, DB_MODE === "idb" ? "IndexedDB \u2713" : "localStorage (fallback)")), est && /* @__PURE__ */ React.createElement("div", { className: "flex justify-between text-sm" }, /* @__PURE__ */ React.createElement("span", { className: "text-white/50" }, "\u{1F4E6} Used / available"), /* @__PURE__ */ React.createElement("span", { className: "text-white font-semibold" }, fmtMB(est.usage), " / ", est.quota ? fmtMB(est.quota) : "large")), est && est.quota && /* @__PURE__ */ React.createElement("div", { className: "h-1.5 bg-white/10 rounded-full overflow-hidden" }, /* @__PURE__ */ React.createElement("div", { className: "h-full bg-gradient-to-r from-purple-500 to-pink-500", style: { width: Math.min(100, est.usage / est.quota * 100) + "%" } }))), /* @__PURE__ */ React.createElement("div", { className: "bg-white/5 border border-white/10 rounded-xl p-4 space-y-3" }, /* @__PURE__ */ React.createElement("p", { className: "text-white/60 text-sm font-medium" }, "\u{1F510} Backup & Restore"), /* @__PURE__ */ React.createElement("p", { className: "text-white/35 text-xs" }, "Export your entire library (all books, series, settings) as one JSON file. Restore merges into the current library \u2014 no duplicates."), /* @__PURE__ */ React.createElement("div", { className: "flex gap-2" }, /* @__PURE__ */ React.createElement("button", { onClick: doExport, disabled: busy, className: "flex-1 bg-gradient-to-r from-purple-500 to-pink-500 text-white py-2.5 rounded-xl font-medium hover:opacity-90 disabled:opacity-50 text-sm" }, "\u2B07\uFE0F Export Full Backup"), /* @__PURE__ */ React.createElement("label", { className: "flex-1 bg-white/10 border border-white/20 text-white/80 py-2.5 rounded-xl font-medium hover:bg-white/15 cursor-pointer text-sm text-center flex items-center justify-center" }, busy ? "Working\u2026" : "\u2B06\uFE0F Restore Backup", /* @__PURE__ */ React.createElement("input", { type: "file", accept: ".json", className: "hidden", onChange: doImport }))), msg && /* @__PURE__ */ React.createElement("p", { className: "text-white/60 text-xs" }, msg)));
+}
 function SettingsModal({ onClose }) {
   const [draft, setDraft] = useState(getKey());
   const [saved, setSaved] = useState(false);
@@ -2652,7 +2800,7 @@ function SettingsModal({ onClose }) {
     }
     setTimeout(() => setTestStatus(null), 4e3);
   };
-  return /* @__PURE__ */ React.createElement("div", { className: "fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center p-4" }, /* @__PURE__ */ React.createElement("div", { className: "bg-slate-800 border border-white/10 rounded-2xl max-w-lg w-full shadow-2xl max-h-[90vh] overflow-y-auto" }, /* @__PURE__ */ React.createElement("div", { className: "sticky top-0 bg-slate-800 border-b border-white/10 px-6 py-4 flex items-center justify-between" }, /* @__PURE__ */ React.createElement("h2", { className: "text-white text-xl font-bold" }, "\u2699\uFE0F Settings"), /* @__PURE__ */ React.createElement("button", { onClick: onClose, "aria-label": "Close settings", "data-close-btn": "true", className: "text-white/30 hover:text-white text-xl" }, "\u2715")), /* @__PURE__ */ React.createElement("div", { className: "px-6 pt-4" }, /* @__PURE__ */ React.createElement("div", { className: "bg-white/5 border border-white/10 rounded-xl p-1 flex gap-1 mb-5" }, [["api", "\u{1F511} API Key"], ["voice", "\u{1F399}\uFE0F Voice"], ["author", "\u{1F464} Author"], ["build", "\u{1F527} Build"]].map(([id, label]) => /* @__PURE__ */ React.createElement("button", { key: id, onClick: () => setSTab(id), className: `flex-1 py-2 rounded-lg text-xs font-medium transition-all ${sTab === id ? "bg-purple-500 text-white" : "text-white/40 hover:text-white"}` }, label)))), /* @__PURE__ */ React.createElement("div", { className: "px-6 pb-6" }, sTab === "api" && /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("label", { className: "text-white/60 text-sm font-medium block mb-2" }, "AI Engine"), /* @__PURE__ */ React.createElement("p", { className: "text-white/35 text-xs mb-3" }, "Choose how BookForge generates text and images."), /* @__PURE__ */ React.createElement("div", { className: "grid grid-cols-2 gap-2 mb-5" }, BACKENDS.map((b) => {
+  return /* @__PURE__ */ React.createElement("div", { className: "fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center p-4" }, /* @__PURE__ */ React.createElement("div", { className: "bg-slate-800 border border-white/10 rounded-2xl max-w-lg w-full shadow-2xl max-h-[90vh] overflow-y-auto" }, /* @__PURE__ */ React.createElement("div", { className: "sticky top-0 bg-slate-800 border-b border-white/10 px-6 py-4 flex items-center justify-between" }, /* @__PURE__ */ React.createElement("h2", { className: "text-white text-xl font-bold" }, "\u2699\uFE0F Settings"), /* @__PURE__ */ React.createElement("button", { onClick: onClose, "aria-label": "Close settings", "data-close-btn": "true", className: "text-white/30 hover:text-white text-xl" }, "\u2715")), /* @__PURE__ */ React.createElement("div", { className: "px-6 pt-4" }, /* @__PURE__ */ React.createElement("div", { className: "bg-white/5 border border-white/10 rounded-xl p-1 flex gap-1 mb-5" }, [["api", "\u{1F511} API Key"], ["voice", "\u{1F399}\uFE0F Voice"], ["author", "\u{1F464} Author"], ["build", "\u{1F527} Build"], ["data", "\u{1F4BE} Data"]].map(([id, label]) => /* @__PURE__ */ React.createElement("button", { key: id, onClick: () => setSTab(id), className: `flex-1 py-2 rounded-lg text-xs font-medium transition-all ${sTab === id ? "bg-purple-500 text-white" : "text-white/40 hover:text-white"}` }, label)))), /* @__PURE__ */ React.createElement("div", { className: "px-6 pb-6" }, sTab === "api" && /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("label", { className: "text-white/60 text-sm font-medium block mb-2" }, "AI Engine"), /* @__PURE__ */ React.createElement("p", { className: "text-white/35 text-xs mb-3" }, "Choose how BookForge generates text and images."), /* @__PURE__ */ React.createElement("div", { className: "grid grid-cols-2 gap-2 mb-5" }, BACKENDS.map((b) => {
     const sel = getBackend() === b.id;
     return /* @__PURE__ */ React.createElement("button", { key: b.id, onClick: () => {
       setBackend(b.id);
@@ -2664,7 +2812,7 @@ function SettingsModal({ onClose }) {
     const r = await testConnection();
     setTestResult(r);
     setTestingConn(false);
-  }, disabled: testingConn, className: `w-full py-3 rounded-xl font-semibold transition-all mb-4 ${testingConn ? "bg-white/10 text-white/50" : testResult?.ok ? "bg-green-500/20 text-green-300 border border-green-500/30" : testResult ? "bg-red-500/20 text-red-300 border border-red-500/30" : "bg-gradient-to-r from-purple-500 to-pink-500 text-white hover:opacity-90"}` }, testingConn ? "\u23F3 Testing\u2026" : "\u{1F50C} Test Connection"), testResult && /* @__PURE__ */ React.createElement("div", { className: `mb-4 p-3 rounded-xl text-sm ${testResult.ok ? "bg-green-500/10 text-green-300" : "bg-red-500/10 text-red-300"}` }, testResult.msg)), getBackend() === "puter" && /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "bg-purple-500/10 border border-purple-500/20 rounded-xl p-4 mb-4" }, /* @__PURE__ */ React.createElement("p", { className: "text-purple-300 text-sm font-medium mb-1" }, "\u{1F381} Puter.js = Free, no API key!"), /* @__PURE__ */ React.createElement("p", { className: "text-white/40 text-xs leading-relaxed" }, "Access 400+ AI models (GPT-5.5, Claude Opus 5, Gemini 3.6, and more) for free. Uses Puter's user-pays model \u2014 your users cover their own AI costs via their Puter account. ", /* @__PURE__ */ React.createElement("a", { href: "https://puter.com", target: "_blank", rel: "noopener noreferrer", className: "text-purple-400 underline" }, "Create a free Puter account \u2192"))), /* @__PURE__ */ React.createElement("label", { className: "text-white/60 text-sm font-medium block mb-2" }, "Text Generation Model"), /* @__PURE__ */ React.createElement("select", { value: getPuterTextModel(), onChange: (e) => setPuterTextModel(e.target.value), className: "w-full bg-white/10 border border-white/20 rounded-xl px-4 py-3 text-white text-sm mb-2 focus:outline-none focus:border-purple-500" }, PUTER_TEXT_MODELS.map((m) => /* @__PURE__ */ React.createElement("option", { key: m.id, value: m.id, className: "bg-gray-800" }, m.label, " \u2014 ", m.desc))), /* @__PURE__ */ React.createElement("label", { className: "text-white/60 text-sm font-medium block mb-2 mt-4" }, "Cover Image Model"), /* @__PURE__ */ React.createElement("select", { value: getPuterImageModel(), onChange: (e) => setPuterImageModel(e.target.value), className: "w-full bg-white/10 border border-white/20 rounded-xl px-4 py-3 text-white text-sm mb-2 focus:outline-none focus:border-purple-500" }, PUTER_IMAGE_MODELS.map((m) => /* @__PURE__ */ React.createElement("option", { key: m.id, value: m.id, className: "bg-gray-800" }, m.label, " \u2014 ", m.desc))), /* @__PURE__ */ React.createElement("p", { className: "text-white/35 text-xs mt-3" }, "\u2139\uFE0F The first time you generate, a Puter login window may appear. Sign in once \u2014 it's free and stores nothing in BookForge.")), getBackend() === "groq" && /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "bg-orange-500/10 border border-orange-500/20 rounded-xl p-4 mb-4" }, /* @__PURE__ */ React.createElement("p", { className: "text-orange-300 text-sm font-medium mb-1" }, "\u26A1 Groq = Blazing Fast (500+ tokens/sec)"), /* @__PURE__ */ React.createElement("p", { className: "text-white/40 text-xs leading-relaxed" }, "Get a free API key from GroqCloud. Rate limits are generous \u2014 30 req/min, 14,400 req/day on the free tier. ", /* @__PURE__ */ React.createElement("a", { href: "https://console.groq.com/keys", target: "_blank", rel: "noopener noreferrer", className: "text-orange-400 underline" }, "Get a free Groq API key \u2192"))), /* @__PURE__ */ React.createElement("label", { className: "text-white/60 text-sm font-medium block mb-2" }, "Groq API Key"), /* @__PURE__ */ React.createElement("input", { type: "password", placeholder: "gsk_...", value: groqKeyDraft, onChange: (e) => setGroqKeyDraft(e.target.value), onKeyDown: (e) => e.key === "Enter" && saveGroqKey(), className: "w-full bg-white/10 border border-white/20 rounded-xl px-4 py-3 text-white placeholder-white/30 focus:outline-none focus:border-orange-500 mb-4 font-mono text-sm" }), /* @__PURE__ */ React.createElement("div", { className: "flex gap-2 mb-4" }, /* @__PURE__ */ React.createElement("button", { onClick: saveGroqKey, disabled: !groqKeyDraft.trim(), className: `flex-1 py-3 rounded-xl font-semibold transition-all ${groqKeySaved ? "bg-green-500 text-white" : "bg-gradient-to-r from-orange-500 to-pink-500 text-white hover:opacity-90 disabled:opacity-50"}` }, groqKeySaved ? "\u2705 Saved!" : "Save Groq Key")), /* @__PURE__ */ React.createElement("label", { className: "text-white/60 text-sm font-medium block mb-2" }, "Text Generation Model"), /* @__PURE__ */ React.createElement("select", { value: getGroqModel(), onChange: (e) => setGroqModel(e.target.value), className: "w-full bg-white/10 border border-white/20 rounded-xl px-4 py-3 text-white text-sm mb-2 focus:outline-none focus:border-orange-500" }, GROQ_MODELS.map((m) => /* @__PURE__ */ React.createElement("option", { key: m.id, value: m.id, className: "bg-gray-800" }, m.label, " \u2014 ", m.desc))), /* @__PURE__ */ React.createElement("p", { className: "text-white/35 text-xs mt-3" }, "\u2139\uFE0F Groq is text-only \u2014 cover images still use Pollinations.ai (free, no key)."))), sTab === "voice" && /* @__PURE__ */ React.createElement(VoiceTrainingPanel, { onClose }), sTab === "author" && /* @__PURE__ */ React.createElement("div", { className: "space-y-4" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("h3", { className: "text-white font-bold text-lg mb-1" }, "\u{1F464} Author Profile"), /* @__PURE__ */ React.createElement("p", { className: "text-white/40 text-sm" }, "Used for back-cover bio and author page.")), /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("label", { className: "text-white/60 text-sm font-medium block mb-2" }, "Author Name"), /* @__PURE__ */ React.createElement("input", { value: author.name || "", onChange: (e) => setAuthor({ ...author, name: e.target.value }), placeholder: "Your pen name or real name", className: "w-full bg-white/10 border border-white/20 rounded-xl px-4 py-3 text-white placeholder-white/20 focus:outline-none focus:border-purple-500 text-sm" })), /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("label", { className: "text-white/60 text-sm font-medium block mb-2" }, "Bio"), /* @__PURE__ */ React.createElement("textarea", { rows: 4, value: author.bio || "", onChange: (e) => setAuthor({ ...author, bio: e.target.value }), placeholder: "Your author bio \u2014 100-200 words works best", className: "w-full bg-white/10 border border-white/20 rounded-xl px-4 py-3 text-white placeholder-white/20 focus:outline-none focus:border-purple-500 resize-none text-sm" })), /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("label", { className: "text-white/60 text-sm font-medium block mb-2" }, "Website / Newsletter Link"), /* @__PURE__ */ React.createElement("input", { value: author.website || "", onChange: (e) => setAuthor({ ...author, website: e.target.value }), placeholder: "https://yourwebsite.com", className: "w-full bg-white/10 border border-white/20 rounded-xl px-4 py-3 text-white placeholder-white/20 focus:outline-none focus:border-purple-500 text-sm" })), /* @__PURE__ */ React.createElement("button", { onClick: saveAuthor, className: `w-full py-3 rounded-xl font-semibold transition-all ${authorSaved ? "bg-green-500 text-white" : "bg-gradient-to-r from-purple-500 to-pink-500 text-white hover:opacity-90"}` }, authorSaved ? "\u2705 Saved!" : "Save Author Profile")), sTab === "build" && /* @__PURE__ */ React.createElement("div", { className: "space-y-5" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("h3", { className: "text-white font-bold text-lg mb-1" }, "\u{1F527} Build Settings"), /* @__PURE__ */ React.createElement("p", { className: "text-white/40 text-sm" }, "Control how auto-build handles quality gates.")), /* @__PURE__ */ React.createElement("div", { className: "bg-cyan-500/10 border border-cyan-500/20 rounded-xl p-4" }, /* @__PURE__ */ React.createElement("div", { className: "flex items-center justify-between gap-4" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("p", { className: "text-cyan-300 font-medium text-sm" }, "\u{1F9E0} Smart Model Selection"), /* @__PURE__ */ React.createElement("p", { className: "text-white/40 text-xs mt-1" }, "Auto-picks the best model for each task type \u2014 chapters use the flagship, metadata uses the fast model, translations use multilingual.")), /* @__PURE__ */ React.createElement("button", { onClick: () => {
+  }, disabled: testingConn, className: `w-full py-3 rounded-xl font-semibold transition-all mb-4 ${testingConn ? "bg-white/10 text-white/50" : testResult?.ok ? "bg-green-500/20 text-green-300 border border-green-500/30" : testResult ? "bg-red-500/20 text-red-300 border border-red-500/30" : "bg-gradient-to-r from-purple-500 to-pink-500 text-white hover:opacity-90"}` }, testingConn ? "\u23F3 Testing\u2026" : "\u{1F50C} Test Connection"), testResult && /* @__PURE__ */ React.createElement("div", { className: `mb-4 p-3 rounded-xl text-sm ${testResult.ok ? "bg-green-500/10 text-green-300" : "bg-red-500/10 text-red-300"}` }, testResult.msg)), getBackend() === "puter" && /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "bg-purple-500/10 border border-purple-500/20 rounded-xl p-4 mb-4" }, /* @__PURE__ */ React.createElement("p", { className: "text-purple-300 text-sm font-medium mb-1" }, "\u{1F381} Puter.js = Free, no API key!"), /* @__PURE__ */ React.createElement("p", { className: "text-white/40 text-xs leading-relaxed" }, "Access 400+ AI models (GPT-5.5, Claude Opus 5, Gemini 3.6, and more) for free. Uses Puter's user-pays model \u2014 your users cover their own AI costs via their Puter account. ", /* @__PURE__ */ React.createElement("a", { href: "https://puter.com", target: "_blank", rel: "noopener noreferrer", className: "text-purple-400 underline" }, "Create a free Puter account \u2192"))), /* @__PURE__ */ React.createElement("label", { className: "text-white/60 text-sm font-medium block mb-2" }, "Text Generation Model"), /* @__PURE__ */ React.createElement("select", { value: getPuterTextModel(), onChange: (e) => setPuterTextModel(e.target.value), className: "w-full bg-white/10 border border-white/20 rounded-xl px-4 py-3 text-white text-sm mb-2 focus:outline-none focus:border-purple-500" }, PUTER_TEXT_MODELS.map((m) => /* @__PURE__ */ React.createElement("option", { key: m.id, value: m.id, className: "bg-gray-800" }, m.label, " \u2014 ", m.desc))), /* @__PURE__ */ React.createElement("label", { className: "text-white/60 text-sm font-medium block mb-2 mt-4" }, "Cover Image Model"), /* @__PURE__ */ React.createElement("select", { value: getPuterImageModel(), onChange: (e) => setPuterImageModel(e.target.value), className: "w-full bg-white/10 border border-white/20 rounded-xl px-4 py-3 text-white text-sm mb-2 focus:outline-none focus:border-purple-500" }, PUTER_IMAGE_MODELS.map((m) => /* @__PURE__ */ React.createElement("option", { key: m.id, value: m.id, className: "bg-gray-800" }, m.label, " \u2014 ", m.desc))), /* @__PURE__ */ React.createElement("p", { className: "text-white/35 text-xs mt-3" }, "\u2139\uFE0F The first time you generate, a Puter login window may appear. Sign in once \u2014 it's free and stores nothing in BookForge.")), getBackend() === "groq" && /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "bg-orange-500/10 border border-orange-500/20 rounded-xl p-4 mb-4" }, /* @__PURE__ */ React.createElement("p", { className: "text-orange-300 text-sm font-medium mb-1" }, "\u26A1 Groq = Blazing Fast (500+ tokens/sec)"), /* @__PURE__ */ React.createElement("p", { className: "text-white/40 text-xs leading-relaxed" }, "Get a free API key from GroqCloud. Rate limits are generous \u2014 30 req/min, 14,400 req/day on the free tier. ", /* @__PURE__ */ React.createElement("a", { href: "https://console.groq.com/keys", target: "_blank", rel: "noopener noreferrer", className: "text-orange-400 underline" }, "Get a free Groq API key \u2192"))), /* @__PURE__ */ React.createElement("label", { className: "text-white/60 text-sm font-medium block mb-2" }, "Groq API Key"), /* @__PURE__ */ React.createElement("input", { type: "password", placeholder: "gsk_...", value: groqKeyDraft, onChange: (e) => setGroqKeyDraft(e.target.value), onKeyDown: (e) => e.key === "Enter" && saveGroqKey(), className: "w-full bg-white/10 border border-white/20 rounded-xl px-4 py-3 text-white placeholder-white/30 focus:outline-none focus:border-orange-500 mb-4 font-mono text-sm" }), /* @__PURE__ */ React.createElement("div", { className: "flex gap-2 mb-4" }, /* @__PURE__ */ React.createElement("button", { onClick: saveGroqKey, disabled: !groqKeyDraft.trim(), className: `flex-1 py-3 rounded-xl font-semibold transition-all ${groqKeySaved ? "bg-green-500 text-white" : "bg-gradient-to-r from-orange-500 to-pink-500 text-white hover:opacity-90 disabled:opacity-50"}` }, groqKeySaved ? "\u2705 Saved!" : "Save Groq Key")), /* @__PURE__ */ React.createElement("label", { className: "text-white/60 text-sm font-medium block mb-2" }, "Text Generation Model"), /* @__PURE__ */ React.createElement("select", { value: getGroqModel(), onChange: (e) => setGroqModel(e.target.value), className: "w-full bg-white/10 border border-white/20 rounded-xl px-4 py-3 text-white text-sm mb-2 focus:outline-none focus:border-orange-500" }, GROQ_MODELS.map((m) => /* @__PURE__ */ React.createElement("option", { key: m.id, value: m.id, className: "bg-gray-800" }, m.label, " \u2014 ", m.desc))), /* @__PURE__ */ React.createElement("p", { className: "text-white/35 text-xs mt-3" }, "\u2139\uFE0F Groq is text-only \u2014 cover images still use Pollinations.ai (free, no key)."))), sTab === "voice" && /* @__PURE__ */ React.createElement(VoiceTrainingPanel, { onClose }), sTab === "author" && /* @__PURE__ */ React.createElement("div", { className: "space-y-4" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("h3", { className: "text-white font-bold text-lg mb-1" }, "\u{1F464} Author Profile"), /* @__PURE__ */ React.createElement("p", { className: "text-white/40 text-sm" }, "Used for back-cover bio and author page.")), /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("label", { className: "text-white/60 text-sm font-medium block mb-2" }, "Author Name"), /* @__PURE__ */ React.createElement("input", { value: author.name || "", onChange: (e) => setAuthor({ ...author, name: e.target.value }), placeholder: "Your pen name or real name", className: "w-full bg-white/10 border border-white/20 rounded-xl px-4 py-3 text-white placeholder-white/20 focus:outline-none focus:border-purple-500 text-sm" })), /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("label", { className: "text-white/60 text-sm font-medium block mb-2" }, "Bio"), /* @__PURE__ */ React.createElement("textarea", { rows: 4, value: author.bio || "", onChange: (e) => setAuthor({ ...author, bio: e.target.value }), placeholder: "Your author bio \u2014 100-200 words works best", className: "w-full bg-white/10 border border-white/20 rounded-xl px-4 py-3 text-white placeholder-white/20 focus:outline-none focus:border-purple-500 resize-none text-sm" })), /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("label", { className: "text-white/60 text-sm font-medium block mb-2" }, "Website / Newsletter Link"), /* @__PURE__ */ React.createElement("input", { value: author.website || "", onChange: (e) => setAuthor({ ...author, website: e.target.value }), placeholder: "https://yourwebsite.com", className: "w-full bg-white/10 border border-white/20 rounded-xl px-4 py-3 text-white placeholder-white/20 focus:outline-none focus:border-purple-500 text-sm" })), /* @__PURE__ */ React.createElement("button", { onClick: saveAuthor, className: `w-full py-3 rounded-xl font-semibold transition-all ${authorSaved ? "bg-green-500 text-white" : "bg-gradient-to-r from-purple-500 to-pink-500 text-white hover:opacity-90"}` }, authorSaved ? "\u2705 Saved!" : "Save Author Profile")), sTab === "data" && /* @__PURE__ */ React.createElement(DataManagementPanel, null), sTab === "build" && /* @__PURE__ */ React.createElement("div", { className: "space-y-5" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("h3", { className: "text-white font-bold text-lg mb-1" }, "\u{1F527} Build Settings"), /* @__PURE__ */ React.createElement("p", { className: "text-white/40 text-sm" }, "Control how auto-build handles quality gates.")), /* @__PURE__ */ React.createElement("div", { className: "bg-cyan-500/10 border border-cyan-500/20 rounded-xl p-4" }, /* @__PURE__ */ React.createElement("div", { className: "flex items-center justify-between gap-4" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("p", { className: "text-cyan-300 font-medium text-sm" }, "\u{1F9E0} Smart Model Selection"), /* @__PURE__ */ React.createElement("p", { className: "text-white/40 text-xs mt-1" }, "Auto-picks the best model for each task type \u2014 chapters use the flagship, metadata uses the fast model, translations use multilingual.")), /* @__PURE__ */ React.createElement("button", { onClick: () => {
     setAutoModel(!getAutoModel());
   }, className: "w-12 h-6 rounded-full transition-colors shrink-0", style: { background: getAutoModel() ? "#06b6d4" : "rgba(255,255,255,0.1)" } }, /* @__PURE__ */ React.createElement("div", { className: "w-5 h-5 rounded-full bg-white transition-transform", style: { transform: getAutoModel() ? "translateX(24px)" : "translateX(2px)" } })))), /* @__PURE__ */ React.createElement("div", { className: "bg-white/5 border border-white/10 rounded-xl p-4" }, /* @__PURE__ */ React.createElement("div", { className: "flex items-center justify-between gap-4" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("p", { className: "text-white font-medium text-sm" }, "Auto-Correct on Gate Failure"), /* @__PURE__ */ React.createElement("p", { className: "text-white/40 text-xs mt-1" }, "When a quality gate fails at the end of auto-build, automatically apply AI suggestions and re-score. Disable if you prefer to review suggestions manually before applying.")), /* @__PURE__ */ React.createElement("button", { onClick: () => {
     const v = !autoCorrect;
@@ -5715,9 +5863,10 @@ ${chars.map((c) => `\u2022 ${c.name}: ${c.personality || ""} \u2014 Voice: ${c.v
     if (!file) return;
     try {
       const imported = await importBookJSON(file);
-      const books = JSON.parse(localStorage.getItem("bfai_books") || "[]");
+      const books = getBooks();
       books.unshift(imported);
-      localStorage.setItem("bfai_books", JSON.stringify(books));
+      setBooks(books);
+      await flushDB();
       alert('Imported "' + imported.title + '" successfully!');
       window.location.reload();
     } catch (err) {
@@ -6931,7 +7080,10 @@ if ("serviceWorker" in navigator) {
   navigator.serviceWorker.register(swUrl).catch(() => {
   });
 }
-createRoot(document.getElementById("root")).render(/* @__PURE__ */ React.createElement(ErrorBoundary, null, /* @__PURE__ */ React.createElement(App, null)));
+initStorage().catch(() => {
+}).finally(() => {
+  createRoot(document.getElementById("root")).render(/* @__PURE__ */ React.createElement(ErrorBoundary, null, /* @__PURE__ */ React.createElement(App, null)));
+});
 const MANGA_GENRES = [
   { id: "action-shonen", label: "\u2694\uFE0F Action Shonen", desc: "Power systems, rivals, training arcs. Demon Slayer / JJK energy.", color: "from-orange-500 to-red-500" },
   { id: "romance-manhwa", label: "\u{1F495} Romance Manhwa", desc: "CEO \xD7 commoner, enemies-to-lovers, second chances. #1 global genre.", color: "from-pink-500 to-rose-500" },
