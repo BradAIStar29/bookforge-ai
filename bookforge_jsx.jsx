@@ -1942,6 +1942,334 @@ function OCRImportButton({onImport}){
   );
 }
 
+
+// ── Book Trailer Generator (AI script + in-app animated player + optional Puter video) ──
+async function generateTrailerScript(book){
+  const raw=await callAI(
+    `You are a movie-trailer writer who also crafts book trailers. Create a cinematic book trailer script.\n\n`+
+    `Book: "${book.title}" ${book.subtitle?`— ${book.subtitle}`:""}\nGenre: ${book.genre}\nDescription: ${(book.description||"").slice(0,500)}\n`+
+    (book.seo_keywords?`Keywords: ${book.seo_keywords}\n`:"")+`\n`+
+    `Create 6-8 scenes. Each scene: punchy on-screen text (max 12 words) + voiceover narration line (max 20 words). End with a strong end card.\n\n`+
+    `Respond ONLY with valid JSON:\n`+
+    `{"tagline":"short punchy tagline","scenes":[{"on_screen_text":"","voiceover":""}],"end_card":{"on_screen_text":"","cta":""}}`,0.8
+  );
+  trackUsage();
+  const match=raw.match(/\{[\s\S]*\}/);
+  if(!match)throw{code:"PARSE",msg:"Couldn't parse trailer script."};
+  let script;try{script=JSON.parse(match[0]);}catch(pe){throw{code:"PARSE",msg:"AI returned malformed JSON — please retry."};}
+  if(!script.scenes||!Array.isArray(script.scenes)||script.scenes.length===0)throw{code:"PARSE",msg:"Trailer script missing scenes."};
+  return script;
+}
+
+function exportTrailerScript(book,script){
+  let txt=`BOOK TRAILER SCRIPT\n"${book.title}"\n${"=".repeat(40)}\n\nTAGLINE: ${script.tagline||""}\n\n`;
+  script.scenes.forEach((s,i)=>{
+    txt+=`SCENE ${i+1}\n`;
+    txt+=`  ON SCREEN: ${s.on_screen_text||""}\n`;
+    txt+=`  VOICEOVER: ${s.voiceover||""}\n\n`;
+  });
+  if(script.end_card){
+    txt+=`END CARD\n  ON SCREEN: ${script.end_card.on_screen_text||""}\n  CTA: ${script.end_card.cta||""}\n`;
+  }
+  txt+=`\n${"=".repeat(40)}\nTip: Use Audio Studio for professional voiceover. Free video tools: CapCut, Canva, Clipchamp.\n`;
+  const blob=new Blob([txt],{type:"text/plain"});
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement("a");
+  a.href=url;a.download=`${book.title.replace(/[^a-z0-9]+/gi,"_")}_trailer_script.txt`;a.click();
+  setTimeout(()=>URL.revokeObjectURL(url),3000);
+}
+
+async function puterTeaserClip(prompt){
+  if(typeof puter==="undefined")throw{code:"PUTER_NOT_LOADED",msg:"Puter.js not loaded"};
+  return await puter.ai.txt2vid(prompt);
+}
+
+function TrailerStudio({book,onClose}){
+  const [script,setScript]=React.useState(book.trailer_script||null);
+  const [generating,setGenerating]=React.useState(false);
+  const [playing,setPlaying]=React.useState(false);
+  const [sceneIdx,setSceneIdx]=React.useState(0);
+  const [ttsOn,setTtsOn]=React.useState(true);
+  const [vidLoading,setVidLoading]=React.useState(false);
+  const [vidUrl,setVidUrl]=React.useState(null);
+  const [error,setError]=React.useState("");
+  const timerRef=React.useRef(null);
+
+  const gen=async()=>{
+    if(!hasCredentials()){onClose();return;}
+    setGenerating(true);setError("");
+    try{
+      const s=await generateTrailerScript(book);
+      setScript(s);
+      updateBook(book.id,{trailer_script:s});
+    }catch(e){setError(errMsg(e));}
+    finally{setGenerating(false);}
+  };
+
+  const speak=text=>{
+    if(!ttsOn||!text)return;
+    try{
+      window.speechSynthesis.cancel();
+      const u=new SpeechSynthesisUtterance(text);
+      u.rate=1.0;u.pitch=0.95;
+      window.speechSynthesis.speak(u);
+    }catch(e){}
+  };
+
+  const stopPlay=()=>{
+    setPlaying(false);setSceneIdx(0);
+    if(timerRef.current)clearTimeout(timerRef.current);
+    try{window.speechSynthesis.cancel();}catch(e){}
+  };
+
+  const play=()=>{
+    if(!script)return;
+    setPlaying(true);setSceneIdx(0);
+    const stepThrough=(i)=>{
+      if(i>=(script.scenes||[]).length){speak(script.end_card?.voiceover||script.end_card?.on_screen_text||"");timerRef.current=setTimeout(()=>setPlaying(false),3500);return;}
+      setSceneIdx(i);
+      speak(script.scenes[i].voiceover);
+      timerRef.current=setTimeout(()=>stepThrough(i+1),3800);
+    };
+    stepThrough(0);
+  };
+
+  React.useEffect(()=>()=>{try{window.speechSynthesis.cancel();if(timerRef.current)clearTimeout(timerRef.current);}catch(e){}},[]);
+
+  const genTeaser=async()=>{
+    setVidLoading(true);setVidUrl(null);setError("");
+    try{
+      const prompt=`Cinematic book trailer scene, ${book.genre} atmosphere: ${script?.tagline||book.title}. Moody, dramatic lighting, no text.`;
+      const result=await puterTeaserClip(prompt);
+      const url=(typeof result==="string")?result:(result?.url||result?.src||result?.video?.url);
+      if(url)setVidUrl(url);else setError("Video generation returned no URL — try again.");
+    }catch(e){
+      setError(e?.msg||e?.message||(e?.code==="PUTER_NOT_LOADED"?"Puter.js not loaded — check connection":"Video generation failed (may require Puter account). Script + player still work free."));
+    }
+    finally{setVidLoading(false);}
+  };
+
+  const currentScene=script?.scenes?.[sceneIdx];
+  const endShowing=playing&&script&&!currentScene;
+
+  return(
+    <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+      <div className="bg-slate-800 border border-fuchsia-500/30 rounded-2xl max-w-2xl w-full max-h-[85vh] overflow-y-auto shadow-2xl">
+        <div className="sticky top-0 bg-slate-800 border-b border-white/10 px-6 py-4 flex items-center justify-between">
+          <div><h2 className="text-white font-bold text-lg">🎬 Book Trailer Studio</h2><p className="text-fuchsia-300 text-sm">{book.title}</p></div>
+          <button onClick={()=>{stopPlay();onClose();}} className="text-white/30 hover:text-white text-2xl">✕</button>
+        </div>
+        <div className="p-6 space-y-5">
+          {error&&<div className="bg-red-500/20 border border-red-500/30 text-red-300 rounded-xl p-3 text-sm">{error}</div>}
+
+          {!script&&!generating&&(
+            <div className="text-center py-8">
+              <p className="text-white/50 text-sm mb-4">Generate a cinematic trailer script — tagline, 6-8 scenes with on-screen text + voiceover, and an end card.</p>
+              <button onClick={gen} className="bg-gradient-to-r from-fuchsia-500 to-pink-500 text-white px-6 py-3 rounded-xl font-semibold hover:opacity-90">✨ Generate Trailer Script</button>
+            </div>
+          )}
+          {generating&&<div className="text-center py-8"><Spin size="h-8 w-8 mx-auto mb-3"/><p className="text-white/50 text-sm">Writing your trailer…</p></div>}
+
+          {script&&(
+            <>
+              {script.tagline&&<div className="bg-fuchsia-500/10 border border-fuchsia-500/30 rounded-xl p-4 text-center"><p className="text-white/25 text-xs uppercase tracking-wider mb-1">Tagline</p><p className="text-fuchsia-200 text-lg font-semibold italic">"{script.tagline}"</p></div>}
+
+              {/* Player */}
+              <div className="relative rounded-xl overflow-hidden border border-white/10 bg-black aspect-video flex items-center justify-center">
+                {book.cover_image_url&&!endShowing&&<img src={book.cover_image_url} alt="" className="absolute inset-0 w-full h-full object-cover opacity-30"/>}
+                <div className="relative z-10 text-center px-8">
+                  {endShowing?(
+                    <>
+                      <p className="text-white text-3xl font-bold drop-shadow-lg">{script.end_card?.on_screen_text||book.title}</p>
+                      {script.end_card?.cta&&<p className="text-fuchsia-300 text-lg mt-3">{script.end_card.cta}</p>}
+                    </>
+                  ):playing&&currentScene?(
+                    <>
+                      <p className="text-white text-2xl sm:text-3xl font-bold drop-shadow-lg animate-pulse">{currentScene.on_screen_text}</p>
+                      <p className="text-white/40 text-xs mt-4">Scene {sceneIdx+1} / {script.scenes.length}</p>
+                    </>
+                  ):(
+                    <div>
+                      <p className="text-white/30 text-sm mb-3">{script.scenes.length} scenes ready</p>
+                      <div className="flex gap-2 justify-center">
+                        <button onClick={play} className="bg-fuchsia-500 hover:bg-fuchsia-400 text-white px-5 py-2.5 rounded-lg font-semibold text-sm">▶ Play Trailer</button>
+                        <button onClick={()=>setTtsOn(!ttsOn)} className={`px-4 py-2.5 rounded-lg text-sm font-medium border ${ttsOn?"border-fuchsia-500/40 text-fuchsia-300":"border-white/20 text-white/40"}`}>{ttsOn?"🔊 Voice On":"🔇 Voice Off"}</button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+              {playing&&<button onClick={stopPlay} className="w-full text-white/40 text-xs hover:text-white py-1">⏹ Stop</button>}
+
+              {/* Scene list */}
+              <div className="space-y-2">
+                {script.scenes.map((s,i)=>(
+                  <div key={i} className="bg-white/5 border border-white/10 rounded-xl p-3">
+                    <div className="flex items-center gap-2 mb-1"><span className="w-5 h-5 bg-fuchsia-500/20 text-fuchsia-300 text-xs rounded-full flex items-center justify-center">{i+1}</span><p className="text-white font-semibold text-sm">{s.on_screen_text}</p></div>
+                    {s.voiceover&&<p className="text-white/40 text-xs italic ml-7">🎙 "{s.voiceover}"</p>}
+                  </div>
+                ))}
+                {script.end_card&&<div className="bg-gradient-to-r from-fuchsia-500/10 to-pink-500/10 border border-fuchsia-500/20 rounded-xl p-3"><p className="text-white/25 text-xs uppercase tracking-wider mb-1">End Card</p><p className="text-white font-semibold text-sm">{script.end_card.on_screen_text}</p>{script.end_card.cta&&<p className="text-fuchsia-300 text-xs mt-1">{script.end_card.cta}</p>}</div>}
+              </div>
+
+              {/* Actions */}
+              <div className="flex gap-2 flex-wrap">
+                <button onClick={exportTrailerScript.bind(null,book,script)} className="bg-white/10 border border-white/20 text-white/70 px-4 py-2 rounded-lg text-sm hover:bg-white/20">📄 Export Script (.txt)</button>
+                <button onClick={gen} disabled={generating} className="bg-white/10 border border-white/20 text-white/70 px-4 py-2 rounded-lg text-sm hover:bg-white/20 disabled:opacity-40">🔄 Regenerate</button>
+                <button onClick={genTeaser} disabled={vidLoading} className="bg-gradient-to-r from-violet-500 to-fuchsia-500 text-white px-4 py-2 rounded-lg text-sm font-semibold hover:opacity-90 disabled:opacity-40">{vidLoading?<><Spin size="h-3 w-3"/>Rendering…</>:"🎥 AI Video Teaser (Puter)"}</button>
+              </div>
+              {vidUrl&&<video src={vidUrl} controls className="w-full rounded-xl border border-white/10"/>}
+              <p className="text-white/20 text-xs">💡 Free ways to turn this into a real video: Canva, CapCut, or Clipchamp — paste the script + your cover + Audio Studio voiceover.</p>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
+// ── Series Continuity Checker (pure JS heuristic scan, no API needed) ──
+function nameSimilarity(a,b){
+  a=a.toLowerCase().trim();b=b.toLowerCase().trim();
+  if(a===b)return 1;
+  if(a.length<3||b.length<3)return 0;
+  // Levenshtein-lite: char overlap + length diff
+  let common=0;
+  const setB=new Set(b.split(""));
+  for(const ch of new Set(a.split("")))if(setB.has(ch))common++;
+  const uniq=new Set((a+b).split("")).size;
+  const overlap=common/uniq;
+  const lenDiff=Math.abs(a.length-b.length)/Math.max(a.length,b.length);
+  return overlap-lenDiff*0.3;
+}
+
+function checkSeriesContinuity(series){
+  const issues=[];
+  const warnings=[];
+  const ok=[];
+  const allBooks=getBooks().filter(b=>b.series_id===series.id);
+  const written=allBooks.filter(b=>b.chapters?.some(c=>c.content)).sort((a,b)=>(a.series_number||0)-(b.series_number||0));
+  const bookTexts=written.map(b=>({book:b,text:(b.chapters||[]).map(c=>c.content).join(" ")}));
+
+  // 1. Character roster consistency
+  const roster=series.character_roster||[];
+  const names=roster.map(c=>c.name).filter(Boolean);
+  for(let i=0;i<names.length;i++){
+    for(let j=i+1;j<names.length;j++){
+      const sim=nameSimilarity(names[i],names[j]);
+      if(sim>0.72&&names[i]!==names[j]){
+        issues.push({type:"Name",msg:`Possible duplicate character: "${names[i]}" and "${names[j]}" in roster — ${Math.round(sim*100)}% similar. Verify spelling.`});
+      }
+    }
+  }
+
+  // 2. Roster characters missing from written books
+  names.forEach(name=>{
+    const inBooks=bookTexts.filter(bt=>bt.text.toLowerCase().includes(name.toLowerCase().split(" ")[0]));
+    if(bookTexts.length>0&&inBooks.length===0){
+      warnings.push({type:"Character",msg:`"${name}" is in the roster but never appears in any written book ${bookTexts.length>1?"— did they get cut, or are the books unwritten yet? ":""}(of ${bookTexts.length} written).`});
+    }else if(inBooks.length>0&&inBooks.length<bookTexts.length&&bookTexts.length>1){
+      // Character vanishes between books — only flag for main-ish characters
+      const nums=inBooks.map(bt=>bt.book.series_number);
+      ok.push({type:"Character",msg:`"${name}" appears in book(s) ${nums.join(", ")} of ${written.map(b=>b.series_number).join(", ")} written.`});
+    }
+  });
+
+  // 3. Location consistency
+  (series.world_locations||[]).forEach(loc=>{
+    if(!loc.name)return;
+    const first=loc.name.toLowerCase().split(" ")[0];
+    if(bookTexts.length>0&&!bookTexts.some(bt=>bt.text.toLowerCase().includes(first))){
+      warnings.push({type:"Location",msg:`Location "${loc.name}" from the world bible never appears in any written book.`});
+    }
+  });
+
+  // 4. Series number gaps
+  const planned=series.plan?.books||[];
+  planned.forEach(bp=>{
+    const exists=allBooks.find(b=>b.series_number===bp.number);
+    if(!exists)issues.push({type:"Missing Book",msg:`Book ${bp.number} ("${bp.title}") is planned but hasn't been created yet.`});
+    else if(!exists.chapters?.some(c=>c.content)&&exists.status!=="published")warnings.push({type:"Unwritten",msg:`Book ${bp.number} ("${bp.title}") exists but has no written chapters.`});
+  });
+
+  // 5. Word count outliers across written books
+  if(written.length>=2){
+    const counts=written.map(b=>b.word_count||0);
+    const nonZero=counts.filter(c=>c>0);
+    if(nonZero.length>=2){
+      const avg=nonZero.reduce((a,b)=>a+b,0)/nonZero.length;
+      written.forEach(b=>{
+        const wc=b.word_count||0;
+        if(wc>0&&wc<avg*0.5)warnings.push({type:"Pacing",msg:`Book ${b.series_number} ("${b.title}") is ${wc.toLocaleString()} words — half the series average (${Math.round(avg).toLocaleString()}). Readers may feel shortchanged.`});
+        if(wc>avg*1.8)warnings.push({type:"Pacing",msg:`Book ${b.series_number} ("${b.title}") is ${wc.toLocaleString()} words — nearly double the series average (${Math.round(avg).toLocaleString()}).`});
+      });
+    }
+  }
+
+  // 6. Genre consistency
+  const genres=new Set(written.map(b=>b.genre));
+  if(genres.size>1)warnings.push({type:"Genre",msg:`Books in this series have different genres: ${[...genres].join(", ")} — fine if intentional (e.g. romantic suspense), confusing if not.`});
+
+  // 7. Plot events referencing nonexistent books
+  (series.plot_events||[]).forEach(ev=>{
+    const ref=ev.book;
+    if(ref&&!planned.some(bp=>String(bp.number)===String(ref))&&!allBooks.some(b=>String(b.series_number)===String(ref))){
+      warnings.push({type:"Timeline",msg:`Plot event references book ${ref} but no book ${ref} exists in the plan.`});
+    }
+  });
+
+  // Score: start at 100, -8 per issue, -3 per warning
+  const score=Math.max(0,100-issues.length*8-warnings.length*3);
+  return{issues,warnings,ok,score,writtenCount:written.length,totalPlanned:planned.length||series.book_count};
+}
+
+function SeriesContinuityModal({series,onClose}){
+  const [result,setResult]=React.useState(null);
+  React.useEffect(()=>{setResult(checkSeriesContinuity(series));},[series.id]);
+  if(!result)return null;
+  const scoreColor=result.score>=85?"text-green-400":result.score>=60?"text-amber-400":"text-red-400";
+  return(
+    <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+      <div className="bg-slate-800 border border-cyan-500/30 rounded-2xl max-w-2xl w-full max-h-[85vh] overflow-y-auto shadow-2xl">
+        <div className="sticky top-0 bg-slate-800 border-b border-white/10 px-6 py-4 flex items-center justify-between">
+          <div><h2 className="text-white font-bold text-lg">🔍 Continuity Check</h2><p className="text-cyan-300 text-sm">{series.name}</p></div>
+          <button onClick={onClose} className="text-white/30 hover:text-white text-2xl">✕</button>
+        </div>
+        <div className="p-6 space-y-5">
+          <div className="bg-white/5 rounded-xl p-4 flex items-center justify-between">
+            <div>
+              <p className="text-white/40 text-xs uppercase tracking-wider">Continuity Score</p>
+              <p className={`text-3xl font-bold ${scoreColor}`}>{result.score}<span className="text-white/20 text-lg">/100</span></p>
+            </div>
+            <div className="text-right text-xs text-white/40">
+              <p>{result.writtenCount} of {result.totalPlanned} books written</p>
+              <p className="mt-1">{result.issues.length} issues · {result.warnings.length} warnings</p>
+            </div>
+          </div>
+
+          {result.issues.length>0&&(
+            <div>
+              <h3 className="text-red-300 text-sm font-bold mb-2">❌ Issues ({result.issues.length})</h3>
+              <div className="space-y-2">{result.issues.map((iss,i)=><div key={i} className="bg-red-500/10 border border-red-500/30 rounded-lg p-3"><span className="text-red-400 text-xs font-bold uppercase">{iss.type}</span><p className="text-white/70 text-sm mt-0.5">{iss.msg}</p></div>)}</div>
+            </div>
+          )}
+          {result.warnings.length>0&&(
+            <div>
+              <h3 className="text-amber-300 text-sm font-bold mb-2">⚠️ Warnings ({result.warnings.length})</h3>
+              <div className="space-y-2">{result.warnings.map((w,i)=><div key={i} className="bg-amber-500/10 border border-amber-500/30 rounded-lg p-3"><span className="text-amber-400 text-xs font-bold uppercase">{w.type}</span><p className="text-white/70 text-sm mt-0.5">{w.msg}</p></div>)}</div>
+            </div>
+          )}
+          {result.issues.length===0&&result.warnings.length===0&&(
+            <div className="bg-green-500/10 border border-green-500/30 rounded-xl p-4 text-center"><p className="text-green-300 font-bold">✅ No continuity problems found!</p><p className="text-white/40 text-xs mt-1">Roster names are unique, planned books exist, pacing is consistent.</p></div>
+          )}
+          <p className="text-white/20 text-xs">Runs instantly with no API calls. Re-check after writing more books in the series.</p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function SettingsModal({onClose}){
   const [draft,setDraft]=useState(getKey());
   const [saved,setSaved]=useState(false);
@@ -3498,6 +3826,7 @@ function SeriesPage({navigate,onSettings}){
   const [loading,setLoading]=useState(false);
   const [loadStep,setLoadStep]=useState("");
   const [error,setError]=useState("");
+  const [continuityId,setContinuity]=useState(null);
 
   const reload=()=>{const s=getSeries();setSeriesList(s);};
 
@@ -3576,8 +3905,11 @@ function SeriesPage({navigate,onSettings}){
 
   const bibleSeries=viewBible?seriesList.find(s=>s.id===viewBible):null;
 
+  const continuitySeries=continuityId?seriesList.find(s=>s.id===continuityId):null;
+
   return(
     <div className="max-w-7xl mx-auto px-4 sm:px-6 py-8">
+      {continuitySeries&&<SeriesContinuityModal series={continuitySeries} onClose={()=>setContinuity(null)}/>}
       {/* World Bible Modal */}
       {bibleSeries&&(
         <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
@@ -3671,6 +4003,7 @@ function SeriesPage({navigate,onSettings}){
                   </div>
                   <div className="flex items-center gap-2 shrink-0">
                     <button onClick={()=>setViewBible(series.id)} className="text-xs border border-cyan-500/40 text-cyan-300 px-3 py-2 rounded-lg hover:bg-cyan-500/10">📖 View Bible</button>
+                    <button onClick={()=>setContinuity(series.id)} className="text-xs border border-emerald-500/40 text-emerald-300 px-3 py-2 rounded-lg hover:bg-emerald-500/10">🔍 Continuity</button>
                     <button onClick={e=>deleteSeries(series.id,e)} className="text-white/20 hover:text-red-400 text-sm px-2">🗑</button>
                   </div>
                 </div>
@@ -4351,6 +4684,7 @@ function EditorPage({bookId,navigate,onSettings}){
   const [lastAiPrompt,setLastAiPrompt]=useState("");
   const buildRef=useRef(false);
   const TABS=["📋 Outline","✍️ Chapters","🎨 Cover","🔍 SEO","🤖 Review","🔎 Market","🪝 Hooks","📊 Quality","✍️ Writing","👥 Characters","📤 Publish","🌍 Translate","🎙️ Audio Studio","📦 Amazon KDP"];
+  const [showTrailer,setShowTrailer]=useState(false);
 
   useEffect(()=>{
     const onKey=(e)=>{
@@ -4921,6 +5255,7 @@ const genCover=async()=>{if(quotaHit||isBuilding)return;setBusy(true);setError("
 
   return(
     <div>
+      {showTrailer&&<TrailerStudio book={book} onClose={()=>setShowTrailer(false)}/>}
       <div className="border-b border-white/10 bg-black/10">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 flex gap-1 overflow-x-auto">
           {TABS.map((t,i)=>(
@@ -5113,6 +5448,7 @@ const genCover=async()=>{if(quotaHit||isBuilding)return;setBusy(true);setError("
               <button onClick={()=>download("audio")} className="bg-gradient-to-r from-green-500 to-emerald-500 text-white py-3 rounded-xl font-semibold hover:opacity-90 flex items-center justify-center gap-2 text-sm">🎙️ Audiobook Script</button>
               <button onClick={()=>{const ch=book.chapters?.find(c=>c.content);if(!ch){alert("Write a chapter first.");return;}const u=window.speechSynthesis;if(u.speaking){u.cancel();flash("⏹ Stopped");return;}const utt=new SpeechSynthesisUtterance(ch.content.replace(/[#*_`]/g,"").slice(0,2000));utt.rate=0.92;utt.pitch=1.0;const voices=u.getVoices();const eng=voices.find(v=>v.lang.startsWith("en")&&!v.name.includes("Google"));if(eng)utt.voice=eng;u.speak(utt);flash("🔊 Reading Ch.1 preview — click again to stop");}} className="bg-white/5 border border-white/10 text-white/60 py-3 rounded-xl font-semibold hover:bg-white/10 flex items-center justify-center gap-2 text-sm">🔊 Listen Preview</button><button onClick={()=>downloadPDF(book)} className="bg-gradient-to-r from-red-500 to-rose-500 text-white py-3 rounded-xl font-semibold hover:opacity-90 flex items-center justify-center gap-2 text-sm">📄 Print PDF</button>
               <button onClick={()=>{const sel=prompt("Choose trim size:\n\n6x9 (most common)\\n5x8 (compact)\\n5.25x8 (mass market)\\n5.5x8.5 (digest)\\n7x10 (textbook)\\n8.5x11 (workbook)\\n\\nType the size code (e.g. 6x9):","6x9");if(sel)generateKDPInterior(book,sel.trim());}} className="bg-gradient-to-r from-amber-500 to-orange-600 text-white py-3 rounded-xl font-semibold hover:opacity-90 flex items-center justify-center gap-2 text-sm">📖 KDP Paperback Interior ⭐ NEW</button>
+              <button onClick={()=>setShowTrailer(true)} className="bg-gradient-to-r from-fuchsia-500 to-purple-600 text-white py-3 rounded-xl font-semibold hover:opacity-90 flex items-center justify-center gap-2 text-sm">🎬 Book Trailer ⭐ NEW</button>
             </div>
             <div className="mt-4 bg-blue-500/10 border border-blue-500/20 rounded-xl p-4 text-xs text-white/50 space-y-2">
               <p className="text-white/70 font-semibold text-sm">📖 Where to publish your .epub</p>
