@@ -1706,6 +1706,242 @@ function VoiceDictationButton({onTranscript,disabled}){
   },recording?"⏹ Stop dictation":"🎤 Dictate");
 }
 
+
+// ── Full Library Backup & Restore (pure client-side, no API) ──
+function exportLibraryBackup(){
+  try{
+    const backup={
+      version:2,
+      exported_at:new Date().toISOString(),
+      app:"BookForge AI",
+      books:JSON.parse(localStorage.getItem("books")||"[]"),
+      settings:{
+        author_profile:localStorage.getItem("author_profile"),
+        voice_fingerprint:localStorage.getItem("voice_fingerprint"),
+        backend:localStorage.getItem("bfai_backend"),
+        model:localStorage.getItem("bfai_model"),
+        cerebras_key:localStorage.getItem("cerebras_key"),
+        cloudflare_account:localStorage.getItem("cf_account_id"),
+        cloudflare_token:localStorage.getItem("cf_api_token"),
+        language:localStorage.getItem("bfai_language"),
+        series:localStorage.getItem("bfai_series"),
+        characters:localStorage.getItem("bfai_characters"),
+        usage:localStorage.getItem("bfai_usage"),
+        manga_projects:localStorage.getItem("bfai_manga")
+      }
+    };
+    const blob=new Blob([JSON.stringify(backup,null,2)],{type:"application/json"});
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement("a");
+    a.href=url;
+    a.download=`bookforge_backup_${new Date().toISOString().split("T")[0]}.json`;
+    a.click();
+    setTimeout(()=>URL.revokeObjectURL(url),3000);
+    return true;
+  }catch(e){
+    console.warn("Backup failed:",e);
+    return false;
+  }
+}
+
+function importLibraryBackup(file){
+  return new Promise((resolve,reject)=>{
+    const reader=new FileReader();
+    reader.onload=()=>{
+      try{
+        const backup=JSON.parse(reader.result);
+        if(!backup.books||!Array.isArray(backup.books)){
+          reject(new Error("Invalid backup file — no books found"));
+          return;
+        }
+        // Merge: keep existing books, add backup books that don't exist by ID
+        const existing=JSON.parse(localStorage.getItem("books")||"[]");
+        const existingIds=new Set(existing.map(b=>b.id));
+        const newBooks=backup.books.filter(b=>!existingIds.has(b.id));
+        // Restore settings (don't overwrite if user already has them)
+        if(backup.settings){
+          Object.entries(backup.settings).forEach(([key,val])=>{
+            if(val&&!localStorage.getItem(key))localStorage.setItem(key,val);
+          });
+        }
+        if(newBooks.length>0){
+          localStorage.setItem("books",JSON.stringify([...existing,...newBooks]));
+        }
+        resolve({added:newBooks.length,skipped:backup.books.length-newBooks.length,total:existing.length+newBooks.length});
+      }catch(e){
+        reject(new Error("Could not parse backup file: "+e.message));
+      }
+    };
+    reader.onerror=()=>reject(new Error("Could not read file"));
+    reader.readAsText(file);
+  });
+}
+
+
+// ── Vocabulary Richness Analyzer (pure client-side, no API) ──
+function analyzeVocabulary(book){
+  const chaps=(book.chapters||[]).filter(c=>c.content);
+  if(chaps.length===0)return null;
+  const allText=chaps.map(c=>c.content).join(" ").toLowerCase();
+  const words=allText.match(/[a-z']+/g)||[];
+  const totalWords=words.length;
+  const uniqueWords=new Set(words).size;
+  const typeTokenRatio=totalWords>0?Math.round((uniqueWords/totalWords)*1000)/1000:0;
+  
+  // Word length distribution
+  const wordLens=words.map(w=>w.length);
+  const avgWordLen=wordLens.length>0?Math.round((wordLens.reduce((a,b)=>a+b,0)/wordLens.length)*100)/100:0;
+  
+  // Top 20 most-used words (excluding common stop words)
+  const stopWords=new Set(["the","a","an","and","or","but","in","on","at","to","for","of","with","by","from","up","about","into","over","after","is","was","are","were","be","been","being","have","has","had","do","does","did","will","would","could","should","may","might","must","can","this","that","these","those","i","you","he","she","it","we","they","him","her","them","his","hers","its","their","our","your","my","me","us","who","whom","which","what","where","when","why","how","all","each","every","both","few","more","most","other","some","such","no","nor","not","only","own","same","so","than","too","very","s","t","just","don","now","as","if","then","because","while","during","before","after","above","below","again","further","once","here","there","when"]);
+  const freq={};
+  words.forEach(w=>{if(!stopWords.has(w)&&w.length>2){freq[w]=(freq[w]||0)+1;}});
+  const topWords=Object.entries(freq).sort((a,b)=>b[1]-a[1]).slice(0,20);
+  
+  // Adverb density (words ending in -ly)
+  const adverbs=words.filter(w=>w.endsWith("ly")&&w.length>4).length;
+  const adverbDensity=totalWords>0?Math.round((adverbs/totalWords)*10000)/100:0;
+  
+  // Dialogue ratio (text in quotes)
+  const dialogueMatches=allText.match(/[""][^""]*[""]|[''][^'']*['']/g)||[];
+  const dialogueWords=dialogueMatches.reduce((sum,d)=>sum+d.split(/\s+/).length,0);
+  const dialogueRatio=totalWords>0?Math.round((dialogueWords/totalWords)*100):0;
+  
+  return{
+    totalWords,uniqueWords,typeTokenRatio,avgWordLen,topWords,
+    adverbs,adverbDensity,dialogueRatio,
+    vocabularyLabel:typeTokenRatio>0.15?"Rich vocabulary":typeTokenRatio>0.08?"Moderate vocabulary":"Repetitive vocabulary"
+  };
+}
+
+function VocabularyAnalyzer({book}){
+  const [analysis,setAnalysis]=React.useState(null);
+  const [show,setShow]=React.useState(false);
+  
+  if(!show)return React.createElement("button",{
+    onClick:()=>{setAnalysis(analyzeVocabulary(book));setShow(true);},
+    className:"text-xs bg-blue-500/20 text-blue-300 border border-blue-500/30 px-3 py-1.5 rounded-lg hover:bg-blue-500/30"
+  },"📚 Vocabulary Analysis");
+  
+  if(!analysis)return React.createElement("div",{className:"text-white/30 text-xs"},"Analyzing…");
+  
+  const barColor=analysis.typeTokenRatio>0.15?"#10b981":analysis.typeTokenRatio>0.08?"#f59e0b":"#ef4444";
+  const barPct=Math.min(analysis.typeTokenRatio*400,100);
+  
+  return React.createElement("div",{className:"bg-white/5 rounded-xl p-4 border border-white/10 space-y-4"},
+    React.createElement("div",{className:"flex items-center justify-between"},
+      React.createElement("h3",{className:"text-white font-bold text-sm"},"📚 Vocabulary Analysis"),
+      React.createElement("button",{onClick:()=>setShow(false),className:"text-white/30 hover:text-white text-xs"},"✕ Close")
+    ),
+    React.createElement("div",{className:"grid grid-cols-2 sm:grid-cols-4 gap-3"},
+      React.createElement("div",{className:"bg-white/5 rounded-lg p-3 text-center"},
+        React.createElement("div",{className:"text-xl font-bold text-white"},analysis.totalWords.toLocaleString()),
+        React.createElement("div",{className:"text-white/30 text-xs"},"Total Words")
+      ),
+      React.createElement("div",{className:"bg-white/5 rounded-lg p-3 text-center"},
+        React.createElement("div",{className:"text-xl font-bold text-white"},analysis.uniqueWords.toLocaleString()),
+        React.createElement("div",{className:"text-white/30 text-xs"},"Unique Words")
+      ),
+      React.createElement("div",{className:"bg-white/5 rounded-lg p-3 text-center"},
+        React.createElement("div",{className:"text-xl font-bold",style:{color:barColor}},analysis.typeTokenRatio),
+        React.createElement("div",{className:"text-white/30 text-xs"},"Diversity (TTR)")
+      ),
+      React.createElement("div",{className:"bg-white/5 rounded-lg p-3 text-center"},
+        React.createElement("div",{className:"text-xl font-bold text-white"},analysis.dialogueRatio+"%"),
+        React.createElement("div",{className:"text-white/30 text-xs"},"Dialogue")
+      )
+    ),
+    React.createElement("div",null,
+      React.createElement("div",{className:"flex justify-between text-xs mb-1"},
+        React.createElement("span",{className:"text-white/40"},"Vocabulary richness"),
+        React.createElement("span",{className:"text-white/70"},analysis.vocabularyLabel)
+      ),
+      React.createElement("div",{className:"h-2 bg-white/5 rounded-full overflow-hidden"},
+        React.createElement("div",{className:"h-full rounded-full transition-all",style:{width:barPct+"%",background:barColor}})
+      )
+    ),
+    analysis.topWords.length>0&&React.createElement("div",null,
+      React.createElement("p",{className:"text-white/50 text-xs mb-2"},"Most-used words (excluding common words):"),
+      React.createElement("div",{className:"flex flex-wrap gap-1.5"},
+        analysis.topWords.map(([word,count])=>React.createElement("span",{
+          key:word,
+          className:"text-xs px-2 py-1 rounded-md",
+          style:{background:"rgba(168,85,247,"+Math.min(0.1+count/50,0.5)+")",color:"#e9d5ff"}
+        },word+" ("+count+")"))
+      )
+    ),
+    analysis.adverbDensity>2&&React.createElement("div",{className:"text-amber-300/70 text-xs bg-amber-500/10 border border-amber-500/20 rounded-lg p-2"},
+      "⚠️ High adverb density (",analysis.adverbDensity,"%) — consider replacing '-ly' adverbs with stronger verbs. ",analysis.adverbs," adverbs found.")
+  );
+}
+
+
+// ── Puter.js OCR — Import text from photo of physical draft ──
+async function puterOCR(imageFileOrUrl){
+  if(typeof puter==="undefined")throw{code:"PUTER_NOT_LOADED",msg:"Puter.js not loaded — check internet connection"};
+  const result=await puter.ai.img2txt(imageFileOrUrl);
+  return typeof result==="string"?result:(result?.text||"");
+}
+
+function OCRImportButton({onImport}){
+  const [scanning,setScanning]=React.useState(false);
+  const [error,setError]=React.useState(null);
+  const fileInputRef=React.useRef(null);
+  
+  const handleFile=async(file)=>{
+    if(!file)return;
+    setError(null);
+    setScanning(true);
+    try{
+      // Downscale image to <10MB if needed (Puter limit)
+      let imageToProcess=file;
+      if(file.size>9*1024*1024){
+        const img=await new Promise((res,rej)=>{
+          const url=URL.createObjectURL(file);
+          const image=new Image();
+          image.onload=()=>{res(image);URL.revokeObjectURL(url);};
+          image.onerror=rej;
+          image.src=url;
+        });
+        const canvas=document.createElement("canvas");
+        const scale=Math.min(1,2000/Math.max(img.width,img.height));
+        canvas.width=img.width*scale;canvas.height=img.height*scale;
+        canvas.getContext("2d").drawImage(img,0,0,canvas.width,canvas.height);
+        const blob=await new Promise(res=>canvas.toBlob(res,"image/jpeg",0.85));
+        imageToProcess=new File([blob],file.name,{type:"image/jpeg"});
+      }
+      const text=await puterOCR(imageToProcess);
+      if(text&&text.trim().length>10){
+        onImport(text.trim());
+      }else{
+        setError("No readable text found in image. Try a clearer photo.");
+      }
+    }catch(e){
+      console.warn("OCR failed:",e);
+      setError(e?.msg||"OCR failed — try again or use manual paste instead.");
+    }finally{
+      setScanning(false);
+      if(fileInputRef.current)fileInputRef.current.value="";
+    }
+  };
+  
+  return React.createElement("div",null,
+    React.createElement("input",{
+      ref:fileInputRef,
+      type:"file",
+      accept:"image/*",
+      style:{display:"none"},
+      onChange:e=>{if(e.target.files?.[0])handleFile(e.target.files[0]);}
+    }),
+    React.createElement("button",{
+      onClick:()=>fileInputRef.current?.click(),
+      disabled:scanning,
+      className:"text-xs bg-cyan-500/20 text-cyan-300 border border-cyan-500/30 px-3 py-2 rounded-lg hover:bg-cyan-500/30 disabled:opacity-40 flex items-center gap-2"
+    },scanning?"⏳ Scanning…":"📷 Import from Photo"),
+    error&&React.createElement("p",{className:"text-red-400/70 text-xs mt-2"},error)
+  );
+}
+
 function SettingsModal({onClose}){
   const [draft,setDraft]=useState(getKey());
   const [saved,setSaved]=useState(false);
@@ -2366,6 +2602,8 @@ function WritingQualityPanel({book,onSettings,onApply}){
   const [activeTab, setActiveTab] = useState("manuscript");
   const [owAnalysis, setOwAnalysis] = useState(null);
   const [owAnalyzing, setOwAnalyzing] = useState(false);
+  const [aiResults, setAiResults] = useState(null);
+  const [aiScanning, setAiScanning] = useState(false);
 
   function flashWQ(msg){setWqFlash(msg);setTimeout(()=>setWqFlash(""),5000);}
 
@@ -2498,7 +2736,7 @@ function WritingQualityPanel({book,onSettings,onApply}){
 
       {/* Sub-tabs */}
       <div className="bg-white/5 border border-white/10 rounded-xl p-1 flex gap-1 flex-wrap">
-        {[["manuscript","📄 Manuscript Check"],["chapters","📑 Chapter-by-Chapter"],["overused","🔍 Overused Words"],["aidetect","🤖 AI Detection"]].map(([id,label])=>(
+        {[["manuscript","📄 Manuscript Check"],["chapters","📑 Chapter-by-Chapter"],["overused","🔍 Overused Words"],["aidetect","🤖 AI Detection"],["vocab","📚 Vocabulary"]].map(([id,label])=>(
           <button key={id} onClick={()=>setActiveTab(id)} className={`flex-1 py-2.5 rounded-lg text-sm font-medium transition-all ${activeTab===id?"bg-purple-500 text-white":"text-white/40 hover:text-white"}`}>{label}</button>
         ))}
       </div>
@@ -2629,6 +2867,51 @@ function WritingQualityPanel({book,onSettings,onApply}){
           </div>
         );
       })()}
+
+      {/* AI DETECTION TAB */}
+      {activeTab==="aidetect"&&(()=>{
+        const run=()=>{
+          const chaps=(book.chapters||[]).filter(c=>c.content);
+          const results=chaps.map(c=>detectAIContent(c.content));
+          const avgScore=results.length>0?Math.round(results.reduce((s,r)=>s+r.score,0)/results.length):0;
+          return{results,avgScore};
+        };
+        return(
+          <div className="space-y-4">
+            <div className="flex items-center justify-between">
+              <p className="text-white/40 text-sm">Scans each chapter for 7 AI writing patterns and sentence uniformity. Instant — no API call needed. Lower scores = more human-sounding.</p>
+              <button onClick={()=>{setAiScanning(true);setTimeout(()=>{setAiResults(run());setAiScanning(false);},100);}} disabled={aiScanning||!((book.chapters||[]).some(c=>c.content))} className="text-xs bg-purple-500/20 text-purple-300 border border-purple-500/30 px-4 py-2 rounded-lg hover:bg-purple-500/30 disabled:opacity-40 flex items-center gap-1.5 shrink-0">{aiScanning?<><Spin size="h-3 w-3"/>Scanning…</>:"🤖 Scan for AI Patterns"}</button>
+            </div>
+            {aiResults&&(
+              <div className="bg-white/5 border border-white/10 rounded-xl p-4 mb-4">
+                <div className="flex items-center justify-between">
+                  <p className="text-white/40 text-xs uppercase tracking-wider">Average AI Detection Risk</p>
+                  <span className={`text-2xl font-bold ${aiResults.avgScore<30?"text-green-400":aiResults.avgScore<60?"text-amber-400":"text-red-400"}`}>{aiResults.avgScore}/100</span>
+                </div>
+                <p className="text-white/30 text-xs mt-1">{aiResults.avgScore<30?"✅ Low risk — reads human across the manuscript":aiResults.avgScore<60?"⚠️ Moderate risk — some chapters need attention":"❌ High risk — several chapters trigger AI detection patterns"}</p>
+              </div>
+            )}
+            {aiResults&&aiResults.results.map((r,i)=>(
+              <div key={i} className="bg-white/5 border border-white/10 rounded-xl p-4">
+                <div className="flex items-center justify-between mb-2">
+                  <p className="text-white/70 text-sm font-medium">Ch. {book.chapters?.[i]?.number}: {book.chapters?.[i]?.title?.slice(0,40)}</p>
+                  <span className={`text-lg font-bold shrink-0 ml-3 ${r.score<30?"text-green-400":r.score<60?"text-amber-400":"text-red-400"}`}>{r.score}/100</span>
+                </div>
+                <div className="flex flex-wrap gap-2 mb-2">
+                  <span className="text-xs text-white/40">Sentence variance: <span className={r.sentenceVariance<0.4?"text-red-400":r.sentenceVariance<0.6?"text-amber-400":"text-green-400"}>{Math.round(r.sentenceVariance*100)}%</span></span>
+                </div>
+                {r.issues.length>0?(
+                  <div className="space-y-1.5">{r.issues.slice(0,4).map((issue,j)=><div key={j} className="text-xs bg-black/20 rounded-lg px-3 py-2 text-white/60"><span className={issue.severity==="high"?"text-red-400":issue.severity==="medium"?"text-amber-400":"text-white/40"}>●</span> <span className="text-white/50 font-medium">{issue.label}:</span> {issue.count} found — {issue.desc}</div>)}</div>
+                ):<p className="text-green-300/60 text-xs">✅ No AI patterns detected</p>}
+              </div>
+            ))}
+            {!aiResults&&!aiScanning&&<p className="text-white/20 text-sm text-center py-8">Click "Scan for AI Patterns" to check your manuscript against common AI writing patterns.</p>}
+          </div>
+        );
+      })()}
+
+      {/* VOCABULARY TAB */}
+      {activeTab==="vocab"&&<VocabularyAnalyzer book={book}/>}
     </div>
   );
 }
