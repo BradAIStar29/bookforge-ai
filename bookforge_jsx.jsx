@@ -1651,7 +1651,7 @@ function Header({onBack,title,subtitle,onSettings,onTour,activeTab,setActiveTab}
             </div>
           )}
           {qLen>0&&<div className="bg-cyan-500/20 border border-cyan-500/30 text-cyan-300 text-xs px-2.5 py-1.5 rounded-lg">⏳ Queue: {qLen}</div>}
-          <button onClick={onSettings} aria-label="Settings" data-close-btn="true" className={`text-xs px-3 py-1.5 rounded-lg border transition-all ${hasCredentials()?"border-white/20 text-white/50 hover:border-white/40":"border-red-500/50 text-red-400 bg-red-500/10 pulse-a"}`}>{hasCredentials()?"⚙️ Settings":"⚠️ Set API Key"}</button>
+          <button onClick={onSettings} aria-label="Settings" data-close-btn="true" className="text-xs px-3 py-1.5 rounded-lg border border-white/20 text-white/50 hover:border-white/40 transition-all">⚙️ Settings</button>
           {onTour&&<button onClick={onTour} title="Page tour — learn how to use this page" className="text-xs px-3 py-1.5 rounded-lg border border-purple-500/40 text-purple-300/70 hover:bg-purple-500/20 transition-all" id="tour-btn">❓ Tour</button>}
         </div>
       </div>
@@ -2531,7 +2531,7 @@ function VoiceTrainingPanel({onClose}){
   const [saved,setSaved]=useState(false);
 
   const analyze=async()=>{
-    if(!hasCredentials()){setError("Set your API key or enable Puter/Groq in Settings first.");return;}
+    if(!hasCredentials()){setError("No AI backend configured — open Settings to pick one (Kilo Code needs no key!).");return;}
     if(!sample.trim()||sample.length<200){setError("Paste at least 200 characters of your writing.");return;}
     setLoading(true);setError("");
     try{
@@ -6116,10 +6116,16 @@ function App(){
   const [homeTab,setHomeTab]=useState("library");
   const [retryToasts,setRetryToasts]=useState([]);
   const [readingMode,setReadingMode]=useState(false);
+  const [showWelcome,setShowWelcome]=useState(false);
   useEffect(()=>{migrateBooks();
     // Hide loading screen once React has mounted
     const el=document.getElementById("loading");
     if(el){el.classList.add("hidden");setTimeout(()=>{el.style.display="none";},500);}
+    // First-run welcome for zero-config backends (Kilo Code)
+    if(!localStorage.getItem("bfai_visited")){
+      localStorage.setItem("bfai_visited","1");
+      if(getBackend()==="kilo")setShowWelcome(true);
+    }
   },[]);
   // Keyboard shortcuts
   useEffect(()=>{
@@ -6154,6 +6160,22 @@ function App(){
     <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900">
       {/* Offline indicator */}
       {typeof navigator!=="undefined"&&!navigator.onLine&&<div className="bg-amber-500/15 border-b border-amber-500/30 px-4 py-1.5 text-center text-amber-300 text-xs font-medium">📡 You're offline — BookForge works in offline mode, but AI generation needs internet.</div>}
+      {/* First-run welcome banner for zero-config backends */}
+      {showWelcome&&(
+        <div className="bg-green-500/10 border-b border-green-500/20 px-4 py-3 flex items-center justify-between gap-4">
+          <div className="flex items-center gap-3">
+            <span className="text-2xl">🎉</span>
+            <div>
+              <p className="text-green-300 text-sm font-semibold">You're ready to go! No setup needed.</p>
+              <p className="text-white/40 text-xs mt-0.5">BookForge is using <strong className="text-green-400/70">Kilo Code</strong> — a free AI engine with no API key required. Just start creating! Want more power? Switch to Cerebras (1M tok/day) or Groq in Settings.</p>
+            </div>
+          </div>
+          <div className="flex gap-2 shrink-0">
+            <button onClick={()=>setShowSettings(true)} className="text-xs px-3 py-1.5 rounded-lg bg-green-500/20 text-green-300 border border-green-500/30 hover:bg-green-500/30 transition-all">⚙️ Settings</button>
+            <button onClick={()=>setShowWelcome(false)} className="text-xs px-3 py-1.5 rounded-lg text-white/40 hover:text-white/70 transition-all">Got it ✕</button>
+          </div>
+        </div>
+      )}
       <div className="fixed top-4 right-4 z-[9999] flex flex-col gap-2 pointer-events-none">
         {retryToasts.map(t=>(
           <div key={t.id} className="bg-cyan-500/95 text-white text-xs font-semibold px-4 py-2.5 rounded-lg shadow-lg backdrop-blur-sm animate-pulse">{t.msg}</div>
