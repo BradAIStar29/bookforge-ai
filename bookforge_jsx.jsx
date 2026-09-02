@@ -2237,10 +2237,11 @@ function checkSeriesContinuity(series){
 function escapeRegExp(s){return s.replace(/[.*+?^${}()|[\]\\]/g,"\\$&");}
 
 function applySeriesFix(series,fix){
-  if(!fix)return{series,changed:0,msg:""};
+  if(!fix)return{series,changed:0,msg:"",undo:null};
   let changed=0;
   const books=getBooks();
   const seriesBooks=books.filter(b=>b.series_id===series.id);
+  let undo=null;
 
   if(fix.kind==="rename"){
     const re=new RegExp(escapeRegExp(fix.from),"gi");
@@ -2261,19 +2262,24 @@ function applySeriesFix(series,fix){
     setBooks(books);
     const roster=(series.character_roster||[]).map(c=>c.name===fix.from?{...c,name:fix.to}:c);
     series={...series,character_roster:roster};
-    return{series,changed,msg:`Renamed "${fix.from}" → "${fix.to}" (${changed} replacement${changed===1?"":"s"} across the series)`};
+    undo={kind:"rename",from:fix.to,to:fix.from};
+    return{series,changed,undo,msg:`Renamed "${fix.from}" → "${fix.to}" (${changed} replacement${changed===1?"":"s"} across the series)`};
   }
 
   if(fix.kind==="removeChar"){
+    const removed=(series.character_roster||[]).filter(c=>c.name===fix.name);
     const roster=(series.character_roster||[]).filter(c=>c.name!==fix.name);
     series={...series,character_roster:roster};
-    return{series,changed:1,msg:`Removed "${fix.name}" from the roster`};
+    undo={kind:"restoreChar",chars:removed};
+    return{series,changed:1,undo,msg:`Removed "${fix.name}" from the roster`};
   }
 
   if(fix.kind==="removeLoc"){
+    const removed=(series.world_locations||[]).filter(l=>l.name===fix.name);
     const locs=(series.world_locations||[]).filter(l=>l.name!==fix.name);
     series={...series,world_locations:locs};
-    return{series,changed:1,msg:`Removed location "${fix.name}" from the world bible`};
+    undo={kind:"restoreLoc",locs:removed};
+    return{series,changed:1,undo,msg:`Removed location "${fix.name}" from the world bible`};
   }
 
   if(fix.kind==="createBook"){
@@ -2290,28 +2296,98 @@ function applySeriesFix(series,fix){
     };
     books.unshift(book);setBooks(books);
     series={...series,book_ids:[...(series.book_ids||[]),book.id]};
-    return{series,changed:1,msg:`Created book ${fix.number}: "${bp.title}" (outline not generated yet)`};
+    undo={kind:"deleteBook",bookId:book.id};
+    return{series,changed:1,undo,msg:`Created book ${fix.number}: "${bp.title}" (outline not generated yet)`};
   }
 
   if(fix.kind==="syncGenre"){
+    const origGenres=[];
     seriesBooks.forEach(b=>{
       if(b.genre!==fix.genre){
+        origGenres.push({bookId:b.id,genre:b.genre});
         const idx=books.findIndex(x=>x.id===b.id);
         books[idx]={...books[idx],genre:fix.genre};
         changed++;
       }
     });
     if(changed>0)setBooks(books);
-    return{series,changed,msg:changed>0?`Synced ${changed} book${changed===1?"":"s"} to genre "${fix.genre}"`:"All books already match"};
+    undo={kind:"setGenres",genres:origGenres};
+    return{series,changed,undo,msg:changed>0?`Synced ${changed} book${changed===1?"":"s"} to genre "${fix.genre}"`:"All books already match"};
   }
 
   if(fix.kind==="removeEvent"){
+    const removed=(series.plot_events||[]).filter(e=>String(e.book)===String(fix.book)&&e.event===fix.event);
     const events=(series.plot_events||[]).filter(e=>!(String(e.book)===String(fix.book)&&e.event===fix.event));
     series={...series,plot_events:events};
-    return{series,changed:1,msg:`Removed orphan plot event (book ${fix.book})`};
+    undo={kind:"restoreEvent",events:removed};
+    return{series,changed:1,undo,msg:`Removed orphan plot event (book ${fix.book})`};
   }
 
-  return{series,changed:0,msg:"Unknown fix"};
+  return{series,changed:0,undo:null,msg:"Unknown fix"};
+}
+
+// ── Continuity Undo System ── reverse-operation records, not full snapshots ──
+function pushContinuityUndo(seriesId,records){
+  if(!records||records.length===0)return;
+  const stack=ls.get("bfai_continuity_undo",[]);
+  stack.push({seriesId,ts:Date.now(),records});
+  ls.set("bfai_continuity_undo",stack.slice(-10));
+}
+function popContinuityUndo(seriesId){
+  const stack=ls.get("bfai_continuity_undo",[]);
+  for(let i=stack.length-1;i>=0;i--){
+    if(stack[i].seriesId===seriesId){
+      const batch=stack[i];
+      stack.splice(i,1);
+      ls.set("bfai_continuity_undo",stack);
+      return batch;
+    }
+  }
+  return null;
+}
+function undoCountForSeries(seriesId){
+  return ls.get("bfai_continuity_undo",[]).filter(b=>b.seriesId===seriesId).length;
+}
+
+function applyUndoRecord(series,rec){
+  if(!rec)return series;
+  if(rec.kind==="rename"){
+    // reverse rename: to → from (same case-preserving logic)
+    const books=getBooks();
+    books.forEach((b,i)=>{
+      if(b.series_id!==series.id)return;
+      const re=new RegExp(escapeRegExp(rec.from),"gi");
+      let hits=0;
+      const chapters=(b.chapters||[]).map(ch=>{
+        if(!ch.content)return ch;
+        const before=ch.content;
+        const after=before.replace(re,m=>{hits++;return m[0]===m[0].toLowerCase()?rec.to.charAt(0).toLowerCase()+rec.to.slice(1):rec.to;});
+        return after===before?ch:{...ch,content:after};
+      });
+      if(hits>0)books[i]={...books[i],chapters};
+    });
+    setBooks(books);
+    const roster=(series.character_roster||[]).map(c=>c.name===rec.from?{...c,name:rec.to}:c);
+    return{...series,character_roster:roster};
+  }
+  if(rec.kind==="restoreChar")return{...series,character_roster:[...(series.character_roster||[]),...(rec.chars||[])]};
+  if(rec.kind==="restoreLoc")return{...series,world_locations:[...(series.world_locations||[]),...(rec.locs||[])]};
+  if(rec.kind==="restoreEvent")return{...series,plot_events:[...(series.plot_events||[]),...(rec.events||[])]};
+  if(rec.kind==="deleteBook"){
+    const books=getBooks().filter(b=>b.id!==rec.bookId);
+    setBooks(books);
+    return{...series,book_ids:(series.book_ids||[]).filter(id=>id!==rec.bookId)};
+  }
+  if(rec.kind==="setGenres"){
+    const books=getBooks();
+    (rec.genres||[]).forEach(g=>{
+      const idx=books.findIndex(b=>b.id===g.bookId);
+      if(idx>-1)books[idx]={...books[idx],genre:g.genre};
+    });
+    setBooks(books);
+    return series;
+  }
+  return series;
 }
 
 function SeriesContinuityModal({seriesId,onClose}){
@@ -2320,6 +2396,7 @@ function SeriesContinuityModal({seriesId,onClose}){
   const [fixing,setFixing]=React.useState(false);
   const series=getSeries().find(s=>s.id===seriesId)||null;
   const result=React.useMemo(()=>series?checkSeriesContinuity(series):null,[seriesId,rev]);
+  const undoCount=result?undoCountForSeries(seriesId):0;
 
   const persist=updated=>{
     const all=getSeries();
@@ -2331,11 +2408,27 @@ function SeriesContinuityModal({seriesId,onClose}){
   const runFix=fix=>{
     setFixing(true);
     try{
-      const{series:updated,changed,msg}=applySeriesFix(series,fix);
+      const{series:updated,changed,msg,undo}=applySeriesFix(series,fix);
+      if(undo)pushContinuityUndo(seriesId,[undo]);
       persist(updated);
       setLog(l=>[{msg,ts:Date.now()},...l].slice(0,8));
     }catch(e){
       setLog(l=>[{msg:"Fix failed: "+(e?.message||"unknown error"),ts:Date.now()},...l].slice(0,8));
+    }
+    finally{setFixing(false);}
+  };
+
+  const undoLast=()=>{
+    const batch=popContinuityUndo(seriesId);
+    if(!batch)return;
+    setFixing(true);
+    try{
+      let current=series;
+      [...batch.records].reverse().forEach(rec=>{current=applyUndoRecord(current,rec);});
+      persist(current);
+      setLog(l=>[{msg:"↩️ Undid last fix batch ("+batch.records.length+" change"+(batch.records.length===1?"":"s")+")",ts:Date.now()},...l].slice(0,8));
+    }catch(e){
+      setLog(l=>[{msg:"Undo failed: "+(e?.message||"unknown error"),ts:Date.now()},...l].slice(0,8));
     }
     finally{setFixing(false);}
   };
@@ -2354,12 +2447,14 @@ function SeriesContinuityModal({seriesId,onClose}){
     setFixing(true);
     let current=series;
     try{
-      const messages=[];
+      const messages=[];const undoRecs=[];
       for(const fix of fixable){
-        const{series:updated,msg}=applySeriesFix(current,fix);
+        const{series:updated,msg,undo}=applySeriesFix(current,fix);
         if(msg)messages.push(msg);
+        if(undo)undoRecs.push(undo);
         current=updated;
       }
+      if(undoRecs.length>0)pushContinuityUndo(seriesId,undoRecs);
       persist(current);
       setLog(()=>messages.map(msg=>({msg,ts:Date.now()})));
     }catch(e){
@@ -2402,6 +2497,12 @@ function SeriesContinuityModal({seriesId,onClose}){
             </button>
           )}
 
+          {undoCount>0&&(
+            <button onClick={undoLast} disabled={fixing} className="w-full bg-white/10 border border-white/20 text-white/70 py-2.5 rounded-xl font-medium hover:bg-white/15 disabled:opacity-50 flex items-center justify-center gap-2 text-sm">
+              ↩️ Undo Last Fix {undoCount>1?`(${undoCount} batches — undo one at a time)`:""}
+            </button>
+          )}
+
           {log.length>0&&(
             <div className="bg-emerald-500/10 border border-emerald-500/30 rounded-xl p-3">
               <p className="text-emerald-300 text-xs font-bold uppercase tracking-wider mb-2">Applied Fixes</p>
@@ -2434,7 +2535,7 @@ function SeriesContinuityModal({seriesId,onClose}){
           {result.issues.length===0&&result.warnings.length===0&&(
             <div className="bg-green-500/10 border border-green-500/30 rounded-xl p-4 text-center"><p className="text-green-300 font-bold">✅ No continuity problems found!</p><p className="text-white/40 text-xs mt-1">Roster names are unique, planned books exist, pacing is consistent.</p></div>
           )}
-          <p className="text-white/20 text-xs">Runs instantly with no API calls. Rename fixes edit book text directly — export a library backup (Settings → Backup) before bulk fixes. Pacing warnings need manual rewrites (no auto-fix).</p>
+          <p className="text-white/20 text-xs">Runs instantly with no API calls. Rename fixes edit book text directly — but every fix pushes an undo record (↩️ above, up to 10 batches, survives refresh). Pacing warnings need manual rewrites (no auto-fix).</p>
         </div>
       </div>
     </div>
