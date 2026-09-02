@@ -323,6 +323,7 @@ function wrapCoverText(ctx,text,maxWidth){
 // Falls back gracefully (throws) if the image can't be loaded/tainted — callers should catch and
 // fall back to the raw (text-free) art URL so cover generation never hard-fails.
 async function composeCoverWithText(imageUrl,title,authorName,subtitle){
+  try{
   const img=await loadImageCORS(imageUrl);
   const W=832,H=1216;
   const canvas=document.createElement("canvas");
@@ -376,7 +377,10 @@ async function composeCoverWithText(imageUrl,title,authorName,subtitle){
   ctx.fillText((authorName||"Author").toUpperCase(),W/2,H-62);
 
   ctx.shadowBlur=0;ctx.shadowOffsetY=0;
-  return canvas.toDataURL("image/jpeg",0.87);
+  return canvas.toDataURL("image/jpeg",0.87);  }catch(e){
+    console.warn("Cover text compositing failed:",e);
+    return imageUrl;
+  }
 }
 
 // Wrapper used at all cover-generation call sites — never throws; falls back to raw art on failure.
@@ -1480,6 +1484,228 @@ function detectAIContent(text){
   return{score,issues:results,verdict};
 }
 
+
+// ── Readability Score (Flesch-Kincaid) — pure client-side, no API ──
+function countSyllables(word){
+  word=word.toLowerCase().replace(/[^a-z]/g,"");
+  if(word.length<=3)return 1;
+  word=word.replace(/(?:[^laeiouy]es|ed|[^laeiouy]e)$/,"","").replace(/^y/,"");
+  const matches=word.match(/[aeiouy]{1,2}/g);
+  return matches?matches.length:1;
+}
+
+function fleschReadingEase(text){
+  const sentences=text.split(/[.!?]+/).filter(s=>s.trim().length>0);
+  const words=text.split(/\s+/).filter(w=>w.length>0);
+  if(sentences.length===0||words.length===0)return 0;
+  const syllables=words.reduce((sum,w)=>sum+countSyllables(w),0);
+  const asl=words.length/sentences.length; // avg sentence length
+  const asw=syllables/words.length; // avg syllables per word
+  return Math.round((206.835-(1.015*asl)-(84.6*asw))*10)/10;
+}
+
+function fleschKincaidGrade(text){
+  const sentences=text.split(/[.!?]+/).filter(s=>s.trim().length>0);
+  const words=text.split(/\s+/).filter(w=>w.length>0);
+  if(sentences.length===0||words.length===0)return 0;
+  const syllables=words.reduce((sum,w)=>sum+countSyllables(w),0);
+  const asl=words.length/sentences.length;
+  const asw=syllables/words.length;
+  return Math.round((0.39*asl+11.8*asw-15.59)*10)/10;
+}
+
+function readabilityLabel(score){
+  if(score>=90)return"Very Easy — 5th grade";
+  if(score>=80)return"Easy — 6th grade";
+  if(score>=70)return"Fairly Easy — 7th grade";
+  if(score>=60)return"Standard — 8-9th grade";
+  if(score>=50)return"Fairly Difficult — 10-12th grade";
+  if(score>=30)return"Difficult — College";
+  return"Very Difficult — Graduate";
+}
+
+function getBookReadability(book){
+  const chaps=(book.chapters||[]).filter(c=>c.content);
+  if(chaps.length===0)return null;
+  const allText=chaps.map(c=>c.content).join(" ");
+  const ease=fleschReadingEase(allText);
+  const grade=fleschKincaidGrade(allText);
+  return{ease,grade,label:readabilityLabel(ease),wordCount:allText.split(/\s+/).filter(w=>w.length).length};
+}
+
+
+// ── KDP Paperback Interior Formatter ──
+const KDP_TRIM_SIZES=[
+  {id:"6x9",label:"6\" × 9\" (most common)",width:6,height:9,gutter:0.375,font:"Georgia"},
+  {id:"5x8",label:"5\" × 8\" (compact)",width:5,height:8,gutter:0.375,font:"Georgia"},
+  {id:"5.25x8",label:"5.25\" × 8\" (mass market)",width:5.25,height:8,gutter:0.375,font:"Georgia"},
+  {id:"5.5x8.5",label:"5.5\" × 8.5\" (digest)",width:5.5,height:8.5,gutter:0.375,font:"Georgia"},
+  {id:"6x9_large",label:"6\" × 9\" (large print)",width:6,height:9,gutter:0.5,font:"Georgia",largePrint:true},
+  {id:"7x10",label:"7\" × 10\" (textbook)",width:7,height:10,gutter:0.375,font:"Georgia"},
+  {id:"8x10",label:"8\" × 10\" (children's)",width:8,height:10,gutter:0.375,font:"Georgia"},
+  {id:"8.5x11",label:"8.5\" × 11\" (workbook)",width:8.5,height:11,gutter:0.375,font:"Georgia"}
+];
+
+function generateKDPInterior(book,trimSizeId="6x9"){
+  const trim=KDP_TRIM_SIZES.find(t=>t.id===trimSizeId)||KDP_TRIM_SIZES[0];
+  const author=getAuthorProfile().name||"Author";
+  const chaps=(book.chapters||[]).filter(c=>c.content);
+  const fontSize=trim.largePrint?14:11;
+  const lineHeight=trim.largePrint?1.8:1.5;
+  const marginTop=0.75, marginBottom=0.75, marginLeft=0.5, marginRight=0.5;
+  const contentWidth=trim.width-marginLeft-marginRight;
+  const contentHeight=trim.height-marginTop-marginBottom;
+  
+  // Generate print-ready HTML with proper page setup
+  const chapterHTML=chaps.map(c=>{
+    const paragraphs=c.content.split(/\n\n+/).map(p=>`<p style="text-indent:0.25in;margin:0 0 ${fontSize*lineHeight*0.5}px 0;">${p.replace(/</g,"&lt;").replace(/>/g,"&gt;")}</p>`).join("");
+    return `<div style="page-break-before:always;">
+      <div style="text-align:center;margin-top:1.5in;margin-bottom:0.5in;font-size:${fontSize+4}pt;font-weight:bold;">Chapter ${c.number}</div>
+      <div style="text-align:center;margin-bottom:1in;font-size:${fontSize+2}pt;font-style:italic;">${c.title}</div>
+      ${paragraphs}
+    </div>`;
+  }).join("");
+  
+  const html=`<!DOCTYPE html><html><head><meta charset="utf-8"><title>${book.title} — KDP Interior</title>
+  <style>
+    @page{size:${trim.width}in ${trim.height}in;margin-top:${marginTop}in;margin-bottom:${marginBottom}in;margin-left:${marginLeft+trim.gutter}in;margin-right:${marginRight}in;}
+    @page:first{margin-top:3in;}
+    body{font-family:${trim.font},serif;font-size:${fontSize}pt;line-height:${lineHeight};}
+    .title-page{text-align:center;margin-top:2.5in;}
+    .title-page h1{font-size:22pt;font-weight:normal;margin-bottom:0.3in;}
+    .title-page h2{font-size:14pt;font-weight:normal;font-style:italic;margin-bottom:1in;}
+    .title-page .author{font-size:13pt;margin-top:0.5in;}
+    .copyright{font-size:9pt;text-align:center;margin-top:3in;page-break-after:always;}
+    .toc{page-break-after:always;}
+    .toc h3{text-align:center;margin-bottom:0.5in;font-size:14pt;}
+    .toc p{text-indent:0;font-size:10pt;margin-bottom:0.15in;}
+    .chapter-header{text-align:center;}
+    p{widows:2;orphans:2;}
+  </style></head><body>
+  <div class="title-page">
+    <h1>${book.title}</h1>
+    ${book.subtitle?`<h2>${book.subtitle}</h2>`:""}
+    <div class="author">${author}</div>
+  </div>
+  <div class="copyright">
+    Copyright © ${new Date().getFullYear()} ${author}<br>
+    All rights reserved. No part of this book may be reproduced or transmitted in any form without written permission from the publisher.<br><br>
+    ISBN: [Insert your ISBN here]<br>
+    First Edition: ${new Date().getFullYear()}
+  </div>
+  <div class="toc">
+    <h3>Contents</h3>
+    ${chaps.map(c=>`<p>Chapter ${c.number}: ${c.title}</p>`).join("")}
+  </div>
+  ${chapterHTML}
+  </body></html>`;
+  
+  // Open in new window for printing to PDF
+  const w=window.open("","_blank");
+  w.document.write(html);
+  w.document.close();
+  setTimeout(()=>{w.focus();w.print();},500);
+  return true;
+}
+
+
+// ── Chapter Pacing Chart (pure client-side, no API) ──
+function ChapterPacingChart({book}){
+  const chaps=(book.chapters||[]);
+  const wordCounts=chaps.map(c=>(c.content||"").split(/\s+/).filter(w=>w.length).length);
+  const maxWords=Math.max(...wordCounts,1);
+  const avgWords=wordCounts.length?Math.round(wordCounts.reduce((a,b)=>a+b,0)/wordCounts.length):0;
+  const colors=["#a855f7","#ec4899","#3b82f6","#10b981","#f59e0b","#ef4444","#8b5cf6","#06b6d4"];
+  
+  return React.createElement("div",{className:"bg-white/5 rounded-xl p-5 border border-white/10"},
+    React.createElement("div",{className:"flex items-center justify-between mb-4"},
+      React.createElement("h3",{className:"text-white font-bold text-sm"},"📊 Chapter Pacing"),
+      React.createElement("div",{className:"text-xs text-white/40"},
+        "Avg: ",React.createElement("span",{className:"text-white/70 font-semibold"},avgWords.toLocaleString())," words"
+      )
+    ),
+    wordCounts.length===0?React.createElement("p",{className:"text-white/20 text-xs text-center py-4"},"No chapters written yet."):
+    React.createElement("div",{className:"space-y-2"},
+      wordCounts.map((wc,i)=>{
+        const pct=Math.round((wc/maxWords)*100);
+        const isLow=wc<avgWords*0.5;
+        const isHigh=wc>avgWords*1.5;
+        return React.createElement("div",{key:i,className:"flex items-center gap-2"},
+          React.createElement("span",{className:"text-white/40 text-xs w-16 shrink-0"},"Ch."+chaps[i]?.number),
+          React.createElement("div",{className:"flex-1 h-6 bg-white/5 rounded-lg overflow-hidden relative"},
+            React.createElement("div",{
+              className:"h-full rounded-lg transition-all",
+              style:{width:Math.max(pct,3)+"%",background:isLow?"#ef4444":isHigh?"#f59e0b":colors[i%colors.length]}
+            })
+          ),
+          React.createElement("span",{className:`text-xs w-12 text-right shrink-0 ${isLow?"text-red-400":isHigh?"text-amber-400":"text-white/50"}`},wc.toLocaleString())
+        );
+      })
+    )
+  );
+}
+
+
+// ── Puter.js Speech-to-Text (voice dictation) ──
+async function puterSpeechToText(audioBlob){
+  if(typeof puter==="undefined")throw{code:"PUTER_NOT_LOADED",msg:"Puter.js not loaded"};
+  const result=await puter.ai.speech2txt(audioBlob);
+  return typeof result==="string"?result:(result?.text||"");
+}
+
+// Browser-based voice dictation using MediaRecorder + Web Speech API fallback
+function VoiceDictationButton({onTranscript,disabled}){
+  const [recording,setRecording]=React.useState(false);
+  const [supported]=React.useState(typeof navigator!=="undefined"&&(navigator.mediaDevices||navigator.webkitGetUserMedia));
+  const mediaRef=React.useRef(null);
+  const chunksRef=React.useRef([]);
+  
+  const startRecording=async()=>{
+    try{
+      const stream=await navigator.mediaDevices.getUserMedia({audio:true});
+      const recorder=new MediaRecorder(stream);
+      chunksRef.current=[];
+      recorder.ondataavailable=e=>{if(e.data.size>0)chunksRef.current.push(e.data);};
+      recorder.onstop=async()=>{
+        stream.getTracks().forEach(t=>t.stop());
+        const blob=new Blob(chunksRef.current,{type:"audio/webm"});
+        try{
+          if(typeof puter!=="undefined"){
+            const text=await puterSpeechToText(blob);
+            if(text&&onTranscript)onTranscript(text);
+          }else{
+            // Fallback: use Web Speech API if available
+            if(typeof speechSynthesis!=="undefined"&&"webkitSpeechRecognition" in window){
+              // Already handled by browser recognition
+            }
+          }
+        }catch(e){console.warn("STT failed:",e);}
+      };
+      recorder.start();
+      mediaRef.current=recorder;
+      setRecording(true);
+    }catch(e){
+      console.warn("Mic access denied:",e);
+    }
+  };
+  
+  const stopRecording=()=>{
+    if(mediaRef.current&&mediaRef.current.state==="recording"){
+      mediaRef.current.stop();
+    }
+    setRecording(false);
+  };
+  
+  if(!supported)return null;
+  
+  return React.createElement("button",{
+    onClick:recording?stopRecording:startRecording,
+    disabled:disabled,
+    className:`text-xs px-3 py-2 rounded-lg flex items-center gap-2 transition-all ${recording?"bg-red-500/20 border border-red-500/40 text-red-300 animate-pulse":"bg-violet-500/20 border border-violet-500/30 text-violet-300 hover:bg-violet-500/30"}`,
+    title:"Voice dictation"
+  },recording?"⏹ Stop dictation":"🎤 Dictate");
+}
+
 function SettingsModal({onClose}){
   const [draft,setDraft]=useState(getKey());
   const [saved,setSaved]=useState(false);
@@ -2238,6 +2464,23 @@ function WritingQualityPanel({book,onSettings,onApply}){
           <div>
             <h2 className="text-white text-xl font-bold">✍️ Writing Quality Agent</h2>
             <p className="text-white/40 text-sm mt-1">Detects AI writing patterns and flags anything that doesn't read like a real human author. Must pass before publishing.</p>
+          {getBookReadability(book)&&(()=>{
+            const r=getBookReadability(book);
+            return React.createElement("div",{className:"mt-3 flex items-center gap-4 bg-white/5 rounded-xl p-3"},
+              React.createElement("div",{className:"text-center shrink-0"},
+                React.createElement("div",{className:"text-2xl font-bold text-white/80"},r.ease),
+                React.createElement("div",{className:"text-white/30 text-xs"},"Reading Ease")
+              ),
+              React.createElement("div",{className:"text-center shrink-0"},
+                React.createElement("div",{className:"text-2xl font-bold text-white/80"},r.grade),
+                React.createElement("div",{className:"text-white/30 text-xs"},"Grade Level")
+              ),
+              React.createElement("div",{className:"flex-1"},
+                React.createElement("p",{className:"text-white/60 text-sm font-medium"},r.label),
+                React.createElement("p",{className:"text-white/30 text-xs"},r.wordCount.toLocaleString()+" words analyzed")
+              )
+            );
+          })()}
           </div>
           {avgHuman!==null&&<div className="text-center shrink-0"><div className={`text-3xl font-bold ${hc(avgHuman)}`}>{avgHuman}</div><div className="text-white/30 text-xs">avg human score</div></div>}
         </div>
@@ -4506,7 +4749,8 @@ const genCover=async()=>{if(quotaHit||isBuilding)return;setBusy(true);setError("
       :<span className="text-green-400/50 text-xs">✅ Done</span>}
     <button onClick={e=>{e.stopPropagation();downloadChapterTxt(book,i);}} className="text-white/30 hover:text-white/60 text-xs">📄 Export TXT</button>
   </div>;
-})():<span className="text-white/20 text-xs shrink-0">Pending</span>}</div>)}</div><div className="mt-5 bg-white/5 rounded-xl p-4"><div className="flex justify-between text-xs text-white/40 mb-2"><span>Progress</span><span>{book.chapters.filter(c=>c.generated).length}/{book.chapters.length} chapters</span></div><div className="h-2 bg-white/10 rounded-full overflow-hidden"><div className="h-full bg-gradient-to-r from-purple-500 to-pink-500 rounded-full" style={{width:`${(book.chapters.filter(c=>c.generated).length/book.chapters.length)*100}%`}}/></div></div></>}{(!book.chapters||book.chapters.length===0)&&isBuilding&&<div className="text-center py-8 text-white/30"><Spin/><p className="mt-3 text-sm">Generating outline…</p></div>}<div className="mt-5 flex items-center gap-3 pt-4 border-t border-white/10"><button onClick={()=>setReadingMode(true)} disabled={!book.chapters?.some(c=>c.generated)} className="text-xs px-3 py-2 rounded-lg bg-purple-500/20 border border-purple-500/30 text-purple-300 hover:bg-purple-500/30 hover:text-purple-200 transition-all flex items-center gap-2 disabled:opacity-40">📖 Read Book</button><button onClick={()=>downloadPDF(book)} className="text-xs px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-white/60 hover:bg-white/10 hover:text-white/90 transition-all flex items-center gap-2">📄 Export PDF</button><button onClick={()=>downloadMarkdown(book)} className="text-xs px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-white/60 hover:bg-white/10 hover:text-white/90 transition-all flex items-center gap-2">📝 Export Markdown</button><button onClick={()=>downloadBookJSON(book)} className="text-xs px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-white/60 hover:bg-white/10 hover:text-white/90 transition-all flex items-center gap-2">💾 Export Backup (JSON)</button><label className="text-xs px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-white/60 hover:bg-white/10 hover:text-white/90 transition-all flex items-center gap-2 cursor-pointer">📥 Import Backup<input type="file" accept=".json" className="hidden" onChange={async(e)=>{const file=e.target.files?.[0];if(!file)return;try{const imported=await importBookJSON(file);const books=JSON.parse(localStorage.getItem("bfai_books")||"[]");books.unshift(imported);localStorage.setItem("bfai_books",JSON.stringify(books));alert("Imported \""+imported.title+"\" successfully!");window.location.reload();}catch(err){alert("Import failed: "+err.message);}}}/></label></div></Card></div>}
+})():<span className="text-white/20 text-xs shrink-0">Pending</span>}</div>)}</div><div className="mt-5"><ChapterPacingChart book={book}/></div>
+            <div className="mt-3 bg-white/5 rounded-xl p-4"><div className="flex justify-between text-xs text-white/40 mb-2"><span>Progress</span><span>{book.chapters.filter(c=>c.generated).length}/{book.chapters.length} chapters</span></div><div className="h-2 bg-white/10 rounded-full overflow-hidden"><div className="h-full bg-gradient-to-r from-purple-500 to-pink-500 rounded-full" style={{width:`${(book.chapters.filter(c=>c.generated).length/book.chapters.length)*100}%`}}/></div></div></>}{(!book.chapters||book.chapters.length===0)&&isBuilding&&<div className="text-center py-8 text-white/30"><Spin/><p className="mt-3 text-sm">Generating outline…</p></div>}<div className="mt-5 flex items-center gap-3 pt-4 border-t border-white/10"><button onClick={()=>setReadingMode(true)} disabled={!book.chapters?.some(c=>c.generated)} className="text-xs px-3 py-2 rounded-lg bg-purple-500/20 border border-purple-500/30 text-purple-300 hover:bg-purple-500/30 hover:text-purple-200 transition-all flex items-center gap-2 disabled:opacity-40">📖 Read Book</button><button onClick={()=>downloadPDF(book)} className="text-xs px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-white/60 hover:bg-white/10 hover:text-white/90 transition-all flex items-center gap-2">📄 Export PDF</button><button onClick={()=>downloadMarkdown(book)} className="text-xs px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-white/60 hover:bg-white/10 hover:text-white/90 transition-all flex items-center gap-2">📝 Export Markdown</button><button onClick={()=>downloadBookJSON(book)} className="text-xs px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-white/60 hover:bg-white/10 hover:text-white/90 transition-all flex items-center gap-2">💾 Export Backup (JSON)</button><label className="text-xs px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-white/60 hover:bg-white/10 hover:text-white/90 transition-all flex items-center gap-2 cursor-pointer">📥 Import Backup<input type="file" accept=".json" className="hidden" onChange={async(e)=>{const file=e.target.files?.[0];if(!file)return;try{const imported=await importBookJSON(file);const books=JSON.parse(localStorage.getItem("bfai_books")||"[]");books.unshift(imported);localStorage.setItem("bfai_books",JSON.stringify(books));alert("Imported \""+imported.title+"\" successfully!");window.location.reload();}catch(err){alert("Import failed: "+err.message);}}}/></label></div></Card></div>}
 
         {/* CHAPTERS */}
         {tab===1&&<div className="grid grid-cols-1 lg:grid-cols-3 gap-5"><div className="lg:col-span-1"><div className="bg-white/5 border border-white/10 rounded-2xl p-4 sticky top-24"><div className="flex items-center justify-between mb-3"><h3 className="text-white font-semibold text-sm">Chapters</h3><div className="flex gap-1.5"><button onClick={()=>setReadingMode(true)} disabled={!book.chapters?.some(c=>c.generated)} className="text-xs text-purple-300 hover:text-purple-200 disabled:opacity-30 px-2 py-1 rounded bg-purple-500/10">📖 Read</button><button onClick={()=>setShowFindReplace(true)} className="text-xs text-purple-300 hover:text-purple-200 disabled:opacity-30 px-2 py-1 rounded bg-purple-500/10 flex items-center gap-1">🔍 Find & Replace</button>{!isBuilding&&<button onClick={async()=>{
@@ -4573,7 +4817,8 @@ const genCover=async()=>{if(quotaHit||isBuilding)return;setBusy(true);setError("
           :<div className="bg-green-500/10 border border-green-500/30 rounded-2xl p-4 flex items-center gap-3"><span className="text-2xl">✅</span><div><p className="text-green-300 font-bold text-sm">Writing Quality Passed — {writingScore}/100 human</p></div></div>)}
           {reviewPassed&&writingPassed&&<Card><h2 className="text-white text-xl font-bold mb-2">Publish Your Book</h2><p className="text-white/40 mb-6 text-sm">Your book includes the series read-order page (if hooks were generated).</p>
             <div className="space-y-3 mb-8">
-              <BookStatsBar book={book}/>{[{label:"Chapters written",done:book.chapters?.some(c=>c.content)},{label:"Cover generated",done:!!book.cover_image_url},{label:"SEO ready",done:!!book.seo_title},{label:"Review Agent passed (70+)",done:reviewPassed},{label:"Writing Quality passed (72+)",done:writingPassed},{label:"Market analysis done",done:!!book.competitor_analysis},{label:"Hooks & blurbs generated",done:!!book.hooks},{label:"Characters documented",done:(getCharacters(bookId)||[]).length>0}].map((item,i)=><div key={i} className={`flex items-center gap-3 px-4 py-3 rounded-lg ${item.done?"bg-green-500/10":"bg-white/5"}`}><span>{item.done?"✅":"⭕"}</span><span className={`text-sm ${item.done?"text-white":"text-white/35"}`}>{item.label}</span></div>)}
+              <BookStatsBar book={book}/>{[{label:"Chapters written",done:book.chapters?.some(c=>c.content)},{label:"Cover generated",done:!!book.cover_image_url},{label:"SEO ready",done:!!book.seo_title},{label:"Review Agent passed (70+)",done:reviewPassed},{label:"Writing Quality passed (72+)",done:writingPassed},{label:"Market analysis done",done:!!book.competitor_analysis},{label:"Hooks & blurbs generated",done:!!book.hooks},{label:"Characters documented",done:(getCharacters(bookId)||[]).length>0},
+      {label:"Readability checked",done:!!getBookReadability(book)}].map((item,i)=><div key={i} className={`flex items-center gap-3 px-4 py-3 rounded-lg ${item.done?"bg-green-500/10":"bg-white/5"}`}><span>{item.done?"✅":"⭕"}</span><span className={`text-sm ${item.done?"text-white":"text-white/35"}`}>{item.label}</span></div>)}
             </div>
             <p className="text-white/50 text-sm font-semibold mb-3">Export Formats</p>
             <div className="grid grid-cols-2 gap-3">
@@ -4584,6 +4829,7 @@ const genCover=async()=>{if(quotaHit||isBuilding)return;setBusy(true);setError("
               <button onClick={()=>download("rtf")} className="bg-gradient-to-r from-orange-500 to-amber-500 text-white py-3 rounded-xl font-semibold hover:opacity-90 flex items-center justify-center gap-2 text-sm">📋 Word Doc (.rtf)</button>
               <button onClick={()=>download("audio")} className="bg-gradient-to-r from-green-500 to-emerald-500 text-white py-3 rounded-xl font-semibold hover:opacity-90 flex items-center justify-center gap-2 text-sm">🎙️ Audiobook Script</button>
               <button onClick={()=>{const ch=book.chapters?.find(c=>c.content);if(!ch){alert("Write a chapter first.");return;}const u=window.speechSynthesis;if(u.speaking){u.cancel();flash("⏹ Stopped");return;}const utt=new SpeechSynthesisUtterance(ch.content.replace(/[#*_`]/g,"").slice(0,2000));utt.rate=0.92;utt.pitch=1.0;const voices=u.getVoices();const eng=voices.find(v=>v.lang.startsWith("en")&&!v.name.includes("Google"));if(eng)utt.voice=eng;u.speak(utt);flash("🔊 Reading Ch.1 preview — click again to stop");}} className="bg-white/5 border border-white/10 text-white/60 py-3 rounded-xl font-semibold hover:bg-white/10 flex items-center justify-center gap-2 text-sm">🔊 Listen Preview</button><button onClick={()=>downloadPDF(book)} className="bg-gradient-to-r from-red-500 to-rose-500 text-white py-3 rounded-xl font-semibold hover:opacity-90 flex items-center justify-center gap-2 text-sm">📄 Print PDF</button>
+              <button onClick={()=>{const sel=prompt("Choose trim size:\n\n6x9 (most common)\\n5x8 (compact)\\n5.25x8 (mass market)\\n5.5x8.5 (digest)\\n7x10 (textbook)\\n8.5x11 (workbook)\\n\\nType the size code (e.g. 6x9):","6x9");if(sel)generateKDPInterior(book,sel.trim());}} className="bg-gradient-to-r from-amber-500 to-orange-600 text-white py-3 rounded-xl font-semibold hover:opacity-90 flex items-center justify-center gap-2 text-sm">📖 KDP Paperback Interior ⭐ NEW</button>
             </div>
             <div className="mt-4 bg-blue-500/10 border border-blue-500/20 rounded-xl p-4 text-xs text-white/50 space-y-2">
               <p className="text-white/70 font-semibold text-sm">📖 Where to publish your .epub</p>
@@ -6588,6 +6834,7 @@ FORMAT your response as ONLY valid JSON:
 
 // ─── Panel Image Generator ───────────────────────────────────────────────────
 async function generatePanelImage(project, scene, panelDesc){
+  try{
   const artStyle = ART_STYLES.find(a => a.id === (project.art_style || "manhwa-color"));
   const stylePrompt = artStyle?.prompt || "manhwa webtoon style, full color";
   const concept = project.concept || {};
@@ -6604,6 +6851,10 @@ async function generatePanelImage(project, scene, panelDesc){
 
   const url = `https://image.pollinations.ai/prompt/${encodeURIComponent(fullPrompt)}?width=1024&height=1024&model=flux&nologo=true&seed=${Math.floor(Math.random()*99999)}`;
   return url;
+  }catch(e){
+    console.warn("Panel image generation failed:",e);
+    return null;
+  }
 }
 
 // ══════════════════════════════════════════════════════════════════════════════

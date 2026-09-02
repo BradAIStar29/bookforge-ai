@@ -245,8 +245,8 @@ const getBestModel = (task = "creative") => {
 };
 const getAutoModel = () => ls.get("bfai_auto_model", true);
 const setAutoModel = (v) => ls.set("bfai_auto_model", v);
-const detectTask = (prompt) => {
-  const p = (prompt || "").toLowerCase();
+const detectTask = (prompt2) => {
+  const p = (prompt2 || "").toLowerCase();
   if (p.includes("write chapter") || p.includes("rewrite only") || p.includes("rewrite this paragraph") || p.includes("rewrite paragraph") || p.includes("manuscript") || p.includes("prose") || p.includes("novel") || p.includes("creative writing")) return "creative";
   if (p.includes("translat") || p.includes("spanish") || p.includes("french") || p.includes("german") || p.includes("italian") || p.includes("portuguese") || p.includes("dutch") || p.includes("translate this")) return "multilingual";
   if (p.includes("valid json") || p.includes("respond only") || p.includes("respond only with") || p.includes("json:") || p.includes("json: {") || p.includes("json object")) return "structured";
@@ -255,11 +255,11 @@ const detectTask = (prompt) => {
   if (p.length > 2e3) return "creative";
   return "structured";
 };
-const resolveModel = (prompt, opts = {}) => {
+const resolveModel = (prompt2, opts = {}) => {
   if (opts.model) return opts.model;
   if (!getAutoModel()) return null;
   if (opts.task) return getBestModel(opts.task);
-  const task = detectTask(prompt);
+  const task = detectTask(prompt2);
   return getBestModel(task);
 };
 const getBooks = () => ls.get("bfai_books", []);
@@ -411,59 +411,64 @@ function wrapCoverText(ctx, text, maxWidth) {
   return lines;
 }
 async function composeCoverWithText(imageUrl, title, authorName, subtitle) {
-  const img = await loadImageCORS(imageUrl);
-  const W = 832, H = 1216;
-  const canvas = document.createElement("canvas");
-  canvas.width = W;
-  canvas.height = H;
-  const ctx = canvas.getContext("2d");
-  const scale = Math.max(W / img.width, H / img.height);
-  const dw = img.width * scale, dh = img.height * scale;
-  ctx.drawImage(img, (W - dw) / 2, (H - dh) / 2, dw, dh);
-  const topGrad = ctx.createLinearGradient(0, 0, 0, H * 0.3);
-  topGrad.addColorStop(0, "rgba(0,0,0,0.62)");
-  topGrad.addColorStop(1, "rgba(0,0,0,0)");
-  ctx.fillStyle = topGrad;
-  ctx.fillRect(0, 0, W, H * 0.3);
-  const botGrad = ctx.createLinearGradient(0, H * 0.85, 0, H);
-  botGrad.addColorStop(0, "rgba(0,0,0,0)");
-  botGrad.addColorStop(1, "rgba(0,0,0,0.68)");
-  ctx.fillStyle = botGrad;
-  ctx.fillRect(0, H * 0.85, W, H * 0.15);
-  const padX = 64, maxWidth = W - padX * 2;
-  ctx.textAlign = "center";
-  ctx.textBaseline = "alphabetic";
-  let fontSize = 76, titleLines = [];
-  const titleText = (title || "Untitled").toUpperCase();
-  while (fontSize > 34) {
-    ctx.font = `800 ${fontSize}px Arial, Helvetica, sans-serif`;
-    titleLines = wrapCoverText(ctx, titleText, maxWidth);
-    if (titleLines.length <= 3) break;
-    fontSize -= 4;
+  try {
+    const img = await loadImageCORS(imageUrl);
+    const W = 832, H = 1216;
+    const canvas = document.createElement("canvas");
+    canvas.width = W;
+    canvas.height = H;
+    const ctx = canvas.getContext("2d");
+    const scale = Math.max(W / img.width, H / img.height);
+    const dw = img.width * scale, dh = img.height * scale;
+    ctx.drawImage(img, (W - dw) / 2, (H - dh) / 2, dw, dh);
+    const topGrad = ctx.createLinearGradient(0, 0, 0, H * 0.3);
+    topGrad.addColorStop(0, "rgba(0,0,0,0.62)");
+    topGrad.addColorStop(1, "rgba(0,0,0,0)");
+    ctx.fillStyle = topGrad;
+    ctx.fillRect(0, 0, W, H * 0.3);
+    const botGrad = ctx.createLinearGradient(0, H * 0.85, 0, H);
+    botGrad.addColorStop(0, "rgba(0,0,0,0)");
+    botGrad.addColorStop(1, "rgba(0,0,0,0.68)");
+    ctx.fillStyle = botGrad;
+    ctx.fillRect(0, H * 0.85, W, H * 0.15);
+    const padX = 64, maxWidth = W - padX * 2;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "alphabetic";
+    let fontSize = 76, titleLines = [];
+    const titleText = (title || "Untitled").toUpperCase();
+    while (fontSize > 34) {
+      ctx.font = `800 ${fontSize}px Arial, Helvetica, sans-serif`;
+      titleLines = wrapCoverText(ctx, titleText, maxWidth);
+      if (titleLines.length <= 3) break;
+      fontSize -= 4;
+    }
+    ctx.fillStyle = "#fff";
+    ctx.shadowColor = "rgba(0,0,0,0.8)";
+    ctx.shadowBlur = 12;
+    ctx.shadowOffsetY = 3;
+    const lineHeight = fontSize * 1.14;
+    const ty = 88 + fontSize * 0.78;
+    titleLines.forEach((line, i) => ctx.fillText(line, W / 2, ty + i * lineHeight));
+    if (subtitle && subtitle.trim()) {
+      ctx.shadowBlur = 6;
+      ctx.font = `500 ${Math.round(fontSize * 0.36)}px Arial, Helvetica, sans-serif`;
+      const subLines = wrapCoverText(ctx, subtitle, maxWidth).slice(0, 2);
+      let sy = ty + titleLines.length * lineHeight + fontSize * 0.5;
+      subLines.forEach((line, i) => ctx.fillText(line, W / 2, sy + i * (fontSize * 0.46)));
+    }
+    ctx.shadowColor = "rgba(0,0,0,0.85)";
+    ctx.shadowBlur = 10;
+    ctx.shadowOffsetY = 2;
+    ctx.font = "600 34px Arial, Helvetica, sans-serif";
+    ctx.fillStyle = "#f2f2f2";
+    ctx.fillText((authorName || "Author").toUpperCase(), W / 2, H - 62);
+    ctx.shadowBlur = 0;
+    ctx.shadowOffsetY = 0;
+    return canvas.toDataURL("image/jpeg", 0.87);
+  } catch (e) {
+    console.warn("Cover text compositing failed:", e);
+    return imageUrl;
   }
-  ctx.fillStyle = "#fff";
-  ctx.shadowColor = "rgba(0,0,0,0.8)";
-  ctx.shadowBlur = 12;
-  ctx.shadowOffsetY = 3;
-  const lineHeight = fontSize * 1.14;
-  const ty = 88 + fontSize * 0.78;
-  titleLines.forEach((line, i) => ctx.fillText(line, W / 2, ty + i * lineHeight));
-  if (subtitle && subtitle.trim()) {
-    ctx.shadowBlur = 6;
-    ctx.font = `500 ${Math.round(fontSize * 0.36)}px Arial, Helvetica, sans-serif`;
-    const subLines = wrapCoverText(ctx, subtitle, maxWidth).slice(0, 2);
-    let sy = ty + titleLines.length * lineHeight + fontSize * 0.5;
-    subLines.forEach((line, i) => ctx.fillText(line, W / 2, sy + i * (fontSize * 0.46)));
-  }
-  ctx.shadowColor = "rgba(0,0,0,0.85)";
-  ctx.shadowBlur = 10;
-  ctx.shadowOffsetY = 2;
-  ctx.font = "600 34px Arial, Helvetica, sans-serif";
-  ctx.fillStyle = "#f2f2f2";
-  ctx.fillText((authorName || "Author").toUpperCase(), W / 2, H - 62);
-  ctx.shadowBlur = 0;
-  ctx.shadowOffsetY = 0;
-  return canvas.toDataURL("image/jpeg", 0.87);
 }
 async function finalizeCoverImage(rawArtUrl, title, authorName, subtitle) {
   try {
@@ -480,7 +485,7 @@ function notifyRetry(attempt, totalAttempts, reason) {
   }
   playRetryChime();
 }
-async function callGemini(prompt, temperature = 0.85, opts = {}) {
+async function callGemini(prompt2, temperature = 0.85, opts = {}) {
   if (getUsage() >= DAILY_LIMIT) throw { code: "QUOTA" };
   const key = getKey();
   if (!key) throw { code: "NO_KEY" };
@@ -495,7 +500,7 @@ async function callGemini(prompt, temperature = 0.85, opts = {}) {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         signal: controller.signal,
-        body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }], generationConfig: { temperature, maxOutputTokens: 8192 } })
+        body: JSON.stringify({ contents: [{ parts: [{ text: prompt2 }] }], generationConfig: { temperature, maxOutputTokens: 8192 } })
       });
       clearTimeout(timer);
       const data = await res.json().catch(() => ({}));
@@ -534,15 +539,15 @@ async function callGemini(prompt, temperature = 0.85, opts = {}) {
   }
   throw lastTransient || { code: "ERROR", msg: "Failed after retries." };
 }
-async function callPuter(prompt, temperature = 0.85, opts = {}) {
+async function callPuter(prompt2, temperature = 0.85, opts = {}) {
   if (typeof puter === "undefined") throw { code: "PUTER_NOT_LOADED" };
-  const model = resolveModel(prompt, opts) || getPuterTextModel();
+  const model = resolveModel(prompt2, opts) || getPuterTextModel();
   const maxRetries = opts.maxRetries ?? 2;
   let lastErr = null;
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
       if (opts.onStream) {
-        const resp2 = await puter.ai.chat(prompt, { model, temperature: Math.min(temperature, 1), stream: true });
+        const resp2 = await puter.ai.chat(prompt2, { model, temperature: Math.min(temperature, 1), stream: true });
         let fullText = "";
         if (resp2 && typeof resp2[Symbol.asyncIterator] === "function") {
           for await (const part of resp2) {
@@ -561,7 +566,7 @@ async function callPuter(prompt, temperature = 0.85, opts = {}) {
         if (!fullText) throw { code: "EMPTY" };
         return fullText;
       }
-      const resp = await puter.ai.chat(prompt, { model, temperature: Math.min(temperature, 1) });
+      const resp = await puter.ai.chat(prompt2, { model, temperature: Math.min(temperature, 1) });
       let text = "";
       if (typeof resp === "string") text = resp;
       else if (resp?.message?.content) text = typeof resp.message.content === "string" ? resp.message.content : resp.message.content.map((p) => p.text || "").join("");
@@ -589,10 +594,10 @@ async function callPuter(prompt, temperature = 0.85, opts = {}) {
   }
   throw lastErr || { code: "PUTER_ERROR", msg: "Failed after retries." };
 }
-async function callGroq(prompt, temperature = 0.85, opts = {}) {
+async function callGroq(prompt2, temperature = 0.85, opts = {}) {
   const key = getGroqKey();
   if (!key) throw { code: "NO_KEY", msg: "Groq API key missing \u2014 add one in Settings." };
-  const model = resolveModel(prompt, opts) || getGroqModel();
+  const model = resolveModel(prompt2, opts) || getGroqModel();
   let retries = 0;
   let controller, timeout;
   while (retries <= 2) {
@@ -608,7 +613,7 @@ async function callGroq(prompt, temperature = 0.85, opts = {}) {
         signal: controller.signal,
         body: JSON.stringify({
           model,
-          messages: [{ role: "user", content: prompt }],
+          messages: [{ role: "user", content: prompt2 }],
           temperature,
           max_tokens: opts.max_tokens || 32768,
           stream: !!opts.onStream
@@ -690,10 +695,10 @@ async function callGroq(prompt, temperature = 0.85, opts = {}) {
   }
   throw { code: "GROQ_ERROR", msg: "Groq request failed after retries." };
 }
-async function callCerebras(prompt, temperature = 0.85, opts = {}) {
+async function callCerebras(prompt2, temperature = 0.85, opts = {}) {
   const key = getCerebrasKey();
   if (!key) throw { code: "NO_KEY", msg: "Cerebras API key missing \u2014 add one in Settings." };
-  const model = resolveModel(prompt, opts) || getCerebrasModel();
+  const model = resolveModel(prompt2, opts) || getCerebrasModel();
   let retries = 0, controller, timeout;
   while (retries <= 2) {
     controller = new AbortController();
@@ -705,7 +710,7 @@ async function callCerebras(prompt, temperature = 0.85, opts = {}) {
         signal: controller.signal,
         body: JSON.stringify({
           model,
-          messages: [{ role: "user", content: prompt }],
+          messages: [{ role: "user", content: prompt2 }],
           temperature,
           max_tokens: opts.max_tokens || 32768,
           stream: !!opts.onStream
@@ -785,8 +790,8 @@ async function callCerebras(prompt, temperature = 0.85, opts = {}) {
   }
   throw { code: "CEREBRAS_ERROR", msg: "Cerebras request failed after retries." };
 }
-async function callKilo(prompt, temperature = 0.85, opts = {}) {
-  const model = resolveModel(prompt, opts) || getKiloModel();
+async function callKilo(prompt2, temperature = 0.85, opts = {}) {
+  const model = resolveModel(prompt2, opts) || getKiloModel();
   let retries = 0, controller, timeout;
   while (retries <= 2) {
     controller = new AbortController();
@@ -798,7 +803,7 @@ async function callKilo(prompt, temperature = 0.85, opts = {}) {
         signal: controller.signal,
         body: JSON.stringify({
           model,
-          messages: [{ role: "user", content: prompt }],
+          messages: [{ role: "user", content: prompt2 }],
           temperature: Math.min(temperature, 1),
           max_tokens: opts.max_tokens || 32768,
           stream: !!opts.onStream
@@ -877,11 +882,11 @@ async function callKilo(prompt, temperature = 0.85, opts = {}) {
   }
   throw { code: "KILO_ERROR", msg: "Kilo request failed after retries." };
 }
-async function callCloudflare(prompt, temperature = 0.85, opts = {}) {
+async function callCloudflare(prompt2, temperature = 0.85, opts = {}) {
   const accountId = getCloudflareAccountId();
   const token = getCloudflareToken();
   if (!accountId || !token) throw { code: "NO_KEY", msg: "Cloudflare account ID + API token required \u2014 add in Settings." };
-  const model = resolveModel(prompt, opts) || getCloudflareModel();
+  const model = resolveModel(prompt2, opts) || getCloudflareModel();
   const url = `https://api.cloudflare.com/client/v4/accounts/${accountId}/ai/v1/chat/completions`;
   let retries = 0, controller, timeout;
   while (retries <= 2) {
@@ -894,7 +899,7 @@ async function callCloudflare(prompt, temperature = 0.85, opts = {}) {
         signal: controller.signal,
         body: JSON.stringify({
           model,
-          messages: [{ role: "user", content: prompt }],
+          messages: [{ role: "user", content: prompt2 }],
           temperature: Math.min(temperature, 1),
           max_tokens: opts.max_tokens || 32768,
           stream: !!opts.onStream
@@ -974,23 +979,23 @@ async function callCloudflare(prompt, temperature = 0.85, opts = {}) {
   }
   throw { code: "CF_ERROR", msg: "Cloudflare request failed after retries." };
 }
-async function callAI(prompt, temperature = 0.85, opts = {}) {
+async function callAI(prompt2, temperature = 0.85, opts = {}) {
   const backend = getBackend();
-  if (backend === "puter") return callPuter(prompt, temperature, opts);
-  if (backend === "groq") return callGroq(prompt, temperature, opts);
-  if (backend === "cerebras") return callCerebras(prompt, temperature, opts);
-  if (backend === "kilo") return callKilo(prompt, temperature, opts);
-  if (backend === "cloudflare") return callCloudflare(prompt, temperature, opts);
-  return callGemini(prompt, temperature, opts);
+  if (backend === "puter") return callPuter(prompt2, temperature, opts);
+  if (backend === "groq") return callGroq(prompt2, temperature, opts);
+  if (backend === "cerebras") return callCerebras(prompt2, temperature, opts);
+  if (backend === "kilo") return callKilo(prompt2, temperature, opts);
+  if (backend === "cloudflare") return callCloudflare(prompt2, temperature, opts);
+  return callGemini(prompt2, temperature, opts);
 }
-async function callAIStream(prompt, temperature = 0.85, opts = {}) {
+async function callAIStream(prompt2, temperature = 0.85, opts = {}) {
   const backend = getBackend();
-  if (backend === "groq" && opts.onStream) return callGroq(prompt, temperature, opts);
-  if (backend === "puter" && opts.onStream) return callPuter(prompt, temperature, opts);
-  if (backend === "cerebras" && opts.onStream) return callCerebras(prompt, temperature, opts);
-  if (backend === "kilo" && opts.onStream) return callKilo(prompt, temperature, opts);
-  if (backend === "cloudflare" && opts.onStream) return callCloudflare(prompt, temperature, opts);
-  const text = await callAI(prompt, temperature, opts);
+  if (backend === "groq" && opts.onStream) return callGroq(prompt2, temperature, opts);
+  if (backend === "puter" && opts.onStream) return callPuter(prompt2, temperature, opts);
+  if (backend === "cerebras" && opts.onStream) return callCerebras(prompt2, temperature, opts);
+  if (backend === "kilo" && opts.onStream) return callKilo(prompt2, temperature, opts);
+  if (backend === "cloudflare" && opts.onStream) return callCloudflare(prompt2, temperature, opts);
+  const text = await callAI(prompt2, temperature, opts);
   if (opts.onStream) opts.onStream(text);
   return text;
 }
@@ -1569,6 +1574,217 @@ function detectAIContent(text) {
   score = Math.max(0, Math.min(100, score));
   const verdict = score >= 70 ? "PASS" : score >= 45 ? "REVIEW" : "FAIL";
   return { score, issues: results, verdict };
+}
+function countSyllables(word) {
+  word = word.toLowerCase().replace(/[^a-z]/g, "");
+  if (word.length <= 3) return 1;
+  word = word.replace(/(?:[^laeiouy]es|ed|[^laeiouy]e)$/, "", "").replace(/^y/, "");
+  const matches = word.match(/[aeiouy]{1,2}/g);
+  return matches ? matches.length : 1;
+}
+function fleschReadingEase(text) {
+  const sentences = text.split(/[.!?]+/).filter((s) => s.trim().length > 0);
+  const words = text.split(/\s+/).filter((w) => w.length > 0);
+  if (sentences.length === 0 || words.length === 0) return 0;
+  const syllables = words.reduce((sum, w) => sum + countSyllables(w), 0);
+  const asl = words.length / sentences.length;
+  const asw = syllables / words.length;
+  return Math.round((206.835 - 1.015 * asl - 84.6 * asw) * 10) / 10;
+}
+function fleschKincaidGrade(text) {
+  const sentences = text.split(/[.!?]+/).filter((s) => s.trim().length > 0);
+  const words = text.split(/\s+/).filter((w) => w.length > 0);
+  if (sentences.length === 0 || words.length === 0) return 0;
+  const syllables = words.reduce((sum, w) => sum + countSyllables(w), 0);
+  const asl = words.length / sentences.length;
+  const asw = syllables / words.length;
+  return Math.round((0.39 * asl + 11.8 * asw - 15.59) * 10) / 10;
+}
+function readabilityLabel(score) {
+  if (score >= 90) return "Very Easy \u2014 5th grade";
+  if (score >= 80) return "Easy \u2014 6th grade";
+  if (score >= 70) return "Fairly Easy \u2014 7th grade";
+  if (score >= 60) return "Standard \u2014 8-9th grade";
+  if (score >= 50) return "Fairly Difficult \u2014 10-12th grade";
+  if (score >= 30) return "Difficult \u2014 College";
+  return "Very Difficult \u2014 Graduate";
+}
+function getBookReadability(book) {
+  const chaps = (book.chapters || []).filter((c) => c.content);
+  if (chaps.length === 0) return null;
+  const allText = chaps.map((c) => c.content).join(" ");
+  const ease = fleschReadingEase(allText);
+  const grade = fleschKincaidGrade(allText);
+  return { ease, grade, label: readabilityLabel(ease), wordCount: allText.split(/\s+/).filter((w) => w.length).length };
+}
+const KDP_TRIM_SIZES = [
+  { id: "6x9", label: '6" \xD7 9" (most common)', width: 6, height: 9, gutter: 0.375, font: "Georgia" },
+  { id: "5x8", label: '5" \xD7 8" (compact)', width: 5, height: 8, gutter: 0.375, font: "Georgia" },
+  { id: "5.25x8", label: '5.25" \xD7 8" (mass market)', width: 5.25, height: 8, gutter: 0.375, font: "Georgia" },
+  { id: "5.5x8.5", label: '5.5" \xD7 8.5" (digest)', width: 5.5, height: 8.5, gutter: 0.375, font: "Georgia" },
+  { id: "6x9_large", label: '6" \xD7 9" (large print)', width: 6, height: 9, gutter: 0.5, font: "Georgia", largePrint: true },
+  { id: "7x10", label: '7" \xD7 10" (textbook)', width: 7, height: 10, gutter: 0.375, font: "Georgia" },
+  { id: "8x10", label: `8" \xD7 10" (children's)`, width: 8, height: 10, gutter: 0.375, font: "Georgia" },
+  { id: "8.5x11", label: '8.5" \xD7 11" (workbook)', width: 8.5, height: 11, gutter: 0.375, font: "Georgia" }
+];
+function generateKDPInterior(book, trimSizeId = "6x9") {
+  const trim = KDP_TRIM_SIZES.find((t) => t.id === trimSizeId) || KDP_TRIM_SIZES[0];
+  const author = getAuthorProfile().name || "Author";
+  const chaps = (book.chapters || []).filter((c) => c.content);
+  const fontSize = trim.largePrint ? 14 : 11;
+  const lineHeight = trim.largePrint ? 1.8 : 1.5;
+  const marginTop = 0.75, marginBottom = 0.75, marginLeft = 0.5, marginRight = 0.5;
+  const contentWidth = trim.width - marginLeft - marginRight;
+  const contentHeight = trim.height - marginTop - marginBottom;
+  const chapterHTML = chaps.map((c) => {
+    const paragraphs = c.content.split(/\n\n+/).map((p) => `<p style="text-indent:0.25in;margin:0 0 ${fontSize * lineHeight * 0.5}px 0;">${p.replace(/</g, "&lt;").replace(/>/g, "&gt;")}</p>`).join("");
+    return `<div style="page-break-before:always;">
+      <div style="text-align:center;margin-top:1.5in;margin-bottom:0.5in;font-size:${fontSize + 4}pt;font-weight:bold;">Chapter ${c.number}</div>
+      <div style="text-align:center;margin-bottom:1in;font-size:${fontSize + 2}pt;font-style:italic;">${c.title}</div>
+      ${paragraphs}
+    </div>`;
+  }).join("");
+  const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${book.title} \u2014 KDP Interior</title>
+  <style>
+    @page{size:${trim.width}in ${trim.height}in;margin-top:${marginTop}in;margin-bottom:${marginBottom}in;margin-left:${marginLeft + trim.gutter}in;margin-right:${marginRight}in;}
+    @page:first{margin-top:3in;}
+    body{font-family:${trim.font},serif;font-size:${fontSize}pt;line-height:${lineHeight};}
+    .title-page{text-align:center;margin-top:2.5in;}
+    .title-page h1{font-size:22pt;font-weight:normal;margin-bottom:0.3in;}
+    .title-page h2{font-size:14pt;font-weight:normal;font-style:italic;margin-bottom:1in;}
+    .title-page .author{font-size:13pt;margin-top:0.5in;}
+    .copyright{font-size:9pt;text-align:center;margin-top:3in;page-break-after:always;}
+    .toc{page-break-after:always;}
+    .toc h3{text-align:center;margin-bottom:0.5in;font-size:14pt;}
+    .toc p{text-indent:0;font-size:10pt;margin-bottom:0.15in;}
+    .chapter-header{text-align:center;}
+    p{widows:2;orphans:2;}
+  </style></head><body>
+  <div class="title-page">
+    <h1>${book.title}</h1>
+    ${book.subtitle ? `<h2>${book.subtitle}</h2>` : ""}
+    <div class="author">${author}</div>
+  </div>
+  <div class="copyright">
+    Copyright \xA9 ${(/* @__PURE__ */ new Date()).getFullYear()} ${author}<br>
+    All rights reserved. No part of this book may be reproduced or transmitted in any form without written permission from the publisher.<br><br>
+    ISBN: [Insert your ISBN here]<br>
+    First Edition: ${(/* @__PURE__ */ new Date()).getFullYear()}
+  </div>
+  <div class="toc">
+    <h3>Contents</h3>
+    ${chaps.map((c) => `<p>Chapter ${c.number}: ${c.title}</p>`).join("")}
+  </div>
+  ${chapterHTML}
+  </body></html>`;
+  const w = window.open("", "_blank");
+  w.document.write(html);
+  w.document.close();
+  setTimeout(() => {
+    w.focus();
+    w.print();
+  }, 500);
+  return true;
+}
+function ChapterPacingChart({ book }) {
+  const chaps = book.chapters || [];
+  const wordCounts = chaps.map((c) => (c.content || "").split(/\s+/).filter((w) => w.length).length);
+  const maxWords = Math.max(...wordCounts, 1);
+  const avgWords = wordCounts.length ? Math.round(wordCounts.reduce((a, b) => a + b, 0) / wordCounts.length) : 0;
+  const colors = ["#a855f7", "#ec4899", "#3b82f6", "#10b981", "#f59e0b", "#ef4444", "#8b5cf6", "#06b6d4"];
+  return React.createElement(
+    "div",
+    { className: "bg-white/5 rounded-xl p-5 border border-white/10" },
+    React.createElement(
+      "div",
+      { className: "flex items-center justify-between mb-4" },
+      React.createElement("h3", { className: "text-white font-bold text-sm" }, "\u{1F4CA} Chapter Pacing"),
+      React.createElement(
+        "div",
+        { className: "text-xs text-white/40" },
+        "Avg: ",
+        React.createElement("span", { className: "text-white/70 font-semibold" }, avgWords.toLocaleString()),
+        " words"
+      )
+    ),
+    wordCounts.length === 0 ? React.createElement("p", { className: "text-white/20 text-xs text-center py-4" }, "No chapters written yet.") : React.createElement(
+      "div",
+      { className: "space-y-2" },
+      wordCounts.map((wc, i) => {
+        const pct = Math.round(wc / maxWords * 100);
+        const isLow = wc < avgWords * 0.5;
+        const isHigh = wc > avgWords * 1.5;
+        return React.createElement(
+          "div",
+          { key: i, className: "flex items-center gap-2" },
+          React.createElement("span", { className: "text-white/40 text-xs w-16 shrink-0" }, "Ch." + chaps[i]?.number),
+          React.createElement(
+            "div",
+            { className: "flex-1 h-6 bg-white/5 rounded-lg overflow-hidden relative" },
+            React.createElement("div", {
+              className: "h-full rounded-lg transition-all",
+              style: { width: Math.max(pct, 3) + "%", background: isLow ? "#ef4444" : isHigh ? "#f59e0b" : colors[i % colors.length] }
+            })
+          ),
+          React.createElement("span", { className: `text-xs w-12 text-right shrink-0 ${isLow ? "text-red-400" : isHigh ? "text-amber-400" : "text-white/50"}` }, wc.toLocaleString())
+        );
+      })
+    )
+  );
+}
+async function puterSpeechToText(audioBlob) {
+  if (typeof puter === "undefined") throw { code: "PUTER_NOT_LOADED", msg: "Puter.js not loaded" };
+  const result = await puter.ai.speech2txt(audioBlob);
+  return typeof result === "string" ? result : result?.text || "";
+}
+function VoiceDictationButton({ onTranscript, disabled }) {
+  const [recording, setRecording] = React.useState(false);
+  const [supported] = React.useState(typeof navigator !== "undefined" && (navigator.mediaDevices || navigator.webkitGetUserMedia));
+  const mediaRef = React.useRef(null);
+  const chunksRef = React.useRef([]);
+  const startRecording = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const recorder = new MediaRecorder(stream);
+      chunksRef.current = [];
+      recorder.ondataavailable = (e) => {
+        if (e.data.size > 0) chunksRef.current.push(e.data);
+      };
+      recorder.onstop = async () => {
+        stream.getTracks().forEach((t) => t.stop());
+        const blob = new Blob(chunksRef.current, { type: "audio/webm" });
+        try {
+          if (typeof puter !== "undefined") {
+            const text = await puterSpeechToText(blob);
+            if (text && onTranscript) onTranscript(text);
+          } else {
+            if (typeof speechSynthesis !== "undefined" && "webkitSpeechRecognition" in window) {
+            }
+          }
+        } catch (e) {
+          console.warn("STT failed:", e);
+        }
+      };
+      recorder.start();
+      mediaRef.current = recorder;
+      setRecording(true);
+    } catch (e) {
+      console.warn("Mic access denied:", e);
+    }
+  };
+  const stopRecording = () => {
+    if (mediaRef.current && mediaRef.current.state === "recording") {
+      mediaRef.current.stop();
+    }
+    setRecording(false);
+  };
+  if (!supported) return null;
+  return React.createElement("button", {
+    onClick: recording ? stopRecording : startRecording,
+    disabled,
+    className: `text-xs px-3 py-2 rounded-lg flex items-center gap-2 transition-all ${recording ? "bg-red-500/20 border border-red-500/40 text-red-300 animate-pulse" : "bg-violet-500/20 border border-violet-500/30 text-violet-300 hover:bg-violet-500/30"}`,
+    title: "Voice dictation"
+  }, recording ? "\u23F9 Stop dictation" : "\u{1F3A4} Dictate");
 }
 function SettingsModal({ onClose }) {
   const [draft, setDraft] = useState(getKey());
@@ -2273,7 +2489,31 @@ function WritingQualityPanel({ book, onSettings, onApply }) {
   const scoredCount = Object.keys(chScores).length;
   const avgHuman = scoredCount > 0 ? Math.round(Object.values(chScores).reduce((a, s) => a + (s.human_score || 0), 0) / scoredCount) : null;
   const msPassed = manuscript?.manuscript_verdict === "PASS";
-  return /* @__PURE__ */ React.createElement("div", { className: "max-w-3xl mx-auto space-y-5" }, /* @__PURE__ */ React.createElement(Card, null, /* @__PURE__ */ React.createElement("div", { className: "flex items-start justify-between gap-4 mb-2" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("h2", { className: "text-white text-xl font-bold" }, "\u270D\uFE0F Writing Quality Agent"), /* @__PURE__ */ React.createElement("p", { className: "text-white/40 text-sm mt-1" }, "Detects AI writing patterns and flags anything that doesn't read like a real human author. Must pass before publishing.")), avgHuman !== null && /* @__PURE__ */ React.createElement("div", { className: "text-center shrink-0" }, /* @__PURE__ */ React.createElement("div", { className: `text-3xl font-bold ${hc(avgHuman)}` }, avgHuman), /* @__PURE__ */ React.createElement("div", { className: "text-white/30 text-xs" }, "avg human score"))), manuscript && /* @__PURE__ */ React.createElement("div", { className: `rounded-xl border p-4 mt-3 ${msPassed ? "bg-green-500/10 border-green-500/30" : "bg-red-500/10 border-red-500/30"}` }, /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-3" }, /* @__PURE__ */ React.createElement("span", { className: "text-2xl" }, msPassed ? "\u2705" : "\u274C"), /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("p", { className: `font-bold ${msPassed ? "text-green-300" : "text-red-300"}` }, msPassed ? "Manuscript Approved \u2014 Reads Human" : "Manuscript Needs Work"), /* @__PURE__ */ React.createElement("p", { className: "text-white/50 text-sm" }, manuscript.verdict_summary)), /* @__PURE__ */ React.createElement("span", { className: `ml-auto text-2xl font-bold shrink-0 ${hc(manuscript.overall_human_score)}` }, manuscript.overall_human_score, "/100"))), error && /* @__PURE__ */ React.createElement("div", { className: "bg-red-500/20 border border-red-500/30 text-red-300 rounded-xl p-3 mt-3 text-sm" }, error)), /* @__PURE__ */ React.createElement("div", { className: "bg-white/5 border border-white/10 rounded-xl p-1 flex gap-1 flex-wrap" }, [["manuscript", "\u{1F4C4} Manuscript Check"], ["chapters", "\u{1F4D1} Chapter-by-Chapter"], ["overused", "\u{1F50D} Overused Words"], ["aidetect", "\u{1F916} AI Detection"]].map(([id, label]) => /* @__PURE__ */ React.createElement("button", { key: id, onClick: () => setActiveTab(id), className: `flex-1 py-2.5 rounded-lg text-sm font-medium transition-all ${activeTab === id ? "bg-purple-500 text-white" : "text-white/40 hover:text-white"}` }, label))), activeTab === "manuscript" && /* @__PURE__ */ React.createElement("div", { className: "space-y-5" }, /* @__PURE__ */ React.createElement("button", { onClick: runMsCheck, disabled: loadingMs || writtenCount === 0, className: "w-full bg-gradient-to-r from-purple-500 to-pink-500 text-white py-3.5 rounded-xl font-semibold hover:opacity-90 disabled:opacity-50 flex items-center justify-center gap-2" }, loadingMs ? /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement(Spin, null), "Analyzing manuscript\u2026") : manuscript ? "\u{1F504} Re-analyze Manuscript" : "\u{1F50D} Analyze Full Manuscript"), writtenCount === 0 && /* @__PURE__ */ React.createElement("p", { className: "text-white/25 text-sm text-center" }, "Write at least one chapter first."), manuscript && /* @__PURE__ */ React.createElement(React.Fragment, null, wqFlash && /* @__PURE__ */ React.createElement("div", { className: "bg-purple-500/15 border border-purple-500/40 text-purple-200 rounded-xl p-3 text-sm text-center font-medium" }, wqFlash), hasRewrites && /* @__PURE__ */ React.createElement("button", { onClick: improveWriting, disabled: improving || loadingMs, className: "w-full bg-gradient-to-r from-amber-500 to-orange-500 text-white py-4 rounded-xl font-bold text-lg hover:opacity-90 disabled:opacity-50 flex items-center justify-center gap-2 shadow-lg shadow-amber-900/30" }, improving ? /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement(Spin, null), "Applying ", totalRewrites, " rewrites & re-scoring\u2026") : "\u{1F680} Improve My Writing \u2014 Apply All Rewrites"), !hasRewrites && manuscript?.manuscript_verdict !== "PASS" && /* @__PURE__ */ React.createElement("p", { className: "text-white/30 text-xs text-center bg-white/5 rounded-xl p-3" }, "\u{1F4A1} Run Chapter-by-Chapter analysis to get specific rewrite suggestions you can auto-apply here."), /* @__PURE__ */ React.createElement(Card, null, /* @__PURE__ */ React.createElement("h3", { className: "text-white font-semibold mb-4" }, "Manuscript Assessment"), /* @__PURE__ */ React.createElement("div", { className: "space-y-4" }, [
+  return /* @__PURE__ */ React.createElement("div", { className: "max-w-3xl mx-auto space-y-5" }, /* @__PURE__ */ React.createElement(Card, null, /* @__PURE__ */ React.createElement("div", { className: "flex items-start justify-between gap-4 mb-2" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("h2", { className: "text-white text-xl font-bold" }, "\u270D\uFE0F Writing Quality Agent"), /* @__PURE__ */ React.createElement("p", { className: "text-white/40 text-sm mt-1" }, "Detects AI writing patterns and flags anything that doesn't read like a real human author. Must pass before publishing."), getBookReadability(book) && (() => {
+    const r = getBookReadability(book);
+    return React.createElement(
+      "div",
+      { className: "mt-3 flex items-center gap-4 bg-white/5 rounded-xl p-3" },
+      React.createElement(
+        "div",
+        { className: "text-center shrink-0" },
+        React.createElement("div", { className: "text-2xl font-bold text-white/80" }, r.ease),
+        React.createElement("div", { className: "text-white/30 text-xs" }, "Reading Ease")
+      ),
+      React.createElement(
+        "div",
+        { className: "text-center shrink-0" },
+        React.createElement("div", { className: "text-2xl font-bold text-white/80" }, r.grade),
+        React.createElement("div", { className: "text-white/30 text-xs" }, "Grade Level")
+      ),
+      React.createElement(
+        "div",
+        { className: "flex-1" },
+        React.createElement("p", { className: "text-white/60 text-sm font-medium" }, r.label),
+        React.createElement("p", { className: "text-white/30 text-xs" }, r.wordCount.toLocaleString() + " words analyzed")
+      )
+    );
+  })()), avgHuman !== null && /* @__PURE__ */ React.createElement("div", { className: "text-center shrink-0" }, /* @__PURE__ */ React.createElement("div", { className: `text-3xl font-bold ${hc(avgHuman)}` }, avgHuman), /* @__PURE__ */ React.createElement("div", { className: "text-white/30 text-xs" }, "avg human score"))), manuscript && /* @__PURE__ */ React.createElement("div", { className: `rounded-xl border p-4 mt-3 ${msPassed ? "bg-green-500/10 border-green-500/30" : "bg-red-500/10 border-red-500/30"}` }, /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-3" }, /* @__PURE__ */ React.createElement("span", { className: "text-2xl" }, msPassed ? "\u2705" : "\u274C"), /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("p", { className: `font-bold ${msPassed ? "text-green-300" : "text-red-300"}` }, msPassed ? "Manuscript Approved \u2014 Reads Human" : "Manuscript Needs Work"), /* @__PURE__ */ React.createElement("p", { className: "text-white/50 text-sm" }, manuscript.verdict_summary)), /* @__PURE__ */ React.createElement("span", { className: `ml-auto text-2xl font-bold shrink-0 ${hc(manuscript.overall_human_score)}` }, manuscript.overall_human_score, "/100"))), error && /* @__PURE__ */ React.createElement("div", { className: "bg-red-500/20 border border-red-500/30 text-red-300 rounded-xl p-3 mt-3 text-sm" }, error)), /* @__PURE__ */ React.createElement("div", { className: "bg-white/5 border border-white/10 rounded-xl p-1 flex gap-1 flex-wrap" }, [["manuscript", "\u{1F4C4} Manuscript Check"], ["chapters", "\u{1F4D1} Chapter-by-Chapter"], ["overused", "\u{1F50D} Overused Words"], ["aidetect", "\u{1F916} AI Detection"]].map(([id, label]) => /* @__PURE__ */ React.createElement("button", { key: id, onClick: () => setActiveTab(id), className: `flex-1 py-2.5 rounded-lg text-sm font-medium transition-all ${activeTab === id ? "bg-purple-500 text-white" : "text-white/40 hover:text-white"}` }, label))), activeTab === "manuscript" && /* @__PURE__ */ React.createElement("div", { className: "space-y-5" }, /* @__PURE__ */ React.createElement("button", { onClick: runMsCheck, disabled: loadingMs || writtenCount === 0, className: "w-full bg-gradient-to-r from-purple-500 to-pink-500 text-white py-3.5 rounded-xl font-semibold hover:opacity-90 disabled:opacity-50 flex items-center justify-center gap-2" }, loadingMs ? /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement(Spin, null), "Analyzing manuscript\u2026") : manuscript ? "\u{1F504} Re-analyze Manuscript" : "\u{1F50D} Analyze Full Manuscript"), writtenCount === 0 && /* @__PURE__ */ React.createElement("p", { className: "text-white/25 text-sm text-center" }, "Write at least one chapter first."), manuscript && /* @__PURE__ */ React.createElement(React.Fragment, null, wqFlash && /* @__PURE__ */ React.createElement("div", { className: "bg-purple-500/15 border border-purple-500/40 text-purple-200 rounded-xl p-3 text-sm text-center font-medium" }, wqFlash), hasRewrites && /* @__PURE__ */ React.createElement("button", { onClick: improveWriting, disabled: improving || loadingMs, className: "w-full bg-gradient-to-r from-amber-500 to-orange-500 text-white py-4 rounded-xl font-bold text-lg hover:opacity-90 disabled:opacity-50 flex items-center justify-center gap-2 shadow-lg shadow-amber-900/30" }, improving ? /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement(Spin, null), "Applying ", totalRewrites, " rewrites & re-scoring\u2026") : "\u{1F680} Improve My Writing \u2014 Apply All Rewrites"), !hasRewrites && manuscript?.manuscript_verdict !== "PASS" && /* @__PURE__ */ React.createElement("p", { className: "text-white/30 text-xs text-center bg-white/5 rounded-xl p-3" }, "\u{1F4A1} Run Chapter-by-Chapter analysis to get specific rewrite suggestions you can auto-apply here."), /* @__PURE__ */ React.createElement(Card, null, /* @__PURE__ */ React.createElement("h3", { className: "text-white font-semibold mb-4" }, "Manuscript Assessment"), /* @__PURE__ */ React.createElement("div", { className: "space-y-4" }, [
     { label: "Voice Consistency", val: manuscript.voice_consistency },
     { label: "Dialogue Quality", val: manuscript.dialogue_quality },
     { label: "Prose Variety & Rhythm", val: manuscript.prose_variety },
@@ -3171,9 +3411,9 @@ Write in: ${form.language}` : "";
 \u2022 Generate EXACTLY ${_chMin}-${_chMax} chapters (never fewer than ${Math.max(5, _chMin - 2)})`;
       const wordsNote = `
 \u2022 Target ${_wMin2.toLocaleString()}\u2013${_wMax2.toLocaleString()} words per chapter`;
-      let prompt;
+      let prompt2;
       if (mode === "import") {
-        prompt = `You are a professional book editor. Analyze this draft/notes and build a polished book outline from it.
+        prompt2 = `You are a professional book editor. Analyze this draft/notes and build a polished book outline from it.
 
 DRAFT/NOTES:
 ${importText.slice(0, 6e3)}
@@ -3186,7 +3426,7 @@ ${form.nonfiction_mode ? "Include exercises/reflections/action-steps fields per 
 Respond ONLY with valid JSON:
 {"title":"","subtitle":"","description":"","themes":[""],"tone_notes":"describe the intended emotional register and prose style","estimated_word_count":50000,"writing_language":"${form.language}","chapters":[{"number":1,"title":"","description":"","opening_hook":"how this chapter should open \u2014 first line or image","${form.nonfiction_mode ? "exercise" : "notes"}":""}]}`;
       } else {
-        prompt = `You are a bestselling author. Create a detailed, commercially compelling book outline.
+        prompt2 = `You are a bestselling author. Create a detailed, commercially compelling book outline.
 Topic: ${form.topic}
 Genre: ${form.genre}
 Audience: ${form.audience}${styleCtx}${langNote}${premiseCtx}
@@ -3206,7 +3446,7 @@ ${lengthNote.slice(2)}${wordsNote}
 Respond ONLY with valid JSON:
 {"title":"","subtitle":"","description":"","themes":[""],"tone_notes":"describe the intended emotional register and prose style","estimated_word_count":50000,"writing_language":"${form.language}","chapters":[{"number":1,"title":"","description":"","opening_hook":"how this chapter should open \u2014 first line or image","target_words":${_twTarget},"${form.nonfiction_mode ? "exercise" : "notes"}":""}]}`;
       }
-      const raw = await callAI(prompt);
+      const raw = await callAI(prompt2);
       trackUsage();
       const match = raw.match(/\{[\s\S]*\}/);
       if (!match) throw { code: "PARSE" };
@@ -4369,13 +4609,13 @@ Respond ONLY with valid JSON: {"alternatives":[{"title":"","subtitle":"","ration
       setBusy(false);
     }
   };
-  async function genCoverImage2(prompt, opts = {}) {
+  async function genCoverImage2(prompt2, opts = {}) {
     const imgModel = getPuterImageModel();
     const w = opts.width || 832, h = opts.height || 1216;
     const effectiveModel = imgModel === "pollinations" && getBackend() === "puter" ? "black-forest-labs/flux-2-pro" : imgModel;
     if (effectiveModel === "pollinations" || getBackend() === "gemini" || getBackend() === "groq" || getBackend() === "kilo" || getBackend() === "cerebras" || getBackend() === "cloudflare") {
       try {
-        const url = `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt.trim())}?width=${w}&height=${h}&model=flux&nologo=true&seed=${Date.now()}`;
+        const url = `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt2.trim())}?width=${w}&height=${h}&model=flux&nologo=true&seed=${Date.now()}`;
         const probe = await Promise.race([
           fetch(url, { method: "HEAD" }),
           new Promise((_, reject) => setTimeout(() => reject(new Error("timeout")), 3e3))
@@ -4384,7 +4624,7 @@ Respond ONLY with valid JSON: {"alternatives":[{"title":"","subtitle":"","ration
       } catch (e) {
         if (typeof puter !== "undefined") {
           try {
-            const imgEl2 = await puter.ai.txt2img(prompt, { model: "black-forest-labs/flux-2-pro" });
+            const imgEl2 = await puter.ai.txt2img(prompt2, { model: "black-forest-labs/flux-2-pro" });
             let src2 = "";
             if (typeof imgEl2 === "string") src2 = imgEl2;
             else if (imgEl2?.src) src2 = imgEl2.src;
@@ -4408,7 +4648,7 @@ Respond ONLY with valid JSON: {"alternatives":[{"title":"","subtitle":"","ration
       }
     }
     if (typeof puter === "undefined") throw { code: "PUTER_NOT_LOADED" };
-    const imgEl = await puter.ai.txt2img(prompt, { model: effectiveModel });
+    const imgEl = await puter.ai.txt2img(prompt2, { model: effectiveModel });
     const canvas = document.createElement("canvas");
     canvas.width = w;
     canvas.height = h;
@@ -4693,7 +4933,7 @@ ${chars.map((c) => `\u2022 ${c.name}: ${c.personality || ""} \u2014 Voice: ${c.v
       e.stopPropagation();
       downloadChapterTxt(book, i);
     }, className: "text-white/30 hover:text-white/60 text-xs" }, "\u{1F4C4} Export TXT"));
-  })() : /* @__PURE__ */ React.createElement("span", { className: "text-white/20 text-xs shrink-0" }, "Pending")))), /* @__PURE__ */ React.createElement("div", { className: "mt-5 bg-white/5 rounded-xl p-4" }, /* @__PURE__ */ React.createElement("div", { className: "flex justify-between text-xs text-white/40 mb-2" }, /* @__PURE__ */ React.createElement("span", null, "Progress"), /* @__PURE__ */ React.createElement("span", null, book.chapters.filter((c) => c.generated).length, "/", book.chapters.length, " chapters")), /* @__PURE__ */ React.createElement("div", { className: "h-2 bg-white/10 rounded-full overflow-hidden" }, /* @__PURE__ */ React.createElement("div", { className: "h-full bg-gradient-to-r from-purple-500 to-pink-500 rounded-full", style: { width: `${book.chapters.filter((c) => c.generated).length / book.chapters.length * 100}%` } })))), (!book.chapters || book.chapters.length === 0) && isBuilding && /* @__PURE__ */ React.createElement("div", { className: "text-center py-8 text-white/30" }, /* @__PURE__ */ React.createElement(Spin, null), /* @__PURE__ */ React.createElement("p", { className: "mt-3 text-sm" }, "Generating outline\u2026")), /* @__PURE__ */ React.createElement("div", { className: "mt-5 flex items-center gap-3 pt-4 border-t border-white/10" }, /* @__PURE__ */ React.createElement("button", { onClick: () => setReadingMode2(true), disabled: !book.chapters?.some((c) => c.generated), className: "text-xs px-3 py-2 rounded-lg bg-purple-500/20 border border-purple-500/30 text-purple-300 hover:bg-purple-500/30 hover:text-purple-200 transition-all flex items-center gap-2 disabled:opacity-40" }, "\u{1F4D6} Read Book"), /* @__PURE__ */ React.createElement("button", { onClick: () => downloadPDF(book), className: "text-xs px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-white/60 hover:bg-white/10 hover:text-white/90 transition-all flex items-center gap-2" }, "\u{1F4C4} Export PDF"), /* @__PURE__ */ React.createElement("button", { onClick: () => downloadMarkdown(book), className: "text-xs px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-white/60 hover:bg-white/10 hover:text-white/90 transition-all flex items-center gap-2" }, "\u{1F4DD} Export Markdown"), /* @__PURE__ */ React.createElement("button", { onClick: () => downloadBookJSON(book), className: "text-xs px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-white/60 hover:bg-white/10 hover:text-white/90 transition-all flex items-center gap-2" }, "\u{1F4BE} Export Backup (JSON)"), /* @__PURE__ */ React.createElement("label", { className: "text-xs px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-white/60 hover:bg-white/10 hover:text-white/90 transition-all flex items-center gap-2 cursor-pointer" }, "\u{1F4E5} Import Backup", /* @__PURE__ */ React.createElement("input", { type: "file", accept: ".json", className: "hidden", onChange: async (e) => {
+  })() : /* @__PURE__ */ React.createElement("span", { className: "text-white/20 text-xs shrink-0" }, "Pending")))), /* @__PURE__ */ React.createElement("div", { className: "mt-5" }, /* @__PURE__ */ React.createElement(ChapterPacingChart, { book })), /* @__PURE__ */ React.createElement("div", { className: "mt-3 bg-white/5 rounded-xl p-4" }, /* @__PURE__ */ React.createElement("div", { className: "flex justify-between text-xs text-white/40 mb-2" }, /* @__PURE__ */ React.createElement("span", null, "Progress"), /* @__PURE__ */ React.createElement("span", null, book.chapters.filter((c) => c.generated).length, "/", book.chapters.length, " chapters")), /* @__PURE__ */ React.createElement("div", { className: "h-2 bg-white/10 rounded-full overflow-hidden" }, /* @__PURE__ */ React.createElement("div", { className: "h-full bg-gradient-to-r from-purple-500 to-pink-500 rounded-full", style: { width: `${book.chapters.filter((c) => c.generated).length / book.chapters.length * 100}%` } })))), (!book.chapters || book.chapters.length === 0) && isBuilding && /* @__PURE__ */ React.createElement("div", { className: "text-center py-8 text-white/30" }, /* @__PURE__ */ React.createElement(Spin, null), /* @__PURE__ */ React.createElement("p", { className: "mt-3 text-sm" }, "Generating outline\u2026")), /* @__PURE__ */ React.createElement("div", { className: "mt-5 flex items-center gap-3 pt-4 border-t border-white/10" }, /* @__PURE__ */ React.createElement("button", { onClick: () => setReadingMode2(true), disabled: !book.chapters?.some((c) => c.generated), className: "text-xs px-3 py-2 rounded-lg bg-purple-500/20 border border-purple-500/30 text-purple-300 hover:bg-purple-500/30 hover:text-purple-200 transition-all flex items-center gap-2 disabled:opacity-40" }, "\u{1F4D6} Read Book"), /* @__PURE__ */ React.createElement("button", { onClick: () => downloadPDF(book), className: "text-xs px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-white/60 hover:bg-white/10 hover:text-white/90 transition-all flex items-center gap-2" }, "\u{1F4C4} Export PDF"), /* @__PURE__ */ React.createElement("button", { onClick: () => downloadMarkdown(book), className: "text-xs px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-white/60 hover:bg-white/10 hover:text-white/90 transition-all flex items-center gap-2" }, "\u{1F4DD} Export Markdown"), /* @__PURE__ */ React.createElement("button", { onClick: () => downloadBookJSON(book), className: "text-xs px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-white/60 hover:bg-white/10 hover:text-white/90 transition-all flex items-center gap-2" }, "\u{1F4BE} Export Backup (JSON)"), /* @__PURE__ */ React.createElement("label", { className: "text-xs px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-white/60 hover:bg-white/10 hover:text-white/90 transition-all flex items-center gap-2 cursor-pointer" }, "\u{1F4E5} Import Backup", /* @__PURE__ */ React.createElement("input", { type: "file", accept: ".json", className: "hidden", onChange: async (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
     try {
@@ -4746,7 +4986,17 @@ ${chars.map((c) => `\u2022 ${c.name}: ${c.personality || ""} \u2014 Voice: ${c.v
   } }), tab === 5 && /* @__PURE__ */ React.createElement("div", { className: "max-w-3xl mx-auto" }, /* @__PURE__ */ React.createElement(CompetitorPanel, { book, onSettings })), tab === 6 && /* @__PURE__ */ React.createElement("div", { className: "max-w-3xl mx-auto" }, /* @__PURE__ */ React.createElement(HookPanel, { book, onSettings })), tab === 7 && /* @__PURE__ */ React.createElement("div", { className: "max-w-3xl mx-auto" }, /* @__PURE__ */ React.createElement(ChapterQualityPanel, { book, onSettings })), tab === 8 && /* @__PURE__ */ React.createElement(WritingQualityPanel, { book, onSettings, onApply: (updates) => {
     const b = upd(updates);
     return b;
-  } }), tab === 9 && /* @__PURE__ */ React.createElement(CharactersPanel, { book, onSettings }), tab === 10 && /* @__PURE__ */ React.createElement("div", { className: "max-w-3xl mx-auto space-y-5" }, !book.review ? /* @__PURE__ */ React.createElement("div", { className: "bg-amber-500/15 border border-amber-500/40 rounded-2xl p-6 text-center" }, /* @__PURE__ */ React.createElement("div", { className: "text-4xl mb-3" }, "\u{1F916}"), /* @__PURE__ */ React.createElement("h3", { className: "text-amber-300 font-bold text-lg mb-2" }, "Review Agent Required"), /* @__PURE__ */ React.createElement("p", { className: "text-amber-200/60 text-sm mb-5" }, "The Review Agent must score 70+ before you can publish."), /* @__PURE__ */ React.createElement("button", { onClick: () => setTab(4), className: "bg-gradient-to-r from-amber-500 to-orange-500 text-black font-bold px-8 py-3 rounded-xl hover:opacity-90" }, "Run Review Agent \u2192")) : !reviewPassed ? /* @__PURE__ */ React.createElement("div", { className: "bg-red-500/15 border border-red-500/40 rounded-2xl p-6 text-center" }, /* @__PURE__ */ React.createElement("div", { className: "text-4xl mb-3" }, "\u274C"), /* @__PURE__ */ React.createElement("h3", { className: "text-red-300 font-bold text-lg mb-2" }, "Review Score Too Low (", reviewScore, "/100)"), /* @__PURE__ */ React.createElement("p", { className: "text-red-200/60 text-sm mb-5" }, "Needs 70+. Apply improvements in the Review tab then re-run."), /* @__PURE__ */ React.createElement("button", { onClick: () => setTab(4), className: "bg-gradient-to-r from-red-500 to-pink-500 text-white font-bold px-8 py-3 rounded-xl hover:opacity-90" }, "View Review Suggestions \u2192")) : /* @__PURE__ */ React.createElement("div", { className: "bg-green-500/10 border border-green-500/30 rounded-2xl p-4 flex items-center gap-3" }, /* @__PURE__ */ React.createElement("span", { className: "text-2xl" }, "\u2705"), /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("p", { className: "text-green-300 font-bold text-sm" }, "Review Passed \u2014 ", reviewScore, "/100"))), reviewPassed && (!book.manuscript_quality ? /* @__PURE__ */ React.createElement("div", { className: "bg-amber-500/15 border border-amber-500/40 rounded-2xl p-6 text-center" }, /* @__PURE__ */ React.createElement("div", { className: "text-4xl mb-3" }, "\u270D\uFE0F"), /* @__PURE__ */ React.createElement("h3", { className: "text-amber-300 font-bold text-lg mb-2" }, "Writing Quality Check Required"), /* @__PURE__ */ React.createElement("p", { className: "text-amber-200/60 text-sm mb-5" }, "Run the Writing Quality Agent to verify your manuscript reads like a human author, not AI. Required before publishing."), /* @__PURE__ */ React.createElement("button", { onClick: () => setTab(8), className: "bg-gradient-to-r from-purple-500 to-pink-500 text-white font-bold px-8 py-3 rounded-xl hover:opacity-90" }, "Run Writing Quality Check \u2192")) : !writingPassed ? /* @__PURE__ */ React.createElement("div", { className: "bg-red-500/15 border border-red-500/40 rounded-2xl p-6 text-center" }, /* @__PURE__ */ React.createElement("div", { className: "text-4xl mb-3" }, "\u{1F916}"), /* @__PURE__ */ React.createElement("h3", { className: "text-red-300 font-bold text-lg mb-2" }, "AI Writing Patterns Detected (", writingScore, "/100)"), /* @__PURE__ */ React.createElement("p", { className: "text-red-200/60 text-sm mb-5" }, "Your manuscript has AI tells that need to be addressed. Apply the chapter rewrites suggested in the Writing Quality tab, then re-run chapters and re-analyze."), /* @__PURE__ */ React.createElement("button", { onClick: () => setTab(8), className: "bg-gradient-to-r from-red-500 to-pink-500 text-white font-bold px-8 py-3 rounded-xl hover:opacity-90" }, "View Writing Issues \u2192")) : /* @__PURE__ */ React.createElement("div", { className: "bg-green-500/10 border border-green-500/30 rounded-2xl p-4 flex items-center gap-3" }, /* @__PURE__ */ React.createElement("span", { className: "text-2xl" }, "\u2705"), /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("p", { className: "text-green-300 font-bold text-sm" }, "Writing Quality Passed \u2014 ", writingScore, "/100 human")))), reviewPassed && writingPassed && /* @__PURE__ */ React.createElement(Card, null, /* @__PURE__ */ React.createElement("h2", { className: "text-white text-xl font-bold mb-2" }, "Publish Your Book"), /* @__PURE__ */ React.createElement("p", { className: "text-white/40 mb-6 text-sm" }, "Your book includes the series read-order page (if hooks were generated)."), /* @__PURE__ */ React.createElement("div", { className: "space-y-3 mb-8" }, /* @__PURE__ */ React.createElement(BookStatsBar, { book }), [{ label: "Chapters written", done: book.chapters?.some((c) => c.content) }, { label: "Cover generated", done: !!book.cover_image_url }, { label: "SEO ready", done: !!book.seo_title }, { label: "Review Agent passed (70+)", done: reviewPassed }, { label: "Writing Quality passed (72+)", done: writingPassed }, { label: "Market analysis done", done: !!book.competitor_analysis }, { label: "Hooks & blurbs generated", done: !!book.hooks }, { label: "Characters documented", done: (getCharacters(bookId) || []).length > 0 }].map((item, i) => /* @__PURE__ */ React.createElement("div", { key: i, className: `flex items-center gap-3 px-4 py-3 rounded-lg ${item.done ? "bg-green-500/10" : "bg-white/5"}` }, /* @__PURE__ */ React.createElement("span", null, item.done ? "\u2705" : "\u2B55"), /* @__PURE__ */ React.createElement("span", { className: `text-sm ${item.done ? "text-white" : "text-white/35"}` }, item.label)))), /* @__PURE__ */ React.createElement("p", { className: "text-white/50 text-sm font-semibold mb-3" }, "Export Formats"), /* @__PURE__ */ React.createElement("div", { className: "grid grid-cols-2 gap-3" }, /* @__PURE__ */ React.createElement("button", { onClick: () => download("md"), className: "bg-gradient-to-r from-purple-500 to-pink-500 text-white py-3 rounded-xl font-semibold hover:opacity-90 flex items-center justify-center gap-2 text-sm" }, "\u{1F4DD} Markdown (.md)"), /* @__PURE__ */ React.createElement("button", { onClick: () => download("docx"), className: "bg-gradient-to-r from-indigo-500 to-blue-500 text-white py-3 rounded-xl font-semibold hover:opacity-90 flex items-center justify-center gap-2 text-sm" }, "\u{1F4CB} Word (.docx) \u2B50 NEW"), /* @__PURE__ */ React.createElement("button", { onClick: () => download("epub"), className: "bg-gradient-to-r from-blue-500 to-cyan-500 text-white py-3 rounded-xl font-semibold hover:opacity-90 flex items-center justify-center gap-2 text-sm" }, "\u{1F4D6} EPUB-ready (.html)"), /* @__PURE__ */ React.createElement("button", { onClick: () => download("txt"), className: "bg-white/10 border border-white/20 text-white py-3 rounded-xl font-semibold hover:bg-white/15 flex items-center justify-center gap-2 text-sm" }, "\u{1F4C4} Plain Text (.txt)"), /* @__PURE__ */ React.createElement("button", { onClick: () => download("rtf"), className: "bg-gradient-to-r from-orange-500 to-amber-500 text-white py-3 rounded-xl font-semibold hover:opacity-90 flex items-center justify-center gap-2 text-sm" }, "\u{1F4CB} Word Doc (.rtf)"), /* @__PURE__ */ React.createElement("button", { onClick: () => download("audio"), className: "bg-gradient-to-r from-green-500 to-emerald-500 text-white py-3 rounded-xl font-semibold hover:opacity-90 flex items-center justify-center gap-2 text-sm" }, "\u{1F399}\uFE0F Audiobook Script"), /* @__PURE__ */ React.createElement("button", { onClick: () => {
+  } }), tab === 9 && /* @__PURE__ */ React.createElement(CharactersPanel, { book, onSettings }), tab === 10 && /* @__PURE__ */ React.createElement("div", { className: "max-w-3xl mx-auto space-y-5" }, !book.review ? /* @__PURE__ */ React.createElement("div", { className: "bg-amber-500/15 border border-amber-500/40 rounded-2xl p-6 text-center" }, /* @__PURE__ */ React.createElement("div", { className: "text-4xl mb-3" }, "\u{1F916}"), /* @__PURE__ */ React.createElement("h3", { className: "text-amber-300 font-bold text-lg mb-2" }, "Review Agent Required"), /* @__PURE__ */ React.createElement("p", { className: "text-amber-200/60 text-sm mb-5" }, "The Review Agent must score 70+ before you can publish."), /* @__PURE__ */ React.createElement("button", { onClick: () => setTab(4), className: "bg-gradient-to-r from-amber-500 to-orange-500 text-black font-bold px-8 py-3 rounded-xl hover:opacity-90" }, "Run Review Agent \u2192")) : !reviewPassed ? /* @__PURE__ */ React.createElement("div", { className: "bg-red-500/15 border border-red-500/40 rounded-2xl p-6 text-center" }, /* @__PURE__ */ React.createElement("div", { className: "text-4xl mb-3" }, "\u274C"), /* @__PURE__ */ React.createElement("h3", { className: "text-red-300 font-bold text-lg mb-2" }, "Review Score Too Low (", reviewScore, "/100)"), /* @__PURE__ */ React.createElement("p", { className: "text-red-200/60 text-sm mb-5" }, "Needs 70+. Apply improvements in the Review tab then re-run."), /* @__PURE__ */ React.createElement("button", { onClick: () => setTab(4), className: "bg-gradient-to-r from-red-500 to-pink-500 text-white font-bold px-8 py-3 rounded-xl hover:opacity-90" }, "View Review Suggestions \u2192")) : /* @__PURE__ */ React.createElement("div", { className: "bg-green-500/10 border border-green-500/30 rounded-2xl p-4 flex items-center gap-3" }, /* @__PURE__ */ React.createElement("span", { className: "text-2xl" }, "\u2705"), /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("p", { className: "text-green-300 font-bold text-sm" }, "Review Passed \u2014 ", reviewScore, "/100"))), reviewPassed && (!book.manuscript_quality ? /* @__PURE__ */ React.createElement("div", { className: "bg-amber-500/15 border border-amber-500/40 rounded-2xl p-6 text-center" }, /* @__PURE__ */ React.createElement("div", { className: "text-4xl mb-3" }, "\u270D\uFE0F"), /* @__PURE__ */ React.createElement("h3", { className: "text-amber-300 font-bold text-lg mb-2" }, "Writing Quality Check Required"), /* @__PURE__ */ React.createElement("p", { className: "text-amber-200/60 text-sm mb-5" }, "Run the Writing Quality Agent to verify your manuscript reads like a human author, not AI. Required before publishing."), /* @__PURE__ */ React.createElement("button", { onClick: () => setTab(8), className: "bg-gradient-to-r from-purple-500 to-pink-500 text-white font-bold px-8 py-3 rounded-xl hover:opacity-90" }, "Run Writing Quality Check \u2192")) : !writingPassed ? /* @__PURE__ */ React.createElement("div", { className: "bg-red-500/15 border border-red-500/40 rounded-2xl p-6 text-center" }, /* @__PURE__ */ React.createElement("div", { className: "text-4xl mb-3" }, "\u{1F916}"), /* @__PURE__ */ React.createElement("h3", { className: "text-red-300 font-bold text-lg mb-2" }, "AI Writing Patterns Detected (", writingScore, "/100)"), /* @__PURE__ */ React.createElement("p", { className: "text-red-200/60 text-sm mb-5" }, "Your manuscript has AI tells that need to be addressed. Apply the chapter rewrites suggested in the Writing Quality tab, then re-run chapters and re-analyze."), /* @__PURE__ */ React.createElement("button", { onClick: () => setTab(8), className: "bg-gradient-to-r from-red-500 to-pink-500 text-white font-bold px-8 py-3 rounded-xl hover:opacity-90" }, "View Writing Issues \u2192")) : /* @__PURE__ */ React.createElement("div", { className: "bg-green-500/10 border border-green-500/30 rounded-2xl p-4 flex items-center gap-3" }, /* @__PURE__ */ React.createElement("span", { className: "text-2xl" }, "\u2705"), /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("p", { className: "text-green-300 font-bold text-sm" }, "Writing Quality Passed \u2014 ", writingScore, "/100 human")))), reviewPassed && writingPassed && /* @__PURE__ */ React.createElement(Card, null, /* @__PURE__ */ React.createElement("h2", { className: "text-white text-xl font-bold mb-2" }, "Publish Your Book"), /* @__PURE__ */ React.createElement("p", { className: "text-white/40 mb-6 text-sm" }, "Your book includes the series read-order page (if hooks were generated)."), /* @__PURE__ */ React.createElement("div", { className: "space-y-3 mb-8" }, /* @__PURE__ */ React.createElement(BookStatsBar, { book }), [
+    { label: "Chapters written", done: book.chapters?.some((c) => c.content) },
+    { label: "Cover generated", done: !!book.cover_image_url },
+    { label: "SEO ready", done: !!book.seo_title },
+    { label: "Review Agent passed (70+)", done: reviewPassed },
+    { label: "Writing Quality passed (72+)", done: writingPassed },
+    { label: "Market analysis done", done: !!book.competitor_analysis },
+    { label: "Hooks & blurbs generated", done: !!book.hooks },
+    { label: "Characters documented", done: (getCharacters(bookId) || []).length > 0 },
+    { label: "Readability checked", done: !!getBookReadability(book) }
+  ].map((item, i) => /* @__PURE__ */ React.createElement("div", { key: i, className: `flex items-center gap-3 px-4 py-3 rounded-lg ${item.done ? "bg-green-500/10" : "bg-white/5"}` }, /* @__PURE__ */ React.createElement("span", null, item.done ? "\u2705" : "\u2B55"), /* @__PURE__ */ React.createElement("span", { className: `text-sm ${item.done ? "text-white" : "text-white/35"}` }, item.label)))), /* @__PURE__ */ React.createElement("p", { className: "text-white/50 text-sm font-semibold mb-3" }, "Export Formats"), /* @__PURE__ */ React.createElement("div", { className: "grid grid-cols-2 gap-3" }, /* @__PURE__ */ React.createElement("button", { onClick: () => download("md"), className: "bg-gradient-to-r from-purple-500 to-pink-500 text-white py-3 rounded-xl font-semibold hover:opacity-90 flex items-center justify-center gap-2 text-sm" }, "\u{1F4DD} Markdown (.md)"), /* @__PURE__ */ React.createElement("button", { onClick: () => download("docx"), className: "bg-gradient-to-r from-indigo-500 to-blue-500 text-white py-3 rounded-xl font-semibold hover:opacity-90 flex items-center justify-center gap-2 text-sm" }, "\u{1F4CB} Word (.docx) \u2B50 NEW"), /* @__PURE__ */ React.createElement("button", { onClick: () => download("epub"), className: "bg-gradient-to-r from-blue-500 to-cyan-500 text-white py-3 rounded-xl font-semibold hover:opacity-90 flex items-center justify-center gap-2 text-sm" }, "\u{1F4D6} EPUB-ready (.html)"), /* @__PURE__ */ React.createElement("button", { onClick: () => download("txt"), className: "bg-white/10 border border-white/20 text-white py-3 rounded-xl font-semibold hover:bg-white/15 flex items-center justify-center gap-2 text-sm" }, "\u{1F4C4} Plain Text (.txt)"), /* @__PURE__ */ React.createElement("button", { onClick: () => download("rtf"), className: "bg-gradient-to-r from-orange-500 to-amber-500 text-white py-3 rounded-xl font-semibold hover:opacity-90 flex items-center justify-center gap-2 text-sm" }, "\u{1F4CB} Word Doc (.rtf)"), /* @__PURE__ */ React.createElement("button", { onClick: () => download("audio"), className: "bg-gradient-to-r from-green-500 to-emerald-500 text-white py-3 rounded-xl font-semibold hover:opacity-90 flex items-center justify-center gap-2 text-sm" }, "\u{1F399}\uFE0F Audiobook Script"), /* @__PURE__ */ React.createElement("button", { onClick: () => {
     const ch2 = book.chapters?.find((c) => c.content);
     if (!ch2) {
       alert("Write a chapter first.");
@@ -4766,7 +5016,10 @@ ${chars.map((c) => `\u2022 ${c.name}: ${c.personality || ""} \u2014 Voice: ${c.v
     if (eng) utt.voice = eng;
     u.speak(utt);
     flash2("\u{1F50A} Reading Ch.1 preview \u2014 click again to stop");
-  }, className: "bg-white/5 border border-white/10 text-white/60 py-3 rounded-xl font-semibold hover:bg-white/10 flex items-center justify-center gap-2 text-sm" }, "\u{1F50A} Listen Preview"), /* @__PURE__ */ React.createElement("button", { onClick: () => downloadPDF(book), className: "bg-gradient-to-r from-red-500 to-rose-500 text-white py-3 rounded-xl font-semibold hover:opacity-90 flex items-center justify-center gap-2 text-sm" }, "\u{1F4C4} Print PDF")), /* @__PURE__ */ React.createElement("div", { className: "mt-4 bg-blue-500/10 border border-blue-500/20 rounded-xl p-4 text-xs text-white/50 space-y-2" }, /* @__PURE__ */ React.createElement("p", { className: "text-white/70 font-semibold text-sm" }, "\u{1F4D6} Where to publish your .epub"), /* @__PURE__ */ React.createElement("div", { className: "grid grid-cols-2 gap-2 mt-2" }, /* @__PURE__ */ React.createElement("div", { className: "bg-white/5 rounded-lg p-2.5" }, /* @__PURE__ */ React.createElement("p", { className: "text-white/60 font-semibold" }, "Amazon KDP"), /* @__PURE__ */ React.createElement("p", { className: "text-white/30" }, "Upload .epub directly. Reaches millions. Royalties 35-70%.")), /* @__PURE__ */ React.createElement("div", { className: "bg-white/5 rounded-lg p-2.5" }, /* @__PURE__ */ React.createElement("p", { className: "text-white/60 font-semibold" }, "Smashwords"), /* @__PURE__ */ React.createElement("p", { className: "text-white/30" }, "Free. Distributes to Apple Books, Barnes & Noble, Kobo, libraries.")), /* @__PURE__ */ React.createElement("div", { className: "bg-white/5 rounded-lg p-2.5" }, /* @__PURE__ */ React.createElement("p", { className: "text-white/60 font-semibold" }, "Draft2Digital"), /* @__PURE__ */ React.createElement("p", { className: "text-white/30" }, "Free. Uploads to 12+ stores in one click. Best aggregator.")), /* @__PURE__ */ React.createElement("div", { className: "bg-white/5 rounded-lg p-2.5" }, /* @__PURE__ */ React.createElement("p", { className: "text-white/60 font-semibold" }, "Payhip / Gumroad"), /* @__PURE__ */ React.createElement("p", { className: "text-white/30" }, "Sell directly. Keep ~97% of revenue. No approval needed.")), /* @__PURE__ */ React.createElement("div", { className: "bg-white/5 rounded-lg p-2.5" }, /* @__PURE__ */ React.createElement("p", { className: "text-white/60 font-semibold" }, "Leanpub"), /* @__PURE__ */ React.createElement("p", { className: "text-white/30" }, "Great for nonfiction & guides. Readers pay what they want.")), /* @__PURE__ */ React.createElement("div", { className: "bg-white/5 rounded-lg p-2.5" }, /* @__PURE__ */ React.createElement("p", { className: "text-white/60 font-semibold" }, "Wattpad / Royal Road"), /* @__PURE__ */ React.createElement("p", { className: "text-white/30" }, "Upload as chapters for free fiction audiences. Build a following."))), /* @__PURE__ */ React.createElement("p", { className: "text-white/25 mt-2" }, "\u{1F4CB} RTF = best for Word/Docs editing before publish \xB7 TXT = plain archive \xB7 Audiobook script = hand to narrator or use Audio Studio tab"))), /* @__PURE__ */ React.createElement("div", { className: "grid grid-cols-3 gap-4" }, [{ name: "Amazon KDP", url: "https://kdp.amazon.com", icon: "\u{1F4E6}", color: "border-orange-500/30 bg-orange-500/10" }, { name: "Smashwords", url: "https://www.smashwords.com", icon: "\u{1F4DA}", color: "border-blue-500/30 bg-blue-500/10" }, { name: "Draft2Digital", url: "https://draft2digital.com", icon: "\u{1F310}", color: "border-green-500/30 bg-green-500/10" }].map((p) => /* @__PURE__ */ React.createElement("a", { key: p.name, href: p.url, target: "_blank", rel: "noopener noreferrer", className: `border ${p.color} rounded-xl p-4 text-center hover:opacity-80` }, /* @__PURE__ */ React.createElement("div", { className: "text-2xl mb-2" }, p.icon), /* @__PURE__ */ React.createElement("p", { className: "text-white font-semibold text-sm" }, p.name), /* @__PURE__ */ React.createElement("p", { className: "text-white/30 text-xs mt-1" }, "Open \u2192"))))), tab === 11 && /* @__PURE__ */ React.createElement(TranslatePanel, { book, upd, quotaHit, bump, handleErr, flash: flash2 }), tab === 12 && /* @__PURE__ */ React.createElement(AudioStudioPanel, { book, bookId, onSettings, flash: flash2 }), tab === 13 && /* @__PURE__ */ React.createElement(KDPPackagePanel, { book, busy, busyStep, onGenerate: genKDPPackage, quotaHit, flash: flash2, isBuilding })));
+  }, className: "bg-white/5 border border-white/10 text-white/60 py-3 rounded-xl font-semibold hover:bg-white/10 flex items-center justify-center gap-2 text-sm" }, "\u{1F50A} Listen Preview"), /* @__PURE__ */ React.createElement("button", { onClick: () => downloadPDF(book), className: "bg-gradient-to-r from-red-500 to-rose-500 text-white py-3 rounded-xl font-semibold hover:opacity-90 flex items-center justify-center gap-2 text-sm" }, "\u{1F4C4} Print PDF"), /* @__PURE__ */ React.createElement("button", { onClick: () => {
+    const sel = prompt("Choose trim size:\n\n6x9 (most common)\\n5x8 (compact)\\n5.25x8 (mass market)\\n5.5x8.5 (digest)\\n7x10 (textbook)\\n8.5x11 (workbook)\\n\\nType the size code (e.g. 6x9):", "6x9");
+    if (sel) generateKDPInterior(book, sel.trim());
+  }, className: "bg-gradient-to-r from-amber-500 to-orange-600 text-white py-3 rounded-xl font-semibold hover:opacity-90 flex items-center justify-center gap-2 text-sm" }, "\u{1F4D6} KDP Paperback Interior \u2B50 NEW")), /* @__PURE__ */ React.createElement("div", { className: "mt-4 bg-blue-500/10 border border-blue-500/20 rounded-xl p-4 text-xs text-white/50 space-y-2" }, /* @__PURE__ */ React.createElement("p", { className: "text-white/70 font-semibold text-sm" }, "\u{1F4D6} Where to publish your .epub"), /* @__PURE__ */ React.createElement("div", { className: "grid grid-cols-2 gap-2 mt-2" }, /* @__PURE__ */ React.createElement("div", { className: "bg-white/5 rounded-lg p-2.5" }, /* @__PURE__ */ React.createElement("p", { className: "text-white/60 font-semibold" }, "Amazon KDP"), /* @__PURE__ */ React.createElement("p", { className: "text-white/30" }, "Upload .epub directly. Reaches millions. Royalties 35-70%.")), /* @__PURE__ */ React.createElement("div", { className: "bg-white/5 rounded-lg p-2.5" }, /* @__PURE__ */ React.createElement("p", { className: "text-white/60 font-semibold" }, "Smashwords"), /* @__PURE__ */ React.createElement("p", { className: "text-white/30" }, "Free. Distributes to Apple Books, Barnes & Noble, Kobo, libraries.")), /* @__PURE__ */ React.createElement("div", { className: "bg-white/5 rounded-lg p-2.5" }, /* @__PURE__ */ React.createElement("p", { className: "text-white/60 font-semibold" }, "Draft2Digital"), /* @__PURE__ */ React.createElement("p", { className: "text-white/30" }, "Free. Uploads to 12+ stores in one click. Best aggregator.")), /* @__PURE__ */ React.createElement("div", { className: "bg-white/5 rounded-lg p-2.5" }, /* @__PURE__ */ React.createElement("p", { className: "text-white/60 font-semibold" }, "Payhip / Gumroad"), /* @__PURE__ */ React.createElement("p", { className: "text-white/30" }, "Sell directly. Keep ~97% of revenue. No approval needed.")), /* @__PURE__ */ React.createElement("div", { className: "bg-white/5 rounded-lg p-2.5" }, /* @__PURE__ */ React.createElement("p", { className: "text-white/60 font-semibold" }, "Leanpub"), /* @__PURE__ */ React.createElement("p", { className: "text-white/30" }, "Great for nonfiction & guides. Readers pay what they want.")), /* @__PURE__ */ React.createElement("div", { className: "bg-white/5 rounded-lg p-2.5" }, /* @__PURE__ */ React.createElement("p", { className: "text-white/60 font-semibold" }, "Wattpad / Royal Road"), /* @__PURE__ */ React.createElement("p", { className: "text-white/30" }, "Upload as chapters for free fiction audiences. Build a following."))), /* @__PURE__ */ React.createElement("p", { className: "text-white/25 mt-2" }, "\u{1F4CB} RTF = best for Word/Docs editing before publish \xB7 TXT = plain archive \xB7 Audiobook script = hand to narrator or use Audio Studio tab"))), /* @__PURE__ */ React.createElement("div", { className: "grid grid-cols-3 gap-4" }, [{ name: "Amazon KDP", url: "https://kdp.amazon.com", icon: "\u{1F4E6}", color: "border-orange-500/30 bg-orange-500/10" }, { name: "Smashwords", url: "https://www.smashwords.com", icon: "\u{1F4DA}", color: "border-blue-500/30 bg-blue-500/10" }, { name: "Draft2Digital", url: "https://draft2digital.com", icon: "\u{1F310}", color: "border-green-500/30 bg-green-500/10" }].map((p) => /* @__PURE__ */ React.createElement("a", { key: p.name, href: p.url, target: "_blank", rel: "noopener noreferrer", className: `border ${p.color} rounded-xl p-4 text-center hover:opacity-80` }, /* @__PURE__ */ React.createElement("div", { className: "text-2xl mb-2" }, p.icon), /* @__PURE__ */ React.createElement("p", { className: "text-white font-semibold text-sm" }, p.name), /* @__PURE__ */ React.createElement("p", { className: "text-white/30 text-xs mt-1" }, "Open \u2192"))))), tab === 11 && /* @__PURE__ */ React.createElement(TranslatePanel, { book, upd, quotaHit, bump, handleErr, flash: flash2 }), tab === 12 && /* @__PURE__ */ React.createElement(AudioStudioPanel, { book, bookId, onSettings, flash: flash2 }), tab === 13 && /* @__PURE__ */ React.createElement(KDPPackagePanel, { book, busy, busyStep, onGenerate: genKDPPackage, quotaHit, flash: flash2, isBuilding })));
 }
 function KDPCopyBtn({ text, label = "\u{1F4CB} Copy" }) {
   const [copied, setCopied] = useState(false);
@@ -5932,7 +6185,7 @@ const ART_STYLES = [
   { id: "romance-soft", label: "Romance Soft", "prompt": "soft watercolor manga style, warm romantic lighting, cherry blossom atmosphere, gentle pastel palette, expressive emotional character faces, shoujo manga romance scene" }
 ];
 async function runMangaResearch(bump, genre) {
-  const prompt = `You are a manga/manhwa industry analyst with deep knowledge of Webtoon, Tapas, MangaDex, and Amazon Kindle charts.
+  const prompt2 = `You are a manga/manhwa industry analyst with deep knowledge of Webtoon, Tapas, MangaDex, and Amazon Kindle charts.
 
 Analyze the "${genre}" genre and identify the most profitable, underserved niches right now (2025).
 
@@ -5949,7 +6202,7 @@ Respond ONLY with valid JSON:
   "recommended_chapter_length": "average panel count / word count per chapter",
   "monetization_tip": "Best platform and pricing strategy for this genre"
 }`;
-  const raw = await callAI(prompt, 0.5);
+  const raw = await callAI(prompt2, 0.5);
   bump();
   try {
     const m = raw.match(/\{[\s\S]*\}/);
@@ -5965,7 +6218,7 @@ Respond ONLY with valid JSON:
 }
 async function generateMangaConcept(bump, data) {
   const { genre, format, artStyle, userIdea, targetAudience } = data;
-  const prompt = `You are a professional manga/manhwa story architect. Create a complete series concept.
+  const prompt2 = `You are a professional manga/manhwa story architect. Create a complete series concept.
 
 Format: ${format} | Genre: ${genre} | Art Style: ${artStyle}
 Target Audience: ${targetAudience}
@@ -5990,7 +6243,7 @@ Create a professional manga series concept. Respond ONLY with valid JSON:
   "chapter_structure": "How each chapter is structured (setup, escalation, cliffhanger format)",
   "recurring_themes": ["theme1","theme2","theme3"]
 }`;
-  const raw = await callAI(prompt, 0.8);
+  const raw = await callAI(prompt2, 0.8);
   bump();
   try {
     const m = raw.match(/\{[\s\S]*\}/);
@@ -6030,7 +6283,7 @@ Chapter Structure Formula: ${concept.chapter_structure || "Setup \u2192 Escalati
     const prevSummaries = [...existingChapters, ...chapters].slice(-3).map(
       (ch2) => `Ch.${ch2.number} "${ch2.title}": ${ch2.summary}`
     ).join("\n");
-    const prompt = `You are a professional manga script writer. Write Chapter ${chNum} for this ${project.genre} ${project.format}.
+    const prompt2 = `You are a professional manga script writer. Write Chapter ${chNum} for this ${project.genre} ${project.format}.
 
 ${overarchingArc}
 
@@ -6069,7 +6322,7 @@ FORMAT your response as ONLY valid JSON:
   "next_chapter_setup": "What seeds are planted for Ch.${chNum + 1}"
 }`;
     try {
-      const raw = await callAI(prompt, 0.85);
+      const raw = await callAI(prompt2, 0.85);
       bump();
       const m = raw.match(/\{[\s\S]*\}/);
       if (!m) throw { code: "PARSE", chapter: chNum };
@@ -6091,20 +6344,25 @@ FORMAT your response as ONLY valid JSON:
   return chapters;
 }
 async function generatePanelImage(project, scene, panelDesc) {
-  const artStyle = ART_STYLES.find((a) => a.id === (project.art_style || "manhwa-color"));
-  const stylePrompt = artStyle?.prompt || "manhwa webtoon style, full color";
-  const concept = project.concept || {};
-  const protagonist = concept.protagonist || {};
-  const fullPrompt = [
-    stylePrompt,
-    panelDesc,
-    `scene at ${scene.location}, ${scene.time_of_day}`,
-    protagonist.appearance ? `protagonist: ${protagonist.appearance}` : "",
-    "manga panel composition, high quality, no text, no speech bubbles",
-    "professional manga illustration"
-  ].filter(Boolean).join(", ");
-  const url = `https://image.pollinations.ai/prompt/${encodeURIComponent(fullPrompt)}?width=1024&height=1024&model=flux&nologo=true&seed=${Math.floor(Math.random() * 99999)}`;
-  return url;
+  try {
+    const artStyle = ART_STYLES.find((a) => a.id === (project.art_style || "manhwa-color"));
+    const stylePrompt = artStyle?.prompt || "manhwa webtoon style, full color";
+    const concept = project.concept || {};
+    const protagonist = concept.protagonist || {};
+    const fullPrompt = [
+      stylePrompt,
+      panelDesc,
+      `scene at ${scene.location}, ${scene.time_of_day}`,
+      protagonist.appearance ? `protagonist: ${protagonist.appearance}` : "",
+      "manga panel composition, high quality, no text, no speech bubbles",
+      "professional manga illustration"
+    ].filter(Boolean).join(", ");
+    const url = `https://image.pollinations.ai/prompt/${encodeURIComponent(fullPrompt)}?width=1024&height=1024&model=flux&nologo=true&seed=${Math.floor(Math.random() * 99999)}`;
+    return url;
+  } catch (e) {
+    console.warn("Panel image generation failed:", e);
+    return null;
+  }
 }
 function MangaHomePage({ navigate, onSettings }) {
   const [projects, setProjects] = useState(getMangaProjects());
