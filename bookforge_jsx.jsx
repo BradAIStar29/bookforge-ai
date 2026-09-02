@@ -40,9 +40,20 @@ const setKey=k=>localStorage.setItem("gemini_api_key",k.trim());
 // ── AI Backend selector (Gemini API key OR Puter.js free) ──
 const BACKENDS=[
   {id:"gemini",label:"Gemini API Key",desc:"Bring your own free Google AI Studio key. 1,500 req/day."},
+  {id:"cerebras",label:"Cerebras (1M tok/day FREE)",desc:"Wafer-scale inference — ultra-fast. 1M tokens/day free, no credit card."},
   {id:"puter",label:"Puter.js (Free — No Key)",desc:"400+ models incl. GPT-5.5, Claude Opus 5, Gemini 3.6. User-pays model — you pay nothing."},
   {id:"groq",label:"Groq Turbo (⚡ Fastest)",desc:"500+ tokens/sec with GPT-OSS 120B. Free API key, 14,400 req/day."}
 ];
+// ── Cerebras Models ────────────────────────────────────────────────────────────
+const CEREBRAS_URL="https://api.cerebras.ai/v1/chat/completions";
+const CEREBRAS_MODELS=[
+  {id:"llama-4-scout-17b-16e-instruct",label:"Llama 4 Scout 17B",desc:"Meta — 131K context, multimodal, best for creative writing"},
+  {id:"qwen-3.6-32b",label:"Qwen 3.6 32B",desc:"Alibaba — strong multilingual + reasoning, 128K context"}
+];
+const getCerebrasKey=()=>localStorage.getItem("cerebras_api_key")||"";
+const setCerebrasKey=k=>safeLS("cerebras_api_key",k.trim());
+const getCerebrasModel=()=>localStorage.getItem("bfai_cerebras_model")||"llama-4-scout-17b-16e-instruct";
+const setCerebrasModel=m=>safeLS("bfai_cerebras_model",m);
 const getBackend=()=>localStorage.getItem("bfai_backend")||"gemini";
 const setBackend=b=>safeLS("bfai_backend",b);
 
@@ -208,12 +219,13 @@ const migrateBooks=()=>{
 const getUsage=()=>{const today=new Date().toISOString().split("T")[0];const d=ls.get("bfai_usage",{});return d.date===today?(d.count||0):0;};
 const trackUsage=()=>{const today=new Date().toISOString().split("T")[0];const d=ls.get("bfai_usage",{});const c=(d.date===today?d.count:0)+1;ls.set("bfai_usage",{date:today,count:c});return c;};
 // Quota check — Puter mode has no daily limit
-const quotaBlocked=()=>getBackend()!=="puter"&&getBackend()!=="groq"&&getUsage()>=DAILY_LIMIT;
+const quotaBlocked=()=>getBackend()!=="puter"&&getBackend()!=="groq"&&getBackend()!=="cerebras"&&getUsage()>=DAILY_LIMIT;
 // Unified credential check — returns true if the current backend has valid credentials
 const hasCredentials=()=>{
   const b=getBackend();
   if(b==="gemini")return!!getKey();
   if(b==="groq")return!!getGroqKey();
+  if(b==="cerebras")return!!getCerebrasKey();
   if(b==="puter")return typeof puter!=="undefined";
   return false;
 };
@@ -565,27 +577,112 @@ async function callGroq(prompt,temperature=0.85,opts={}){
 }
 
 
+// ── Cerebras API (OpenAI-compatible, ultra-fast wafer-scale inference) ──
+async function callCerebras(prompt,temperature=0.85,opts={}){
+  const key=getCerebrasKey();
+  if(!key)throw{code:"NO_KEY",msg:"Cerebras API key missing — add one in Settings."};
+  const model=resolveModel(prompt,opts)||getCerebrasModel();
+  let retries=0,controller,timeout;
+  while(retries<=2){
+    controller=new AbortController();
+    timeout=setTimeout(()=>controller.abort(),90000);
+    try{
+      const resp=await fetch(CEREBRAS_URL,{
+        method:"POST",
+        headers:{"Content-Type":"application/json","Authorization":"Bearer "+key},
+        signal:controller.signal,
+        body:JSON.stringify({
+          model:model,
+          messages:[{role:"user",content:prompt}],
+          temperature:temperature,
+          max_tokens:opts.max_tokens||32768,
+          stream:!!opts.onStream
+        })
+      });
+      clearTimeout(timeout);
+      // Streaming mode
+      if(opts.onStream&&resp.ok){
+        const reader=resp.body.getReader();
+        const decoder=new TextDecoder();
+        let fullText="",buffer="";
+        while(true){
+          const{done,value}=await reader.read();
+          if(done)break;
+          buffer+=decoder.decode(value,{stream:true});
+          const lines=buffer.split("\n");
+          buffer=lines.pop()||"";
+          for(const line of lines){
+            if(line.startsWith("data: ")){
+              const data=line.slice(6).trim();
+              if(data==="[DONE]")continue;
+              try{
+                const json=JSON.parse(data);
+                const delta=json?.choices?.[0]?.delta?.content||"";
+                if(delta){fullText+=delta;opts.onStream(fullText);}
+              }catch(e){}
+            }
+          }
+        }
+        if(!fullText)throw{code:"EMPTY",msg:"Cerebras returned empty stream — please retry."};
+        return fullText;
+      }
+      if(!resp.ok){
+        const errBody=await resp.text().catch(()=>"");
+        if(resp.status===429){
+          if(retries<2){
+            window.dispatchEvent(new CustomEvent("bfai:retry",{detail:{attempt:retries+1}}));
+            playRetryChime();
+            await sleep(RETRY_DELAYS_MS[retries]||5000);
+            retries++;continue;
+          }
+          throw{code:"QUOTA",msg:"Cerebras rate limit reached. Try again shortly."};
+        }
+        if(resp.status===401)throw{code:"BAD_KEY",msg:"Invalid Cerebras API key — check Settings."};
+        throw{code:"CEREBRAS_ERROR",msg:"Cerebras API error ("+resp.status+"): "+errBody.slice(0,200)};
+      }
+      const data=await resp.json();
+      const text=data?.choices?.[0]?.message?.content||"";
+      if(!text)throw{code:"EMPTY",msg:"Cerebras returned empty response — please retry."};
+      return text;
+    }catch(e){
+      if(timeout)clearTimeout(timeout);
+      if(e?.name==="AbortError"){
+        if(retries<2){
+          window.dispatchEvent(new CustomEvent("bfai:retry",{detail:{attempt:retries+1}}));
+          playRetryChime();
+          await sleep(RETRY_DELAYS_MS[retries]||5000);
+          retries++;continue;
+        }
+        throw{code:"TIMEOUT",msg:"Cerebras request timed out (90s). Retried 2x — please try again."};
+      }
+      if(e?.code==="QUOTA"||e?.code==="BAD_KEY"||e?.code==="EMPTY")throw e;
+      if(retries<2&&(e?.message?.includes("fetch")||e?.message?.includes("network"))){
+        window.dispatchEvent(new CustomEvent("bfai:retry",{detail:{attempt:retries+1}}));
+        playRetryChime();
+        await sleep(RETRY_DELAYS_MS[retries]||5000);
+        retries++;continue;
+      }
+      throw{code:"CEREBRAS_ERROR",msg:e?.message||"Cerebras request failed"};
+    }
+  }
+  throw{code:"CEREBRAS_ERROR",msg:"Cerebras request failed after retries."};
+}
+
 // ── Unified AI call — routes to Gemini or Puter based on settings ──
 async function callAI(prompt,temperature=0.85,opts={}){
   const backend=getBackend();
-  if(backend==="puter"){
-    return callPuter(prompt,temperature,opts);
-  }
-  if(backend==="groq"){
-    return callGroq(prompt,temperature,opts);
-  }
+  if(backend==="puter")return callPuter(prompt,temperature,opts);
+  if(backend==="groq")return callGroq(prompt,temperature,opts);
+  if(backend==="cerebras")return callCerebras(prompt,temperature,opts);
   return callGemini(prompt,temperature,opts);
 }
 
 // Streaming version — only Groq supports true streaming; others fall back to batch + onStream at end
 async function callAIStream(prompt,temperature=0.85,opts={}){
   const backend=getBackend();
-  if(backend==="groq"&&opts.onStream){
-    return callGroq(prompt,temperature,opts);
-  }
-  if(backend==="puter"&&opts.onStream){
-    return callPuter(prompt,temperature,opts);
-  }
+  if(backend==="groq"&&opts.onStream)return callGroq(prompt,temperature,opts);
+  if(backend==="puter"&&opts.onStream)return callPuter(prompt,temperature,opts);
+  if(backend==="cerebras"&&opts.onStream)return callCerebras(prompt,temperature,opts);
   // Gemini doesn't support SSE — generate all at once, then deliver
   const text=await callAI(prompt,temperature,opts);
   if(opts.onStream)opts.onStream(text);
@@ -611,6 +708,11 @@ async function testConnection(){
       const r=await callGroq("Say OK",0.1,{max_tokens:5});
       return{ok:true,msg:"✅ Groq API key works! Model: "+getGroqModel()+" — Response: "+(r||"OK").slice(0,50)};
     }
+    if(backend==="cerebras"){
+      if(!getCerebrasKey())return{ok:false,msg:"No Cerebras API key set — add one in Settings."};
+      const r=await callCerebras("Say OK",0.1,{max_tokens:5});
+      return{ok:true,msg:"✅ Cerebras API key works! Model: "+getCerebrasModel()+" — Response: "+(r||"OK").slice(0,50)};
+    }
     return{ok:false,msg:"Unknown backend: "+backend};
   }catch(e){
     return{ok:false,msg:errMsg(e)};
@@ -622,6 +724,7 @@ const errMsg=e=>{
   if(e?.code==="PUTER_AUTH")return "⚠️ Puter authentication needed. A login window should have appeared — please sign in to continue.";
   if(e?.code==="PUTER_ERROR")return "⚠️ Puter AI error: "+(e?.msg||"unknown error");
   if(e?.code==="GROQ_ERROR")return "⚠️ Groq error: "+(e?.msg||"unknown error");
+  if(e?.code==="CEREBRAS_ERROR")return "⚠️ Cerebras error: "+(e?.msg||"unknown error");
   if(e?.code==="TIMEOUT")return "⏱️ "+(e?.msg||"Request timed out — please retry.");
   const c=e?.code||"ERROR";
   if(c==="NO_KEY"||c==="BAD_KEY")return"🔑 API key missing or invalid — check Settings.";
@@ -633,6 +736,29 @@ const errMsg=e=>{
   if(c==="NETWORK")return(e?.msg||"📡 Network error — check your connection and click Retry.");
   return e?.msg||e?.message||"Something went wrong. Please try again.";
 };
+
+// ── LanguageTool proofread (free, no API key) ──
+async function proofreadText(text){
+  const url="https://api.languagetool.org/v2/check";
+  const params=new URLSearchParams({text:text.slice(0,20000),language:"en-US",enabledOnly:"false"});
+  try{
+    const res=await fetch(url,{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},body:params.toString()});
+    if(!res.ok)throw new Error("LanguageTool API error: "+res.status);
+    const data=await res.json();
+    return (data.matches||[]).map(m=>({
+      message:m.message,
+      rule:m.rule?.id,
+      context:m.context,
+      offset:m.offset,
+      length:m.length,
+      replacements:(m.replacements||[]).slice(0,5).map(r=>r.value),
+      category:m.rule?.category?.id,
+      shortMessage:m.shortMessage||m.message,
+    }));
+  }catch(e){
+    throw new Error("Proofread failed: "+e.message);
+  }
+}
 
 
 // ── Voice Profile ─────────────────────────────────────────────────────────────
@@ -1084,7 +1210,10 @@ function SettingsModal({onClose}){
   const [testResult,setTestResult]=useState(null);
   const [groqKeyDraft,setGroqKeyDraft]=useState(getGroqKey());
   const [groqKeySaved,setGroqKeySaved]=useState(false);
-  const saveGroqKey=()=>{setGroqKey(groqKeyDraft);setGroqKeySaved(true);setTimeout(()=>setGroqKeySaved(false),2000);}; // null | "testing" | "ok" | "fail"
+  const saveGroqKey=()=>{setGroqKey(groqKeyDraft);setGroqKeySaved(true);setTimeout(()=>setGroqKeySaved(false),2000);};
+  const [cerebrasKeyDraft,setCerebrasKeyDraft]=useState(getCerebrasKey());
+  const [cerebrasKeySaved,setCerebrasKeySaved]=useState(false);
+  const saveCerebrasKey=()=>{setCerebrasKey(cerebrasKeyDraft);setCerebrasKeySaved(true);setTimeout(()=>setCerebrasKeySaved(false),2000);}; // null | "testing" | "ok" | "fail"
   const testKey=async()=>{
     if(!draft.trim())return;
     setTestStatus("testing");
@@ -1271,6 +1400,7 @@ function Header({onBack,title,subtitle,onSettings,onTour,activeTab,setActiveTab}
             </div>
           )}
           {getBackend()==="puter"&&<span className="text-xs text-purple-400 font-medium px-2 py-1 bg-purple-500/10 rounded-lg border border-purple-500/20">⚡ Puter Free</span>}
+          {getBackend()==="cerebras"&&<span className="text-xs text-cyan-400 font-medium px-2 py-1 bg-cyan-500/10 rounded-lg border border-cyan-500/20">🧠 Cerebras 1M/day</span>}
           {getBackend()==="groq"&&(
             <div className="flex items-center gap-2">
               <span className="text-xs text-orange-400 font-medium px-2 py-1 bg-orange-500/10 rounded-lg border border-orange-500/20">⚡ Groq Turbo</span>
@@ -3269,6 +3399,20 @@ function ChapterEditor({book,chIdx,upd}){
     }catch(e){setRewriteErr(errMsg(e));}finally{setRewriting(false);setSelPara(null);}
   };
 
+  const [proofreading,setProofreading]=useState(false);
+  const [proofResults,setProofResults]=useState(null);
+  const [proofErr,setProofErr]=useState("");
+
+  const runProofread=async()=>{
+    if(!ch?.content){flash&&flash("No content to proofread");return;}
+    setProofreading(true);setProofErr("");setProofResults(null);
+    try{
+      const issues=await proofreadText(ch.content);
+      setProofResults(issues);
+    }catch(e){setProofErr(e.message);}
+    finally{setProofreading(false);}
+  };
+
   if(editing){
     const paragraphs=draft.split(/\n\n+/).filter(p=>p.trim());
     return(
@@ -3327,8 +3471,31 @@ function ChapterEditor({book,chIdx,upd}){
           </>);
         })()}
         </div>
-        <button onClick={()=>{setDraft(ch?.content||"");setEditing(true);}} className="text-xs px-3 py-1.5 rounded-lg bg-white/5 text-white/50 border border-white/10 hover:bg-white/10 hover:text-white/80 transition-all">✏️ Edit & Rewrite</button>
+        <div className="flex gap-2">
+          <button onClick={runProofread} disabled={proofreading||!ch?.content} className="text-xs px-3 py-1.5 rounded-lg bg-blue-500/10 text-blue-300 border border-blue-500/20 hover:bg-blue-500/20 transition-all disabled:opacity-40">{proofreading?"⏳ Checking…":"🔍 Proofread"}</button>
+          <button onClick={()=>{setDraft(ch?.content||"");setEditing(true);}} className="text-xs px-3 py-1.5 rounded-lg bg-white/5 text-white/50 border border-white/10 hover:bg-white/10 hover:text-white/80 transition-all">✏️ Edit & Rewrite</button>
+        </div>
       </div>
+      {proofErr&&<p className="text-red-400 text-xs mb-2">{proofErr}</p>}
+      {proofResults&&(
+        <div className="mb-3 p-3 bg-blue-500/5 border border-blue-500/15 rounded-xl">
+          <div className="flex items-center justify-between mb-2">
+            <p className="text-blue-300 text-xs font-medium">{proofResults.length===0?"✅ No issues found!":`📋 ${proofResults.length} potential issue${proofResults.length===1?"":"s"} found`}</p>
+            <button onClick={()=>setProofResults(null)} className="text-white/30 hover:text-white/60 text-xs">✕</button>
+          </div>
+          {proofResults.length>0&&(
+            <div className="space-y-2 max-h-48 overflow-y-auto pr-1">
+              {proofResults.map((issue,i)=>(
+                <div key={i} className="text-xs p-2 bg-white/5 rounded-lg border border-white/5">
+                  <p className="text-white/70 font-medium">{issue.shortMessage}</p>
+                  {issue.context?.text&&<p className="text-white/40 mt-1 italic">"{issue.context.text}"</p>}
+                  {issue.replacements?.length>0&&<p className="text-green-400/60 mt-1">→ Suggest: {issue.replacements.join(", ")}</p>}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
       {(ch?.opening_hook||ch?.notes)&&(
         <details className="mb-3">
           <summary className="text-white/30 text-xs cursor-pointer hover:text-white/50 select-none">📋 Chapter brief</summary>
@@ -4683,15 +4850,79 @@ function AudioStudioPanel({book,bookId,onSettings,flash}){
     British:KOKORO_VOICES.filter(v=>v.accent==="British"),
   };
 
+  // ── Browser TTS (Web Speech API) — instant preview, no download needed ──
+  const browserVoices = typeof speechSynthesis !== "undefined" ? speechSynthesis.getVoices().filter(v=>v.lang.startsWith("en")) : [];
+  const [browserVoiceId,setBrowserVoiceId]=useState(browserVoices[0]?.name||"");
+  const [browserRate,setBrowserRate]=useState(1.0);
+  const [browserPlaying,setBrowserPlaying]=useState(false);
+  const [browserChIdx,setBrowserChIdx]=useState(0);
+  const browserUttRef=useRef(null);
+
+  const playBrowserTTS=()=>{
+    if(typeof speechSynthesis==="undefined"){flash("Browser TTS not supported — try Chrome/Edge");return;}
+    if(speechSynthesis.speaking){speechSynthesis.cancel();setBrowserPlaying(false);flash("⏹ Stopped");return;}
+    const ch=chapters[browserChIdx];
+    if(!ch||!ch.content){flash("Select a chapter with content");return;}
+    const cleanText=ch.content.replace(/[#*_`]/g,"").replace(/⁂/g,"...").slice(0,5000);
+    const utt=new SpeechSynthesisUtterance(cleanText);
+    utt.rate=browserRate;utt.pitch=1.0;
+    const v=browserVoices.find(v=>v.name===browserVoiceId);
+    if(v)utt.voice=v;
+    utt.onend=()=>setBrowserPlaying(false);
+    utt.onerror=()=>setBrowserPlaying(false);
+    browserUttRef.current=utt;
+    setBrowserPlaying(true);
+    speechSynthesis.speak(utt);
+    flash("🔊 Preview playing — click again to stop");
+  };
+
   return(
     <div className="space-y-5 max-w-4xl mx-auto">
+      {/* Browser TTS — instant preview */}
+      <Card>
+        <div className="flex items-start gap-4 mb-4">
+          <div className="w-12 h-12 bg-gradient-to-br from-green-500 to-emerald-500 rounded-2xl flex items-center justify-center text-2xl shrink-0">🔊</div>
+          <div className="flex-1">
+            <h2 className="text-white text-xl font-bold">Instant Audio Preview</h2>
+            <p className="text-white/40 text-sm mt-1">Browser built-in TTS — <strong className="text-green-400/70">no download, no API key, instant</strong>. Quick narration preview using your OS voices.</p>
+          </div>
+          <div className={`text-xs px-3 py-1 rounded-full border font-semibold shrink-0 ${browserPlaying?"bg-green-500/20 text-green-300 border-green-500/30":"bg-white/10 text-white/40 border-white/10"}`}>{browserPlaying?"▶ Playing":"Ready"}</div>
+        </div>
+        {typeof speechSynthesis!=="undefined"&&browserVoices.length>0?(
+          <div className="space-y-3">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <div>
+                <label className="text-white/50 text-xs uppercase tracking-wider block mb-1.5">Chapter</label>
+                <select value={browserChIdx} onChange={e=>setBrowserChIdx(Number(e.target.value))} className="w-full bg-white/10 border border-white/20 rounded-xl px-3 py-2.5 text-white text-sm focus:outline-none focus:border-green-500">
+                  {chapters.map((ch,i)=><option key={i} value={i} className="bg-gray-800">Ch.{ch.number}: {ch.title}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="text-white/50 text-xs uppercase tracking-wider block mb-1.5">Voice ({browserVoices.length} available)</label>
+                <select value={browserVoiceId} onChange={e=>setBrowserVoiceId(e.target.value)} className="w-full bg-white/10 border border-white/20 rounded-xl px-3 py-2.5 text-white text-sm focus:outline-none focus:border-green-500">
+                  {browserVoices.map(v=><option key={v.name} value={v.name} className="bg-gray-800">{v.name} ({v.lang})</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="text-white/50 text-xs uppercase tracking-wider block mb-1.5">Speed: {browserRate.toFixed(2)}×</label>
+                <input type="range" min="0.7" max="1.5" step="0.05" value={browserRate} onChange={e=>setBrowserRate(Number(e.target.value))} className="w-full accent-green-500 mt-2"/>
+              </div>
+            </div>
+            <button onClick={playBrowserTTS} disabled={chapters.length===0} className="w-full bg-gradient-to-r from-green-500 to-emerald-500 text-white py-3.5 rounded-xl font-semibold hover:opacity-90 disabled:opacity-40 flex items-center justify-center gap-2">{browserPlaying?"⏹ Stop Playback":"▶ Play Preview (first 5000 chars)"}</button>
+            {chapters.length===0&&<p className="text-white/20 text-xs text-center">Write chapters first to preview audio.</p>}
+          </div>
+        ):(
+          <p className="text-white/30 text-sm text-center py-4">Browser TTS not available — try Chrome, Edge, or Safari.</p>
+        )}
+      </Card>
+
       {/* Header */}
       <Card>
         <div className="flex items-start gap-4">
           <div className="w-12 h-12 bg-gradient-to-br from-purple-500 to-pink-500 rounded-2xl flex items-center justify-center text-2xl shrink-0">🎙️</div>
           <div className="flex-1">
-            <h2 className="text-white text-xl font-bold">Audio Studio</h2>
-            <p className="text-white/40 text-sm mt-1">Powered by <a href="https://github.com/hexgrad/kokoro" target="_blank" className="text-purple-400 hover:text-purple-300">Kokoro TTS</a> — 82M parameter open-source model, 100% in-browser, no API key. Near-ElevenLabs quality.</p>
+            <h2 className="text-white text-xl font-bold">Kokoro Audio Studio</h2>
+            <p className="text-white/40 text-sm mt-1">Powered by <a href="https://github.com/hexgrad/kokoro" target="_blank" className="text-purple-400 hover:text-purple-300">Kokoro TTS</a> — 82M parameter open-source model, 100% in-browser, no API key. Near-ElevenLabs quality. <span className="text-purple-400">Downloads full chapter WAV files.</span></p>
           </div>
           <div className={`text-xs px-3 py-1 rounded-full border font-semibold shrink-0 ${modelState==="ready"?"bg-green-500/20 text-green-300 border-green-500/30":modelState==="loading"?"bg-amber-500/20 text-amber-300 border-amber-500/30":modelState==="error"?"bg-red-500/20 text-red-300 border-red-500/30":"bg-white/10 text-white/40 border-white/10"}`}>
             {modelState==="ready"?"✅ Model Ready":modelState==="loading"?"⏳ Loading…":modelState==="error"?"❌ Error":"Not Loaded"}
@@ -5727,6 +5958,33 @@ window.addEventListener("load",()=>{
     },2000);
   }
 });
+
+// ── PWA: Register service worker for offline support ──
+if("serviceWorker" in navigator){
+  const swCode=`
+    const CACHE="bookforge-v1";
+    self.addEventListener("install",e=>{self.skipWaiting();});
+    self.addEventListener("activate",e=>{e.waitUntil(self.clients.claim());});
+    self.addEventListener("fetch",e=>{
+      if(e.request.method!=="GET")return;
+      e.respondWith(
+        caches.match(e.request).then(cached=>{
+          const fetchPromise=fetch(e.request).then(resp=>{
+            if(resp&&resp.status===200&&resp.type==="basic"){
+              const clone=resp.clone();
+              caches.open(CACHE).then(c=>c.put(e.request,clone));
+            }
+            return resp;
+          }).catch(()=>cached);
+          return cached||fetchPromise;
+        })
+      );
+    });
+  `;
+  const swBlob=new Blob([swCode],{type:"application/javascript"});
+  const swUrl=URL.createObjectURL(swBlob);
+  navigator.serviceWorker.register(swUrl).catch(()=>{});
+}
 
 createRoot(document.getElementById("root")).render(<ErrorBoundary><App/></ErrorBoundary>);
 
