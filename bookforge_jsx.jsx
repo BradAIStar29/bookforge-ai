@@ -39,12 +39,12 @@ const setKey=k=>localStorage.setItem("gemini_api_key",k.trim());
 
 // ── AI Backend selector (Gemini API key OR Puter.js free) ──
 const BACKENDS=[
-  {id:"gemini",label:"Gemini API Key",desc:"Bring your own free Google AI Studio key. 1,500 req/day."},
   {id:"kilo",label:"Kilo Code (No Key! 200/hr)",desc:"Zero config — no API key, no account. Auto-routes to Nemotron 550B, Tencent Hy3, and more. 200 req/hr free."},
   {id:"cerebras",label:"Cerebras (1M tok/day FREE)",desc:"Wafer-scale inference — ultra-fast. 1M tokens/day free, no credit card."},
+  {id:"groq",label:"Groq Turbo (⚡ Fastest)",desc:"500+ tokens/sec with GPT-OSS 120B. Free API key, 14,400 req/day."},
+  {id:"gemini",label:"Gemini API Key",desc:"Bring your own free Google AI Studio key. 1,500 req/day."},
   {id:"cloudflare",label:"Cloudflare Workers AI (10K/day)",desc:"75+ models incl. Llama 4 Scout, gpt-oss-120B, Mistral, DeepSeek. 10K Neurons/day free, no credit card."},
-  {id:"puter",label:"Puter.js (Free — No Key)",desc:"400+ models incl. GPT-5.5, Claude Opus 5, Gemini 3.6. User-pays model — you pay nothing."},
-  {id:"groq",label:"Groq Turbo (⚡ Fastest)",desc:"500+ tokens/sec with GPT-OSS 120B. Free API key, 14,400 req/day."}
+  {id:"puter",label:"Puter.js (Free — No Key)",desc:"400+ models incl. GPT-5.5, Claude Opus 5, Gemini 3.6. User-pays model — you pay nothing."}
 ];
 // ── Kilo Code (no API key needed, auto-routes to free models) ──
 const KILO_URL="https://api.kilo.ai/api/gateway";
@@ -85,7 +85,7 @@ const getCerebrasKey=()=>localStorage.getItem("cerebras_api_key")||"";
 const setCerebrasKey=k=>safeLS("cerebras_api_key",k.trim());
 const getCerebrasModel=()=>localStorage.getItem("bfai_cerebras_model")||"llama-4-scout-17b-16e-instruct";
 const setCerebrasModel=m=>safeLS("bfai_cerebras_model",m);
-const getBackend=()=>localStorage.getItem("bfai_backend")||"gemini";
+const getBackend=()=>localStorage.getItem("bfai_backend")||"kilo";
 const setBackend=b=>safeLS("bfai_backend",b);
 
 // Puter text model options
