@@ -91,7 +91,7 @@ const BACKENDS = [
   { id: "cloudflare", label: "Cloudflare Workers AI (10K/day)", desc: "75+ models incl. Llama 4 Scout, gpt-oss-120B, Mistral, DeepSeek. 10K Neurons/day free, no credit card." },
   { id: "puter", label: "Puter.js (Free \u2014 No Key)", desc: "400+ models incl. GPT-5.5, Claude Opus 5, Gemini 3.6. User-pays model \u2014 you pay nothing." }
 ];
-const KILO_URL = "https://api.kilo.ai/api/gateway";
+const KILO_URL = "https://api.kilo.ai/api/gateway/chat/completions";
 const KILO_MODELS = [
   { id: "kilo-auto/free", label: "Kilo Auto (auto-route)", desc: "Auto-selects best available free model \u2014 recommended" },
   { id: "nvidia/nemotron-3-ultra-550b-a55b:free", label: "Nemotron 3 Ultra 550B", desc: "NVIDIA \u2014 1M context, 65K output. Best quality free model" },
@@ -450,6 +450,12 @@ const hasCredentials = () => {
   return false;
 };
 const LANGUAGES = ["English", "Spanish", "French", "German", "Italian", "Portuguese", "Dutch", "Russian", "Japanese", "Korean", "Chinese (Simplified)", "Arabic", "Hindi", "Turkish", "Polish", "Swedish", "Norwegian", "Danish", "Finnish", "Greek", "Hebrew", "Indonesian", "Malay", "Thai", "Vietnamese", "Ukrainian", "Czech", "Hungarian", "Romanian", "Bulgarian", "Croatian", "Slovak"];
+const cleanErrBody = (b) => {
+  if (!b) return "";
+  const s = String(b);
+  if (s.includes("<!DOCTYPE") || s.includes("<html") || s.includes("<head")) return "(server returned an HTML error page instead of JSON)";
+  return s.slice(0, 200);
+};
 const RETRY_DELAYS_MS = [2e3, 5e3];
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 function playRetryChime() {
@@ -761,7 +767,7 @@ async function callGroq(prompt2, temperature = 0.85, opts = {}) {
           throw { code: "QUOTA", msg: "Groq rate limit reached. Wait a moment and try again." };
         }
         if (resp.status === 401) throw { code: "BAD_KEY", msg: "Invalid Groq API key \u2014 check Settings." };
-        throw { code: "GROQ_ERROR", msg: "Groq API error (" + resp.status + "): " + errBody.slice(0, 200) };
+        throw { code: "GROQ_ERROR", msg: "Groq API error (" + resp.status + "): " + cleanErrBody(errBody) };
       }
       const data = await resp.json();
       const text = data?.choices?.[0]?.message?.content || "";
@@ -856,7 +862,7 @@ async function callCerebras(prompt2, temperature = 0.85, opts = {}) {
           throw { code: "QUOTA", msg: "Cerebras rate limit reached. Try again shortly." };
         }
         if (resp.status === 401) throw { code: "BAD_KEY", msg: "Invalid Cerebras API key \u2014 check Settings." };
-        throw { code: "CEREBRAS_ERROR", msg: "Cerebras API error (" + resp.status + "): " + errBody.slice(0, 200) };
+        throw { code: "CEREBRAS_ERROR", msg: "Cerebras API error (" + resp.status + "): " + cleanErrBody(errBody) };
       }
       const data = await resp.json();
       const text = data?.choices?.[0]?.message?.content || "";
@@ -948,7 +954,7 @@ async function callKilo(prompt2, temperature = 0.85, opts = {}) {
           }
           throw { code: "QUOTA", msg: "Kilo rate limit reached (200/hr). Try again shortly." };
         }
-        throw { code: "KILO_ERROR", msg: "Kilo API error (" + resp.status + "): " + errBody.slice(0, 200) };
+        throw { code: "KILO_ERROR", msg: "Kilo API error (" + resp.status + "): " + cleanErrBody(errBody) };
       }
       const data = await resp.json();
       const text = data?.choices?.[0]?.message?.content || data?.choices?.[0]?.delta?.content || "";
@@ -977,7 +983,7 @@ async function callKilo(prompt2, temperature = 0.85, opts = {}) {
       throw { code: "KILO_ERROR", msg: e?.message || "Kilo request failed" };
     }
   }
-  throw { code: "KILO_ERROR", msg: "Kilo request failed after retries." };
+  throw { code: "KILO_ERROR", msg: "Kilo request failed after retries \u2014 try switching backends in Settings (\u2699\uFE0F \u2192 API Key)." };
 }
 async function callCloudflare(prompt2, temperature = 0.85, opts = {}) {
   const accountId = getCloudflareAccountId();
@@ -1045,7 +1051,7 @@ async function callCloudflare(prompt2, temperature = 0.85, opts = {}) {
           throw { code: "QUOTA", msg: "Cloudflare daily Neuron limit reached (10K/day). Try again tomorrow." };
         }
         if (resp.status === 401) throw { code: "BAD_KEY", msg: "Invalid Cloudflare credentials \u2014 check Settings." };
-        throw { code: "CF_ERROR", msg: "Cloudflare API error (" + resp.status + "): " + errBody.slice(0, 200) };
+        throw { code: "CF_ERROR", msg: "Cloudflare API error (" + resp.status + "): " + cleanErrBody(errBody) };
       }
       const data = await resp.json();
       const text = data?.response || data?.result?.response || data?.choices?.[0]?.message?.content || "";
@@ -1950,7 +1956,7 @@ function importLibraryBackup(file) {
         }
         resolve({ added: newBooks.length, skipped: backup.books.length - newBooks.length, total: existing.length + newBooks.length });
       } catch (e) {
-        reject(new Error("Could not parse backup file: " + e.message));
+        reject(new Error("Could not parse backup file: " + (e?.message || e?.msg || "invalid JSON")));
       }
     };
     reader.onerror = () => reject(new Error("Could not read file"));
@@ -2729,7 +2735,7 @@ function DataManagementPanel() {
       const res = await importLibraryBackup(file);
       setMsg(`\u2705 Restored ${res.added} book(s)${res.skipped > 0 ? `, skipped ${res.skipped} duplicate(s)` : ""}. Library now has ${res.total} book(s).`);
     } catch (err) {
-      setMsg("\u274C Import failed: " + err.message);
+      setMsg("\u274C Import failed: " + (err?.msg || err?.message || "unknown error"));
     } finally {
       setBusy(false);
       e.target.value = "";
@@ -3923,7 +3929,7 @@ function HelpPage({ onSettings }) {
         setError(data.message || "Failed to send question.");
       }
     } catch (e) {
-      setError("Network error: " + e.message);
+      setError("Network error: " + (e?.msg || e?.message || "unknown error"));
       console.error(e);
     } finally {
       setLoading(false);
@@ -4612,7 +4618,7 @@ RULES:
       const issues = await proofreadText(ch2.content);
       setProofResults(issues);
     } catch (e) {
-      setProofErr(e.message);
+      setProofErr(e?.msg || e?.message || "Proofread failed \u2014 try again.");
     } finally {
       setProofreading(false);
     }
@@ -5870,7 +5876,7 @@ ${chars.map((c) => `\u2022 ${c.name}: ${c.personality || ""} \u2014 Voice: ${c.v
       alert('Imported "' + imported.title + '" successfully!');
       window.location.reload();
     } catch (err) {
-      alert("Import failed: " + err.message);
+      alert("Import failed: " + (err?.msg || err?.message || "unknown error"));
     }
   } }))))), tab === 1 && /* @__PURE__ */ React.createElement("div", { className: "grid grid-cols-1 lg:grid-cols-3 gap-5" }, /* @__PURE__ */ React.createElement("div", { className: "lg:col-span-1" }, /* @__PURE__ */ React.createElement("div", { className: "bg-white/5 border border-white/10 rounded-2xl p-4 sticky top-24" }, /* @__PURE__ */ React.createElement("div", { className: "flex items-center justify-between mb-3" }, /* @__PURE__ */ React.createElement("h3", { className: "text-white font-semibold text-sm" }, "Chapters"), /* @__PURE__ */ React.createElement("div", { className: "flex gap-1.5" }, /* @__PURE__ */ React.createElement("button", { onClick: () => setReadingMode2(true), disabled: !book.chapters?.some((c) => c.generated), className: "text-xs text-purple-300 hover:text-purple-200 disabled:opacity-30 px-2 py-1 rounded bg-purple-500/10" }, "\u{1F4D6} Read"), /* @__PURE__ */ React.createElement("button", { onClick: () => setShowFindReplace2(true), className: "text-xs text-purple-300 hover:text-purple-200 disabled:opacity-30 px-2 py-1 rounded bg-purple-500/10 flex items-center gap-1" }, "\u{1F50D} Find & Replace"), !isBuilding && /* @__PURE__ */ React.createElement("button", { onClick: async () => {
     for (let i = 0; i < (book.chapters || []).length; i++) {

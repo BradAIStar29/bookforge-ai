@@ -47,7 +47,7 @@ const BACKENDS=[
   {id:"puter",label:"Puter.js (Free — No Key)",desc:"400+ models incl. GPT-5.5, Claude Opus 5, Gemini 3.6. User-pays model — you pay nothing."}
 ];
 // ── Kilo Code (no API key needed, auto-routes to free models) ──
-const KILO_URL="https://api.kilo.ai/api/gateway";
+const KILO_URL="https://api.kilo.ai/api/gateway/chat/completions"; // moved 2026-09: old /api/gateway root now 404s
 const KILO_MODELS=[
   {id:"kilo-auto/free",label:"Kilo Auto (auto-route)",desc:"Auto-selects best available free model — recommended"},
   {id:"nvidia/nemotron-3-ultra-550b-a55b:free",label:"Nemotron 3 Ultra 550B",desc:"NVIDIA — 1M context, 65K output. Best quality free model"},
@@ -349,6 +349,12 @@ const hasCredentials=()=>{
 const LANGUAGES=["English","Spanish","French","German","Italian","Portuguese","Dutch","Russian","Japanese","Korean","Chinese (Simplified)","Arabic","Hindi","Turkish","Polish","Swedish","Norwegian","Danish","Finnish","Greek","Hebrew","Indonesian","Malay","Thai","Vietnamese","Ukrainian","Czech","Hungarian","Romanian","Bulgarian","Croatian","Slovak"];
 
 // ── Gemini API ────────────────────────────────────────────────────────────────
+const cleanErrBody=b=>{
+  if(!b)return"";
+  const s=String(b);
+  if(s.includes("<!DOCTYPE")||s.includes("<html")||s.includes("<head"))return"(server returned an HTML error page instead of JSON)";
+  return s.slice(0,200);
+};
 const RETRY_DELAYS_MS=[2000,5000]; // backoff for transient failures
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 
@@ -662,7 +668,7 @@ async function callGroq(prompt,temperature=0.85,opts={}){
           throw{code:"QUOTA",msg:"Groq rate limit reached. Wait a moment and try again."};
         }
         if(resp.status===401)throw{code:"BAD_KEY",msg:"Invalid Groq API key — check Settings."};
-        throw{code:"GROQ_ERROR",msg:"Groq API error ("+resp.status+"): "+errBody.slice(0,200)};
+        throw{code:"GROQ_ERROR",msg:"Groq API error ("+resp.status+"): "+cleanErrBody(errBody)};
       }
       
       const data=await resp.json();
@@ -758,7 +764,7 @@ async function callCerebras(prompt,temperature=0.85,opts={}){
           throw{code:"QUOTA",msg:"Cerebras rate limit reached. Try again shortly."};
         }
         if(resp.status===401)throw{code:"BAD_KEY",msg:"Invalid Cerebras API key — check Settings."};
-        throw{code:"CEREBRAS_ERROR",msg:"Cerebras API error ("+resp.status+"): "+errBody.slice(0,200)};
+        throw{code:"CEREBRAS_ERROR",msg:"Cerebras API error ("+resp.status+"): "+cleanErrBody(errBody)};
       }
       const data=await resp.json();
       const text=data?.choices?.[0]?.message?.content||"";
@@ -846,7 +852,7 @@ async function callKilo(prompt,temperature=0.85,opts={}){
           }
           throw{code:"QUOTA",msg:"Kilo rate limit reached (200/hr). Try again shortly."};
         }
-        throw{code:"KILO_ERROR",msg:"Kilo API error ("+resp.status+"): "+errBody.slice(0,200)};
+        throw{code:"KILO_ERROR",msg:"Kilo API error ("+resp.status+"): "+cleanErrBody(errBody)};
       }
       const data=await resp.json();
       const text=data?.choices?.[0]?.message?.content||data?.choices?.[0]?.delta?.content||"";
@@ -873,7 +879,7 @@ async function callKilo(prompt,temperature=0.85,opts={}){
       throw{code:"KILO_ERROR",msg:e?.message||"Kilo request failed"};
     }
   }
-  throw{code:"KILO_ERROR",msg:"Kilo request failed after retries."};
+  throw{code:"KILO_ERROR",msg:"Kilo request failed after retries — try switching backends in Settings (⚙️ → API Key)."};
 }
 
 // ── Cloudflare Workers AI (OpenAI-compatible endpoint) ──
@@ -939,7 +945,7 @@ async function callCloudflare(prompt,temperature=0.85,opts={}){
           throw{code:"QUOTA",msg:"Cloudflare daily Neuron limit reached (10K/day). Try again tomorrow."};
         }
         if(resp.status===401)throw{code:"BAD_KEY",msg:"Invalid Cloudflare credentials — check Settings."};
-        throw{code:"CF_ERROR",msg:"Cloudflare API error ("+resp.status+"): "+errBody.slice(0,200)};
+        throw{code:"CF_ERROR",msg:"Cloudflare API error ("+resp.status+"): "+cleanErrBody(errBody)};
       }
       const data=await resp.json();
       const text=data?.response||data?.result?.response||data?.choices?.[0]?.message?.content||"";
@@ -1849,7 +1855,7 @@ function importLibraryBackup(file){
         if(DB_MODE==="idb"){await flushDB();}
         resolve({added:newBooks.length,skipped:backup.books.length-newBooks.length,total:existing.length+newBooks.length});
       }catch(e){
-        reject(new Error("Could not parse backup file: "+e.message));
+        reject(new Error("Could not parse backup file: "+(e?.message||e?.msg||"invalid JSON")));
       }
     };
     reader.onerror=()=>reject(new Error("Could not read file"));
@@ -2684,7 +2690,7 @@ function DataManagementPanel(){
     try{
       const res=await importLibraryBackup(file);
       setMsg(`✅ Restored ${res.added} book(s)${res.skipped>0?`, skipped ${res.skipped} duplicate(s)`:""}. Library now has ${res.total} book(s).`);
-    }catch(err){setMsg("❌ Import failed: "+err.message);}
+    }catch(err){setMsg("❌ Import failed: "+(err?.msg||err?.message||"unknown error"));}
     finally{setBusy(false);e.target.value="";}
   };
   return(
@@ -4146,7 +4152,7 @@ function HelpPage({onSettings}){
         setError(data.message||"Failed to send question.");
       }
     }catch(e){
-      setError("Network error: "+e.message);
+      setError("Network error: "+(e?.msg||e?.message||"unknown error"));
       console.error(e);
     }finally{setLoading(false);}
   };
@@ -4970,7 +4976,7 @@ function ChapterEditor({book,chIdx,upd}){
     try{
       const issues=await proofreadText(ch.content);
       setProofResults(issues);
-    }catch(e){setProofErr(e.message);}
+    }catch(e){setProofErr(e?.msg||e?.message||"Proofread failed — try again.");}
     finally{setProofreading(false);}
   };
 
@@ -5777,7 +5783,7 @@ const genCover=async()=>{if(quotaHit||isBuilding)return;setBusy(true);setError("
     <button onClick={e=>{e.stopPropagation();downloadChapterTxt(book,i);}} className="text-white/30 hover:text-white/60 text-xs">📄 Export TXT</button>
   </div>;
 })():<span className="text-white/20 text-xs shrink-0">Pending</span>}</div>)}</div><div className="mt-5"><ChapterPacingChart book={book}/></div>
-            <div className="mt-3 bg-white/5 rounded-xl p-4"><div className="flex justify-between text-xs text-white/40 mb-2"><span>Progress</span><span>{book.chapters.filter(c=>c.generated).length}/{book.chapters.length} chapters</span></div><div className="h-2 bg-white/10 rounded-full overflow-hidden"><div className="h-full bg-gradient-to-r from-purple-500 to-pink-500 rounded-full" style={{width:`${(book.chapters.filter(c=>c.generated).length/book.chapters.length)*100}%`}}/></div></div></>}{(!book.chapters||book.chapters.length===0)&&isBuilding&&<div className="text-center py-8 text-white/30"><Spin/><p className="mt-3 text-sm">Generating outline…</p></div>}<div className="mt-5 flex items-center gap-3 pt-4 border-t border-white/10"><button onClick={()=>setReadingMode(true)} disabled={!book.chapters?.some(c=>c.generated)} className="text-xs px-3 py-2 rounded-lg bg-purple-500/20 border border-purple-500/30 text-purple-300 hover:bg-purple-500/30 hover:text-purple-200 transition-all flex items-center gap-2 disabled:opacity-40">📖 Read Book</button><button onClick={()=>downloadPDF(book)} className="text-xs px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-white/60 hover:bg-white/10 hover:text-white/90 transition-all flex items-center gap-2">📄 Export PDF</button><button onClick={()=>downloadMarkdown(book)} className="text-xs px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-white/60 hover:bg-white/10 hover:text-white/90 transition-all flex items-center gap-2">📝 Export Markdown</button><button onClick={()=>downloadBookJSON(book)} className="text-xs px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-white/60 hover:bg-white/10 hover:text-white/90 transition-all flex items-center gap-2">💾 Export Backup (JSON)</button><label className="text-xs px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-white/60 hover:bg-white/10 hover:text-white/90 transition-all flex items-center gap-2 cursor-pointer">📥 Import Backup<input type="file" accept=".json" className="hidden" onChange={async(e)=>{const file=e.target.files?.[0];if(!file)return;try{const imported=await importBookJSON(file);const books=getBooks();books.unshift(imported);setBooks(books);await flushDB();alert("Imported \""+imported.title+"\" successfully!");window.location.reload();}catch(err){alert("Import failed: "+err.message);}}}/></label></div></Card></div>}
+            <div className="mt-3 bg-white/5 rounded-xl p-4"><div className="flex justify-between text-xs text-white/40 mb-2"><span>Progress</span><span>{book.chapters.filter(c=>c.generated).length}/{book.chapters.length} chapters</span></div><div className="h-2 bg-white/10 rounded-full overflow-hidden"><div className="h-full bg-gradient-to-r from-purple-500 to-pink-500 rounded-full" style={{width:`${(book.chapters.filter(c=>c.generated).length/book.chapters.length)*100}%`}}/></div></div></>}{(!book.chapters||book.chapters.length===0)&&isBuilding&&<div className="text-center py-8 text-white/30"><Spin/><p className="mt-3 text-sm">Generating outline…</p></div>}<div className="mt-5 flex items-center gap-3 pt-4 border-t border-white/10"><button onClick={()=>setReadingMode(true)} disabled={!book.chapters?.some(c=>c.generated)} className="text-xs px-3 py-2 rounded-lg bg-purple-500/20 border border-purple-500/30 text-purple-300 hover:bg-purple-500/30 hover:text-purple-200 transition-all flex items-center gap-2 disabled:opacity-40">📖 Read Book</button><button onClick={()=>downloadPDF(book)} className="text-xs px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-white/60 hover:bg-white/10 hover:text-white/90 transition-all flex items-center gap-2">📄 Export PDF</button><button onClick={()=>downloadMarkdown(book)} className="text-xs px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-white/60 hover:bg-white/10 hover:text-white/90 transition-all flex items-center gap-2">📝 Export Markdown</button><button onClick={()=>downloadBookJSON(book)} className="text-xs px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-white/60 hover:bg-white/10 hover:text-white/90 transition-all flex items-center gap-2">💾 Export Backup (JSON)</button><label className="text-xs px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-white/60 hover:bg-white/10 hover:text-white/90 transition-all flex items-center gap-2 cursor-pointer">📥 Import Backup<input type="file" accept=".json" className="hidden" onChange={async(e)=>{const file=e.target.files?.[0];if(!file)return;try{const imported=await importBookJSON(file);const books=getBooks();books.unshift(imported);setBooks(books);await flushDB();alert("Imported \""+imported.title+"\" successfully!");window.location.reload();}catch(err){alert("Import failed: "+(err?.msg||err?.message||"unknown error"));}}}/></label></div></Card></div>}
 
         {/* CHAPTERS */}
         {tab===1&&<div className="grid grid-cols-1 lg:grid-cols-3 gap-5"><div className="lg:col-span-1"><div className="bg-white/5 border border-white/10 rounded-2xl p-4 sticky top-24"><div className="flex items-center justify-between mb-3"><h3 className="text-white font-semibold text-sm">Chapters</h3><div className="flex gap-1.5"><button onClick={()=>setReadingMode(true)} disabled={!book.chapters?.some(c=>c.generated)} className="text-xs text-purple-300 hover:text-purple-200 disabled:opacity-30 px-2 py-1 rounded bg-purple-500/10">📖 Read</button><button onClick={()=>setShowFindReplace(true)} className="text-xs text-purple-300 hover:text-purple-200 disabled:opacity-30 px-2 py-1 rounded bg-purple-500/10 flex items-center gap-1">🔍 Find & Replace</button>{!isBuilding&&<button onClick={async()=>{
