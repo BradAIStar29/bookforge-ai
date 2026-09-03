@@ -547,6 +547,15 @@ async function puterWithTimeout(fn,ms){
 const PUTER_NO_TEMP=new Set();
 async function callPuter(prompt,temperature=0.85,opts={}){
   if(typeof puter==="undefined")throw{code:"PUTER_NOT_LOADED"};
+  initPuterLowBalanceWatcher();
+  // Registers this call's reject fn so the Low-Balance watcher can free it if
+  // Puter's own blocking modal appears mid-request (see initPuterLowBalanceWatcher).
+  let lbReject=null;
+  const lbGuard=new Promise((_,rej)=>{lbReject=rej;PUTER_PENDING_REJECTS.add(rej);});
+  try{return await Promise.race([callPuterInner(prompt,temperature,opts),lbGuard]);}
+  finally{if(lbReject)PUTER_PENDING_REJECTS.delete(lbReject);}
+}
+async function callPuterInner(prompt,temperature=0.85,opts={}){
   const model=resolveModel(prompt,opts)||getPuterTextModel();
   const maxRetries=opts.maxRetries??2;
   const timeoutMs=opts.timeoutMs??180000; // 3 min — Puter free models can be slow
@@ -1012,6 +1021,55 @@ function notifyBackendSwitch(){
 function kiloFailureShouldFailover(e){
   return e?.code==="KILO_ERROR"||e?.code==="TIMEOUT"; // NOT QUOTA (rate-limit = alive, just busy)
 }
+
+// ── Puter "Low Balance" trap ────────────────────────────────────────────────
+// Puter.js is a USER-PAYS metered service — each guest/browser gets a small
+// free credit pool. Once exhausted, Puter injects its OWN blocking modal
+// ("Low Balance… not enough funding… Upgrade Now") directly into document.body,
+// completely outside our React tree, and the underlying puter.ai.chat promise
+// never settles — it just hangs forever behind that popup. Without this, any
+// pending generation (Write All, auto-build, Queue) freezes silently with no
+// error the app can react to. We watch the DOM for it, auto-dismiss it, and
+// reject the hung call ourselves so normal failover logic can take over.
+let PUTER_LOW_BALANCE=false;
+const PUTER_PENDING_REJECTS=new Set();
+function notifyPuterLowBalance(routedTo){
+  try{window.dispatchEvent(new CustomEvent("bfai:retry",{detail:{reason:"notice",msg:routedTo?`💳 Puter's free balance ran out for this session — auto-switched to ${routedTo}.`:"💳 Puter's free balance ran out and no other backend is configured — add a free Groq or Cerebras key in Settings to keep going."}}));}catch(e){}
+}
+function initPuterLowBalanceWatcher(){
+  if(typeof document==="undefined"||window.__puterLBWatcher)return;
+  window.__puterLBWatcher=true;
+  const isLowBalanceNode=(node)=>{
+    if(!node||node.nodeType!==1)return false;
+    const t=(node.textContent||"");
+    return t.includes("Low Balance")&&(t.includes("not enough")||t.includes("Upgrade"));
+  };
+  const handle=(node)=>{
+    PUTER_LOW_BALANCE=true;
+    // Dismiss Puter's own modal so it never blocks the page permanently
+    try{
+      const btns=node.querySelectorAll?node.querySelectorAll("button"):[];
+      for(const b of btns){if(/close/i.test(b.textContent||"")){b.click();break;}}
+      setTimeout(()=>{if(node.isConnected)node.style.display="none";},50);
+    }catch(e){}
+    // Reject every hung puter.ai.chat call waiting on this — lets failover run immediately
+    for(const rej of PUTER_PENDING_REJECTS){try{rej({code:"PUTER_LOW_BALANCE",msg:"Puter's free balance is exhausted for this session."});}catch(e){}}
+    PUTER_PENDING_REJECTS.clear();
+  };
+  const observer=new MutationObserver((mutations)=>{
+    for(const m of mutations){for(const node of m.addedNodes){if(isLowBalanceNode(node)){handle(node);return;}}}
+  });
+  try{observer.observe(document.body,{childList:true,subtree:true});}catch(e){}
+}
+// Priority order when Puter's balance is exhausted: any backend with real
+// credentials configured, then Kilo (zero-key but CORS-dead most sessions).
+function nextBackendAfterPuter(){
+  if(getGroqKey())return"groq";
+  if(getCerebrasKey())return"cerebras";
+  if(getCloudflareAccountId()&&getCloudflareToken())return"cloudflare";
+  if(!KILO_SESSION_DEAD)return"kilo";
+  return null;
+}
 async function dispatchAICall(backend,prompt,temperature,opts){
   if(backend==="puter")return callPuter(prompt,temperature,opts);
   if(backend==="groq")return callGroq(prompt,temperature,opts);
@@ -1029,7 +1087,13 @@ async function callAI(prompt,temperature=0.85,opts={}){
     if(backend==="kilo"&&kiloFailureShouldFailover(e)){
       KILO_SESSION_DEAD=true;
       notifyBackendSwitch();
-      return callPuter(prompt,temperature,opts);
+      return callAI(prompt,temperature,opts);
+    }
+    if(backend==="puter"&&e?.code==="PUTER_LOW_BALANCE"){
+      const next=nextBackendAfterPuter();
+      if(next){notifyPuterLowBalance(next);return dispatchAICall(next,prompt,temperature,opts);}
+      notifyPuterLowBalance(null);
+      throw{code:"PUTER_LOW_BALANCE",msg:"Puter's free balance ran out and no other AI backend is configured. Add a free Groq or Cerebras API key in Settings (2-min signup, no card) to keep generating."};
     }
     throw e;
   }
@@ -1039,10 +1103,18 @@ async function callAI(prompt,temperature=0.85,opts={}){
 async function callAIStream(prompt,temperature=0.85,opts={}){
   let backend=getBackend();
   if(backend==="kilo"&&KILO_SESSION_DEAD)backend="puter";
+  const puterLowBalanceFailover=(e)=>{
+    if(e?.code!=="PUTER_LOW_BALANCE")throw e;
+    const next=nextBackendAfterPuter();
+    if(next){notifyPuterLowBalance(next);return callAIStream(prompt,temperature,{...opts,__forceBackend:next});}
+    notifyPuterLowBalance(null);
+    throw{code:"PUTER_LOW_BALANCE",msg:"Puter's free balance ran out and no other AI backend is configured. Add a free Groq or Cerebras API key in Settings (2-min signup, no card) to keep generating."};
+  };
+  if(opts.__forceBackend)backend=opts.__forceBackend;
   if(backend==="groq"&&opts.onStream)return callGroq(prompt,temperature,opts);
-  if(backend==="puter"&&opts.onStream)return callPuter(prompt,temperature,opts);
+  if(backend==="puter"&&opts.onStream)return callPuter(prompt,temperature,opts).catch(puterLowBalanceFailover);
   if(backend==="cerebras"&&opts.onStream)return callCerebras(prompt,temperature,opts);
-  if(backend==="kilo"&&opts.onStream)return callKilo(prompt,temperature,opts).catch(e=>{if(kiloFailureShouldFailover(e)){KILO_SESSION_DEAD=true;notifyBackendSwitch();return callPuter(prompt,temperature,opts);}throw e;});
+  if(backend==="kilo"&&opts.onStream)return callKilo(prompt,temperature,opts).catch(e=>{if(kiloFailureShouldFailover(e)){KILO_SESSION_DEAD=true;notifyBackendSwitch();return callPuter(prompt,temperature,opts).catch(puterLowBalanceFailover);}throw e;});
   if(backend==="cloudflare"&&opts.onStream)return callCloudflare(prompt,temperature,opts);
   // Gemini doesn't support SSE — generate all at once, then deliver
   const text=await callAI(prompt,temperature,opts);
@@ -5237,7 +5309,7 @@ function EditorPage({bookId,navigate,onSettings}){
         let result=null;let outlineTries=0;
         while(!result&&outlineTries<3&&buildRef.current&&!quotaBlocked()){
           try{result=await generateSeriesOutline(b);}
-          catch(oe){if(oe?.code==="QUOTA"){setQuotaHit(true);break;}outlineTries++;log(`⚠️ Outline attempt ${outlineTries}/3 failed — ${outlineTries<3?"retrying in 4s…":"giving up"}`);if(outlineTries<3)await sleep(4000);}
+          catch(oe){if(oe?.code==="QUOTA"){setQuotaHit(true);break;}if(oe?.code==="PUTER_LOW_BALANCE"){log(`⚠️ ${errMsg(oe)}`);break;}outlineTries++;log(`⚠️ Outline attempt ${outlineTries}/3 failed — ${outlineTries<3?"retrying in 4s…":"giving up"}`);if(outlineTries<3)await sleep(4000);}
         }
         if(result){outline=result.outline;chapters=result.chapters;}else{upd({auto_build:false,build_step:""});setIsBuilding(false);return;}
       }
@@ -5271,7 +5343,7 @@ function EditorPage({bookId,navigate,onSettings}){
             if(em){let evD;try{evD=JSON.parse(em[0]);}catch(pe){evD={};}const sa=getSeries();const si=sa.findIndex(s=>s.id===b.series_id);
             if(si>-1){sa[si].plot_events=[...(sa[si].plot_events||[]),...(evD.events||[]).map(ev=>({book:`Book ${b.series_number||"?"}`,event:ev}))];setSeries(sa);}}
           }catch(evE){/* silent */}}
-        }catch(e){if(e?.code==="QUOTA"){setQuotaHit(true);break;}log(`⚠️ Ch.${i+1} error — will retry on next pass`);}
+        }catch(e){if(e?.code==="QUOTA"){setQuotaHit(true);break;}if(e?.code==="PUTER_LOW_BALANCE"){log(`⚠️ ${errMsg(e)}`);break;}log(`⚠️ Ch.${i+1} error — will retry on next pass`);}
       }
       if(quotaBlocked()||!buildRef.current)break;
       }

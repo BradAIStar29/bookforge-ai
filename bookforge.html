@@ -658,6 +658,19 @@ async function puterWithTimeout(fn, ms) {
 const PUTER_NO_TEMP = /* @__PURE__ */ new Set();
 async function callPuter(prompt2, temperature = 0.85, opts = {}) {
   if (typeof puter === "undefined") throw { code: "PUTER_NOT_LOADED" };
+  initPuterLowBalanceWatcher();
+  let lbReject = null;
+  const lbGuard = new Promise((_, rej) => {
+    lbReject = rej;
+    PUTER_PENDING_REJECTS.add(rej);
+  });
+  try {
+    return await Promise.race([callPuterInner(prompt2, temperature, opts), lbGuard]);
+  } finally {
+    if (lbReject) PUTER_PENDING_REJECTS.delete(lbReject);
+  }
+}
+async function callPuterInner(prompt2, temperature = 0.85, opts = {}) {
   const model = resolveModel(prompt2, opts) || getPuterTextModel();
   const maxRetries = opts.maxRetries ?? 2;
   const timeoutMs = opts.timeoutMs ?? 18e4;
@@ -1119,6 +1132,67 @@ function notifyBackendSwitch() {
 function kiloFailureShouldFailover(e) {
   return e?.code === "KILO_ERROR" || e?.code === "TIMEOUT";
 }
+let PUTER_LOW_BALANCE = false;
+const PUTER_PENDING_REJECTS = /* @__PURE__ */ new Set();
+function notifyPuterLowBalance(routedTo) {
+  try {
+    window.dispatchEvent(new CustomEvent("bfai:retry", { detail: { reason: "notice", msg: routedTo ? `\u{1F4B3} Puter's free balance ran out for this session \u2014 auto-switched to ${routedTo}.` : "\u{1F4B3} Puter's free balance ran out and no other backend is configured \u2014 add a free Groq or Cerebras key in Settings to keep going." } }));
+  } catch (e) {
+  }
+}
+function initPuterLowBalanceWatcher() {
+  if (typeof document === "undefined" || window.__puterLBWatcher) return;
+  window.__puterLBWatcher = true;
+  const isLowBalanceNode = (node) => {
+    if (!node || node.nodeType !== 1) return false;
+    const t = node.textContent || "";
+    return t.includes("Low Balance") && (t.includes("not enough") || t.includes("Upgrade"));
+  };
+  const handle = (node) => {
+    PUTER_LOW_BALANCE = true;
+    try {
+      const btns = node.querySelectorAll ? node.querySelectorAll("button") : [];
+      for (const b of btns) {
+        if (/close/i.test(b.textContent || "")) {
+          b.click();
+          break;
+        }
+      }
+      setTimeout(() => {
+        if (node.isConnected) node.style.display = "none";
+      }, 50);
+    } catch (e) {
+    }
+    for (const rej of PUTER_PENDING_REJECTS) {
+      try {
+        rej({ code: "PUTER_LOW_BALANCE", msg: "Puter's free balance is exhausted for this session." });
+      } catch (e) {
+      }
+    }
+    PUTER_PENDING_REJECTS.clear();
+  };
+  const observer = new MutationObserver((mutations) => {
+    for (const m of mutations) {
+      for (const node of m.addedNodes) {
+        if (isLowBalanceNode(node)) {
+          handle(node);
+          return;
+        }
+      }
+    }
+  });
+  try {
+    observer.observe(document.body, { childList: true, subtree: true });
+  } catch (e) {
+  }
+}
+function nextBackendAfterPuter() {
+  if (getGroqKey()) return "groq";
+  if (getCerebrasKey()) return "cerebras";
+  if (getCloudflareAccountId() && getCloudflareToken()) return "cloudflare";
+  if (!KILO_SESSION_DEAD) return "kilo";
+  return null;
+}
 async function dispatchAICall(backend, prompt2, temperature, opts) {
   if (backend === "puter") return callPuter(prompt2, temperature, opts);
   if (backend === "groq") return callGroq(prompt2, temperature, opts);
@@ -1136,7 +1210,16 @@ async function callAI(prompt2, temperature = 0.85, opts = {}) {
     if (backend === "kilo" && kiloFailureShouldFailover(e)) {
       KILO_SESSION_DEAD = true;
       notifyBackendSwitch();
-      return callPuter(prompt2, temperature, opts);
+      return callAI(prompt2, temperature, opts);
+    }
+    if (backend === "puter" && e?.code === "PUTER_LOW_BALANCE") {
+      const next = nextBackendAfterPuter();
+      if (next) {
+        notifyPuterLowBalance(next);
+        return dispatchAICall(next, prompt2, temperature, opts);
+      }
+      notifyPuterLowBalance(null);
+      throw { code: "PUTER_LOW_BALANCE", msg: "Puter's free balance ran out and no other AI backend is configured. Add a free Groq or Cerebras API key in Settings (2-min signup, no card) to keep generating." };
     }
     throw e;
   }
@@ -1144,14 +1227,25 @@ async function callAI(prompt2, temperature = 0.85, opts = {}) {
 async function callAIStream(prompt2, temperature = 0.85, opts = {}) {
   let backend = getBackend();
   if (backend === "kilo" && KILO_SESSION_DEAD) backend = "puter";
+  const puterLowBalanceFailover = (e) => {
+    if (e?.code !== "PUTER_LOW_BALANCE") throw e;
+    const next = nextBackendAfterPuter();
+    if (next) {
+      notifyPuterLowBalance(next);
+      return callAIStream(prompt2, temperature, { ...opts, __forceBackend: next });
+    }
+    notifyPuterLowBalance(null);
+    throw { code: "PUTER_LOW_BALANCE", msg: "Puter's free balance ran out and no other AI backend is configured. Add a free Groq or Cerebras API key in Settings (2-min signup, no card) to keep generating." };
+  };
+  if (opts.__forceBackend) backend = opts.__forceBackend;
   if (backend === "groq" && opts.onStream) return callGroq(prompt2, temperature, opts);
-  if (backend === "puter" && opts.onStream) return callPuter(prompt2, temperature, opts);
+  if (backend === "puter" && opts.onStream) return callPuter(prompt2, temperature, opts).catch(puterLowBalanceFailover);
   if (backend === "cerebras" && opts.onStream) return callCerebras(prompt2, temperature, opts);
   if (backend === "kilo" && opts.onStream) return callKilo(prompt2, temperature, opts).catch((e) => {
     if (kiloFailureShouldFailover(e)) {
       KILO_SESSION_DEAD = true;
       notifyBackendSwitch();
-      return callPuter(prompt2, temperature, opts);
+      return callPuter(prompt2, temperature, opts).catch(puterLowBalanceFailover);
     }
     throw e;
   });
@@ -4910,6 +5004,10 @@ Respond ONLY with valid JSON:
               setQuotaHit(true);
               break;
             }
+            if (oe?.code === "PUTER_LOW_BALANCE") {
+              log(`\u26A0\uFE0F ${errMsg(oe)}`);
+              break;
+            }
             outlineTries++;
             log(`\u26A0\uFE0F Outline attempt ${outlineTries}/3 failed \u2014 ${outlineTries < 3 ? "retrying in 4s\u2026" : "giving up"}`);
             if (outlineTries < 3) await sleep(4e3);
@@ -5028,6 +5126,10 @@ Excerpt: ${content.slice(0, 600)}`, 0.2);
           } catch (e) {
             if (e?.code === "QUOTA") {
               setQuotaHit(true);
+              break;
+            }
+            if (e?.code === "PUTER_LOW_BALANCE") {
+              log(`\u26A0\uFE0F ${errMsg(e)}`);
               break;
             }
             log(`\u26A0\uFE0F Ch.${i + 1} error \u2014 will retry on next pass`);
