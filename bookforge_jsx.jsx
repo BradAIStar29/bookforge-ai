@@ -1103,16 +1103,59 @@ function initPuterLowBalanceWatcher(){
   });
   try{observer.observe(document.body,{childList:true,subtree:true});}catch(e){}
 }
-// Priority order when Puter's balance is exhausted: any backend with real
-// credentials configured, then Kilo (zero-key but CORS-dead most sessions).
-function nextBackendAfterPuter(){
-  if(getGroqKey())return"groq";
-  if(getCerebrasKey())return"cerebras";
-  if(getCloudflareAccountId()&&getCloudflareToken())return"cloudflare";
-  if(!KILO_SESSION_DEAD)return"kilo";
+// ── Quota-aware auto-failover ──────────────────────────────────────────────
+// When ANY backend hits its limit (429 rate limit / daily quota / low
+// balance), we mark it exhausted for the session and automatically re-route
+// the in-flight call to the next backend that is configured with credentials
+// and known capacity. Each backend can only be tried once per call chain
+// (exhaustion marks + depth cap), so this can never loop forever.
+const BACKEND_EXHAUSTED=new Map(); // backend → expiry timestamp (ms)
+const FAILOVER_ORDER=["groq","cerebras","cloudflare","gemini","kilo","puter"];
+function markBackendExhausted(b,ms){
+  if(!ms)ms=b==="cloudflare"?12*3600e3:b==="gemini"?3600e3:10*60e3; // transient 429s ~10min; Cloudflare daily neurons 12h; Gemini 1h (usage pre-check is authoritative)
+  BACKEND_EXHAUSTED.set(b,Date.now()+ms);
+  if(b===getBackend())LAST_FAILOVER_FROM.add(b); // original backend bypassed → notify when it's healthy again
+}
+function backendExhausted(b){
+  const t=BACKEND_EXHAUSTED.get(b);
+  if(!t)return false;
+  if(Date.now()>t){BACKEND_EXHAUSTED.delete(b);return false;}
+  return true;
+}
+function backendAvailable(b){
+  if(backendExhausted(b))return false;
+  if(b==="kilo")return!KILO_SESSION_DEAD;
+  if(b==="puter")return!PUTER_LOW_BALANCE;
+  if(b==="groq")return!!getGroqKey();
+  if(b==="cerebras")return!!getCerebrasKey();
+  if(b==="cloudflare")return!!(getCloudflareAccountId()&&getCloudflareToken());
+  if(b==="gemini")return!!getKey()&&getUsage()<DAILY_LIMIT;
+  return false;
+}
+function nextAvailableBackend(skip){
+  for(const b of FAILOVER_ORDER){if(b===skip)continue;if(backendAvailable(b))return b;}
   return null;
 }
-async function dispatchAICall(backend,prompt,temperature,opts){
+const LAST_FAILOVER_FROM=new Set(); // configured backends that got bypassed — cleared when they're healthy again
+function notifyBackendRevert(b){
+  try{window.dispatchEvent(new CustomEvent("bfai:retry",{detail:{reason:"notice",msg:`\u2705 ${b} limit reset — routing restored to ${b}.`}}));}catch(e){}
+}
+function clearBackendFailover(b){
+  BACKEND_EXHAUSTED.delete(b);
+  LAST_FAILOVER_FROM.delete(b);
+  if(b==="puter")PUTER_LOW_BALANCE=false; // try again — the low-balance watcher re-protects instantly if the balance is still empty
+  if(b==="kilo")KILO_SESSION_DEAD=false;  // try again — a hard failure re-marks it immediately
+}
+function failoverStatus(){
+  const orig=getBackend();
+  const routed=backendAvailable(orig)?orig:nextAvailableBackend(orig);
+  const exp=BACKEND_EXHAUSTED.get(orig);
+  return{original:orig,routedTo:routed,exhaustedFor:exp&&exp>Date.now()?Math.max(0,Math.round((exp-Date.now())/60000)):0};
+}
+function notifyQuotaSwitch(from,to){
+  try{window.dispatchEvent(new CustomEvent("bfai:retry",{detail:{reason:"notice",msg:`⚠️ ${from} hit its limit — auto-switching to ${to} for this session.`}}));}catch(e){}
+}
+function dispatchAICall(backend,prompt,temperature,opts){
   if(backend==="puter")return callPuter(prompt,temperature,opts);
   if(backend==="groq")return callGroq(prompt,temperature,opts);
   if(backend==="cerebras")return callCerebras(prompt,temperature,opts);
@@ -1120,48 +1163,75 @@ async function dispatchAICall(backend,prompt,temperature,opts){
   if(backend==="cloudflare")return callCloudflare(prompt,temperature,opts);
   return callGemini(prompt,temperature,opts);
 }
-async function callAI(prompt,temperature=0.85,opts={}){
-  let backend=getBackend();
+async function callAI(prompt,temperature=0.85,opts={},_depth=0){
+  let backend=opts.__forceBackend||getBackend();
   if(backend==="kilo"&&KILO_SESSION_DEAD)backend="puter";
+  if(!opts.__forceBackend&&!backendAvailable(backend)){ // configured backend exhausted this session → skip straight to the next with capacity (no wasted 429s)
+    const skip=nextAvailableBackend(backend);
+    if(skip)backend=skip;
+  }
+  if(backend===getBackend()&&LAST_FAILOVER_FROM.has(backend)&&!backendExhausted(backend)){ // original backend's limit reset → announce the revert
+    LAST_FAILOVER_FROM.delete(backend);
+    notifyBackendRevert(backend);
+  }
   try{
     return await dispatchAICall(backend,prompt,temperature,opts);
   }catch(e){
-    if(backend==="kilo"&&kiloFailureShouldFailover(e)){
-      KILO_SESSION_DEAD=true;
-      notifyBackendSwitch();
-      return callAI(prompt,temperature,opts);
-    }
-    if(backend==="puter"&&e?.code==="PUTER_LOW_BALANCE"){
-      const next=nextBackendAfterPuter();
-      if(next){notifyPuterLowBalance(next);return dispatchAICall(next,prompt,temperature,opts);}
-      notifyPuterLowBalance(null);
-      throw{code:"PUTER_LOW_BALANCE",msg:"Puter's free balance ran out and no other AI backend is configured. Add a free Groq or Cerebras API key in Settings (2-min signup, no card) to keep generating."};
+    if(_depth<5){
+      if(backend==="kilo"&&kiloFailureShouldFailover(e)){KILO_SESSION_DEAD=true;notifyBackendSwitch();return callAI(prompt,temperature,opts,_depth+1);}
+      if(backend==="puter"&&e?.code==="PUTER_LOW_BALANCE"){
+        const next=nextAvailableBackend("puter");
+        if(next){notifyPuterLowBalance(next);return callAI(prompt,temperature,{...opts,__forceBackend:next},_depth+1);}
+        notifyPuterLowBalance(null);
+        throw{code:"PUTER_LOW_BALANCE",msg:"Puter's free balance ran out and no other AI backend is configured. Add a free Groq or Cerebras API key in Settings (2-min signup, no card) to keep generating."};
+      }
+      if(e?.code==="QUOTA"){ // ANY backend hit its rate/daily limit → try the next one with capacity
+        markBackendExhausted(backend);
+        const next=nextAvailableBackend(backend);
+        if(next){notifyQuotaSwitch(backend,next);return callAI(prompt,temperature,{...opts,__forceBackend:next},_depth+1);}
+      }
     }
     throw e;
   }
 }
 
-// Streaming version — only Groq supports true streaming; others fall back to batch + onStream at end
-async function callAIStream(prompt,temperature=0.85,opts={}){
-  let backend=getBackend();
+// Streaming version — Groq/Puter/Cerebras/Kilo/Cloudflare stream; Gemini
+// generates in one shot then delivers. Same quota-aware failover chain.
+async function callAIStream(prompt,temperature=0.85,opts={},_depth=0){
+  let backend=opts.__forceBackend||getBackend();
   if(backend==="kilo"&&KILO_SESSION_DEAD)backend="puter";
-  const puterLowBalanceFailover=(e)=>{
-    if(e?.code!=="PUTER_LOW_BALANCE")throw e;
-    const next=nextBackendAfterPuter();
-    if(next){notifyPuterLowBalance(next);return callAIStream(prompt,temperature,{...opts,__forceBackend:next});}
-    notifyPuterLowBalance(null);
-    throw{code:"PUTER_LOW_BALANCE",msg:"Puter's free balance ran out and no other AI backend is configured. Add a free Groq or Cerebras API key in Settings (2-min signup, no card) to keep generating."};
-  };
-  if(opts.__forceBackend)backend=opts.__forceBackend;
-  if(backend==="groq"&&opts.onStream)return callGroq(prompt,temperature,opts);
-  if(backend==="puter"&&opts.onStream)return callPuter(prompt,temperature,opts).catch(puterLowBalanceFailover);
-  if(backend==="cerebras"&&opts.onStream)return callCerebras(prompt,temperature,opts);
-  if(backend==="kilo"&&opts.onStream)return callKilo(prompt,temperature,opts).catch(e=>{if(kiloFailureShouldFailover(e)){KILO_SESSION_DEAD=true;notifyBackendSwitch();return callPuter(prompt,temperature,opts).catch(puterLowBalanceFailover);}throw e;});
-  if(backend==="cloudflare"&&opts.onStream)return callCloudflare(prompt,temperature,opts);
-  // Gemini doesn't support SSE — generate all at once, then deliver
-  const text=await callAI(prompt,temperature,opts);
-  if(opts.onStream)opts.onStream(text);
-  return text;
+  if(!opts.__forceBackend&&!backendAvailable(backend)){
+    const skip=nextAvailableBackend(backend);
+    if(skip)backend=skip;
+  }
+  if(backend===getBackend()&&LAST_FAILOVER_FROM.has(backend)&&!backendExhausted(backend)){
+    LAST_FAILOVER_FROM.delete(backend);
+    notifyBackendRevert(backend);
+  }
+  if(backend==="gemini"||!opts.onStream){
+    const text=await callAI(prompt,temperature,opts); // callAI carries the failover chain
+    if(opts.onStream)opts.onStream(text);
+    return text;
+  }
+  try{
+    return await dispatchAICall(backend,prompt,temperature,opts);
+  }catch(e){
+    if(_depth<5){
+      if(backend==="kilo"&&kiloFailureShouldFailover(e)){KILO_SESSION_DEAD=true;notifyBackendSwitch();return callAIStream(prompt,temperature,opts,_depth+1);}
+      if(backend==="puter"&&e?.code==="PUTER_LOW_BALANCE"){
+        const next=nextAvailableBackend("puter");
+        if(next){notifyPuterLowBalance(next);return callAIStream(prompt,temperature,{...opts,__forceBackend:next},_depth+1);}
+        notifyPuterLowBalance(null);
+        throw{code:"PUTER_LOW_BALANCE",msg:"Puter's free balance ran out and no other AI backend is configured. Add a free Groq or Cerebras API key in Settings (2-min signup, no card) to keep generating."};
+      }
+      if(e?.code==="QUOTA"){
+        markBackendExhausted(backend);
+        const next=nextAvailableBackend(backend);
+        if(next){notifyQuotaSwitch(backend,next);return callAIStream(prompt,temperature,{...opts,__forceBackend:next},_depth+1);}
+      }
+    }
+    throw e;
+  }
 }
 
 // ── Test Connection ───────────────────────────────────────────────────────────
@@ -2959,6 +3029,14 @@ function SettingsModal({onClose}){
               <label className="text-white/60 text-sm font-medium block mb-2">AI Engine</label>
               <p className="text-white/35 text-xs mb-3">Choose how BookForge generates text and images.</p>
               <div className="grid grid-cols-2 gap-2 mb-5">
+                {(()=>{const fs=failoverStatus();return fs.routedTo&&fs.routedTo!==fs.original?(
+                <div className="bg-amber-500/10 border border-amber-500/30 rounded-xl p-4 mb-4 flex items-center justify-between gap-3">
+                  <div>
+                    <p className="text-amber-200 text-sm font-semibold">↩︎ Failover active — {fs.original} hit its limit</p>
+                    <p className="text-white/40 text-xs mt-0.5">Calls are routing to <span className="text-amber-300 font-semibold">{fs.routedTo}</span>{fs.exhaustedFor?` — reverts automatically in ~${fs.exhaustedFor} min`:""}. Click revert to switch back immediately.</p>
+                  </div>
+                  <button onClick={()=>{clearBackendFailover(getBackend());setTestStatus(null);}} className="bg-amber-500/20 text-amber-200 border border-amber-500/40 px-3 py-2 rounded-lg text-xs font-semibold hover:bg-amber-500/30 shrink-0">↩︎ Revert now</button>
+                </div>):null;})()}
                 {BACKENDS.map(b=>{
                   const sel=getBackend()===b.id;
                   return (
@@ -3119,6 +3197,7 @@ function Header({onBack,title,subtitle,onSettings,onTour,activeTab,setActiveTab}
             </div>
           )}
           {getBackend()==="puter"&&<span className="text-xs text-purple-400 font-medium px-2 py-1 bg-purple-500/10 rounded-lg border border-purple-500/20">⚡ Puter Free</span>}
+          {(()=>{const fs=failoverStatus();return fs.routedTo&&fs.routedTo!==fs.original?<span title={`${fs.original} hit its limit — auto-routing to ${fs.routedTo}. Reverts automatically when the limit resets (or use Revert in Settings).`} className="text-xs text-amber-300 font-medium px-2 py-1 bg-amber-500/10 rounded-lg border border-amber-500/20">↩︎ {fs.original} → {fs.routedTo}</span>:null;})()}
           {getBackend()==="cerebras"&&<span className="text-xs text-cyan-400 font-medium px-2 py-1 bg-cyan-500/10 rounded-lg border border-cyan-500/20">🧠 Cerebras 1M/day</span>}
           {getBackend()==="kilo"&&<span className="text-xs text-green-400 font-medium px-2 py-1 bg-green-500/10 rounded-lg border border-green-500/20">🎁 Kilo Free</span>}
           {getBackend()==="cloudflare"&&<span className="text-xs text-orange-400 font-medium px-2 py-1 bg-orange-500/10 rounded-lg border border-orange-500/20">☁️ CF Workers AI</span>}

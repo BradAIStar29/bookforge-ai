@@ -1236,14 +1236,65 @@ function initPuterLowBalanceWatcher() {
   } catch (e) {
   }
 }
-function nextBackendAfterPuter() {
-  if (getGroqKey()) return "groq";
-  if (getCerebrasKey()) return "cerebras";
-  if (getCloudflareAccountId() && getCloudflareToken()) return "cloudflare";
-  if (!KILO_SESSION_DEAD) return "kilo";
+const BACKEND_EXHAUSTED = /* @__PURE__ */ new Map();
+const FAILOVER_ORDER = ["groq", "cerebras", "cloudflare", "gemini", "kilo", "puter"];
+function markBackendExhausted(b, ms) {
+  if (!ms) ms = b === "cloudflare" ? 12 * 36e5 : b === "gemini" ? 36e5 : 10 * 6e4;
+  BACKEND_EXHAUSTED.set(b, Date.now() + ms);
+  if (b === getBackend()) LAST_FAILOVER_FROM.add(b);
+}
+function backendExhausted(b) {
+  const t = BACKEND_EXHAUSTED.get(b);
+  if (!t) return false;
+  if (Date.now() > t) {
+    BACKEND_EXHAUSTED.delete(b);
+    return false;
+  }
+  return true;
+}
+function backendAvailable(b) {
+  if (backendExhausted(b)) return false;
+  if (b === "kilo") return !KILO_SESSION_DEAD;
+  if (b === "puter") return !PUTER_LOW_BALANCE;
+  if (b === "groq") return !!getGroqKey();
+  if (b === "cerebras") return !!getCerebrasKey();
+  if (b === "cloudflare") return !!(getCloudflareAccountId() && getCloudflareToken());
+  if (b === "gemini") return !!getKey() && getUsage() < DAILY_LIMIT;
+  return false;
+}
+function nextAvailableBackend(skip) {
+  for (const b of FAILOVER_ORDER) {
+    if (b === skip) continue;
+    if (backendAvailable(b)) return b;
+  }
   return null;
 }
-async function dispatchAICall(backend, prompt2, temperature, opts) {
+const LAST_FAILOVER_FROM = /* @__PURE__ */ new Set();
+function notifyBackendRevert(b) {
+  try {
+    window.dispatchEvent(new CustomEvent("bfai:retry", { detail: { reason: "notice", msg: `\u2705 ${b} limit reset \u2014 routing restored to ${b}.` } }));
+  } catch (e) {
+  }
+}
+function clearBackendFailover(b) {
+  BACKEND_EXHAUSTED.delete(b);
+  LAST_FAILOVER_FROM.delete(b);
+  if (b === "puter") PUTER_LOW_BALANCE = false;
+  if (b === "kilo") KILO_SESSION_DEAD = false;
+}
+function failoverStatus() {
+  const orig = getBackend();
+  const routed = backendAvailable(orig) ? orig : nextAvailableBackend(orig);
+  const exp = BACKEND_EXHAUSTED.get(orig);
+  return { original: orig, routedTo: routed, exhaustedFor: exp && exp > Date.now() ? Math.max(0, Math.round((exp - Date.now()) / 6e4)) : 0 };
+}
+function notifyQuotaSwitch(from, to) {
+  try {
+    window.dispatchEvent(new CustomEvent("bfai:retry", { detail: { reason: "notice", msg: `\u26A0\uFE0F ${from} hit its limit \u2014 auto-switching to ${to} for this session.` } }));
+  } catch (e) {
+  }
+}
+function dispatchAICall(backend, prompt2, temperature, opts) {
   if (backend === "puter") return callPuter(prompt2, temperature, opts);
   if (backend === "groq") return callGroq(prompt2, temperature, opts);
   if (backend === "cerebras") return callCerebras(prompt2, temperature, opts);
@@ -1251,58 +1302,92 @@ async function dispatchAICall(backend, prompt2, temperature, opts) {
   if (backend === "cloudflare") return callCloudflare(prompt2, temperature, opts);
   return callGemini(prompt2, temperature, opts);
 }
-async function callAI(prompt2, temperature = 0.85, opts = {}) {
-  let backend = getBackend();
+async function callAI(prompt2, temperature = 0.85, opts = {}, _depth = 0) {
+  let backend = opts.__forceBackend || getBackend();
   if (backend === "kilo" && KILO_SESSION_DEAD) backend = "puter";
+  if (!opts.__forceBackend && !backendAvailable(backend)) {
+    const skip = nextAvailableBackend(backend);
+    if (skip) backend = skip;
+  }
+  if (backend === getBackend() && LAST_FAILOVER_FROM.has(backend) && !backendExhausted(backend)) {
+    LAST_FAILOVER_FROM.delete(backend);
+    notifyBackendRevert(backend);
+  }
   try {
     return await dispatchAICall(backend, prompt2, temperature, opts);
   } catch (e) {
-    if (backend === "kilo" && kiloFailureShouldFailover(e)) {
-      KILO_SESSION_DEAD = true;
-      notifyBackendSwitch();
-      return callAI(prompt2, temperature, opts);
-    }
-    if (backend === "puter" && e?.code === "PUTER_LOW_BALANCE") {
-      const next = nextBackendAfterPuter();
-      if (next) {
-        notifyPuterLowBalance(next);
-        return dispatchAICall(next, prompt2, temperature, opts);
+    if (_depth < 5) {
+      if (backend === "kilo" && kiloFailureShouldFailover(e)) {
+        KILO_SESSION_DEAD = true;
+        notifyBackendSwitch();
+        return callAI(prompt2, temperature, opts, _depth + 1);
       }
-      notifyPuterLowBalance(null);
-      throw { code: "PUTER_LOW_BALANCE", msg: "Puter's free balance ran out and no other AI backend is configured. Add a free Groq or Cerebras API key in Settings (2-min signup, no card) to keep generating." };
+      if (backend === "puter" && e?.code === "PUTER_LOW_BALANCE") {
+        const next = nextAvailableBackend("puter");
+        if (next) {
+          notifyPuterLowBalance(next);
+          return callAI(prompt2, temperature, { ...opts, __forceBackend: next }, _depth + 1);
+        }
+        notifyPuterLowBalance(null);
+        throw { code: "PUTER_LOW_BALANCE", msg: "Puter's free balance ran out and no other AI backend is configured. Add a free Groq or Cerebras API key in Settings (2-min signup, no card) to keep generating." };
+      }
+      if (e?.code === "QUOTA") {
+        markBackendExhausted(backend);
+        const next = nextAvailableBackend(backend);
+        if (next) {
+          notifyQuotaSwitch(backend, next);
+          return callAI(prompt2, temperature, { ...opts, __forceBackend: next }, _depth + 1);
+        }
+      }
     }
     throw e;
   }
 }
-async function callAIStream(prompt2, temperature = 0.85, opts = {}) {
-  let backend = getBackend();
+async function callAIStream(prompt2, temperature = 0.85, opts = {}, _depth = 0) {
+  let backend = opts.__forceBackend || getBackend();
   if (backend === "kilo" && KILO_SESSION_DEAD) backend = "puter";
-  const puterLowBalanceFailover = (e) => {
-    if (e?.code !== "PUTER_LOW_BALANCE") throw e;
-    const next = nextBackendAfterPuter();
-    if (next) {
-      notifyPuterLowBalance(next);
-      return callAIStream(prompt2, temperature, { ...opts, __forceBackend: next });
-    }
-    notifyPuterLowBalance(null);
-    throw { code: "PUTER_LOW_BALANCE", msg: "Puter's free balance ran out and no other AI backend is configured. Add a free Groq or Cerebras API key in Settings (2-min signup, no card) to keep generating." };
-  };
-  if (opts.__forceBackend) backend = opts.__forceBackend;
-  if (backend === "groq" && opts.onStream) return callGroq(prompt2, temperature, opts);
-  if (backend === "puter" && opts.onStream) return callPuter(prompt2, temperature, opts).catch(puterLowBalanceFailover);
-  if (backend === "cerebras" && opts.onStream) return callCerebras(prompt2, temperature, opts);
-  if (backend === "kilo" && opts.onStream) return callKilo(prompt2, temperature, opts).catch((e) => {
-    if (kiloFailureShouldFailover(e)) {
-      KILO_SESSION_DEAD = true;
-      notifyBackendSwitch();
-      return callPuter(prompt2, temperature, opts).catch(puterLowBalanceFailover);
+  if (!opts.__forceBackend && !backendAvailable(backend)) {
+    const skip = nextAvailableBackend(backend);
+    if (skip) backend = skip;
+  }
+  if (backend === getBackend() && LAST_FAILOVER_FROM.has(backend) && !backendExhausted(backend)) {
+    LAST_FAILOVER_FROM.delete(backend);
+    notifyBackendRevert(backend);
+  }
+  if (backend === "gemini" || !opts.onStream) {
+    const text = await callAI(prompt2, temperature, opts);
+    if (opts.onStream) opts.onStream(text);
+    return text;
+  }
+  try {
+    return await dispatchAICall(backend, prompt2, temperature, opts);
+  } catch (e) {
+    if (_depth < 5) {
+      if (backend === "kilo" && kiloFailureShouldFailover(e)) {
+        KILO_SESSION_DEAD = true;
+        notifyBackendSwitch();
+        return callAIStream(prompt2, temperature, opts, _depth + 1);
+      }
+      if (backend === "puter" && e?.code === "PUTER_LOW_BALANCE") {
+        const next = nextAvailableBackend("puter");
+        if (next) {
+          notifyPuterLowBalance(next);
+          return callAIStream(prompt2, temperature, { ...opts, __forceBackend: next }, _depth + 1);
+        }
+        notifyPuterLowBalance(null);
+        throw { code: "PUTER_LOW_BALANCE", msg: "Puter's free balance ran out and no other AI backend is configured. Add a free Groq or Cerebras API key in Settings (2-min signup, no card) to keep generating." };
+      }
+      if (e?.code === "QUOTA") {
+        markBackendExhausted(backend);
+        const next = nextAvailableBackend(backend);
+        if (next) {
+          notifyQuotaSwitch(backend, next);
+          return callAIStream(prompt2, temperature, { ...opts, __forceBackend: next }, _depth + 1);
+        }
+      }
     }
     throw e;
-  });
-  if (backend === "cloudflare" && opts.onStream) return callCloudflare(prompt2, temperature, opts);
-  const text = await callAI(prompt2, temperature, opts);
-  if (opts.onStream) opts.onStream(text);
-  return text;
+  }
 }
 async function testConnection() {
   const backend = getBackend();
@@ -3025,7 +3110,13 @@ function SettingsModal({ onClose }) {
     }
     setTimeout(() => setTestStatus(null), 4e3);
   };
-  return /* @__PURE__ */ React.createElement("div", { className: "fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center p-4" }, /* @__PURE__ */ React.createElement("div", { className: "bg-slate-800 border border-white/10 rounded-2xl max-w-lg w-full shadow-2xl max-h-[90vh] overflow-y-auto" }, /* @__PURE__ */ React.createElement("div", { className: "sticky top-0 bg-slate-800 border-b border-white/10 px-6 py-4 flex items-center justify-between" }, /* @__PURE__ */ React.createElement("h2", { className: "text-white text-xl font-bold" }, "\u2699\uFE0F Settings"), /* @__PURE__ */ React.createElement("button", { onClick: onClose, "aria-label": "Close settings", "data-close-btn": "true", className: "text-white/30 hover:text-white text-xl" }, "\u2715")), /* @__PURE__ */ React.createElement("div", { className: "px-6 pt-4" }, /* @__PURE__ */ React.createElement("div", { className: "bg-white/5 border border-white/10 rounded-xl p-1 flex gap-1 mb-5" }, [["api", "\u{1F511} API Key"], ["voice", "\u{1F399}\uFE0F Voice"], ["author", "\u{1F464} Author"], ["build", "\u{1F527} Build"], ["data", "\u{1F4BE} Data"]].map(([id, label]) => /* @__PURE__ */ React.createElement("button", { key: id, onClick: () => setSTab(id), className: `flex-1 py-2 rounded-lg text-xs font-medium transition-all ${sTab === id ? "bg-purple-500 text-white" : "text-white/40 hover:text-white"}` }, label)))), /* @__PURE__ */ React.createElement("div", { className: "px-6 pb-6" }, sTab === "api" && /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("label", { className: "text-white/60 text-sm font-medium block mb-2" }, "AI Engine"), /* @__PURE__ */ React.createElement("p", { className: "text-white/35 text-xs mb-3" }, "Choose how BookForge generates text and images."), /* @__PURE__ */ React.createElement("div", { className: "grid grid-cols-2 gap-2 mb-5" }, BACKENDS.map((b) => {
+  return /* @__PURE__ */ React.createElement("div", { className: "fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center p-4" }, /* @__PURE__ */ React.createElement("div", { className: "bg-slate-800 border border-white/10 rounded-2xl max-w-lg w-full shadow-2xl max-h-[90vh] overflow-y-auto" }, /* @__PURE__ */ React.createElement("div", { className: "sticky top-0 bg-slate-800 border-b border-white/10 px-6 py-4 flex items-center justify-between" }, /* @__PURE__ */ React.createElement("h2", { className: "text-white text-xl font-bold" }, "\u2699\uFE0F Settings"), /* @__PURE__ */ React.createElement("button", { onClick: onClose, "aria-label": "Close settings", "data-close-btn": "true", className: "text-white/30 hover:text-white text-xl" }, "\u2715")), /* @__PURE__ */ React.createElement("div", { className: "px-6 pt-4" }, /* @__PURE__ */ React.createElement("div", { className: "bg-white/5 border border-white/10 rounded-xl p-1 flex gap-1 mb-5" }, [["api", "\u{1F511} API Key"], ["voice", "\u{1F399}\uFE0F Voice"], ["author", "\u{1F464} Author"], ["build", "\u{1F527} Build"], ["data", "\u{1F4BE} Data"]].map(([id, label]) => /* @__PURE__ */ React.createElement("button", { key: id, onClick: () => setSTab(id), className: `flex-1 py-2 rounded-lg text-xs font-medium transition-all ${sTab === id ? "bg-purple-500 text-white" : "text-white/40 hover:text-white"}` }, label)))), /* @__PURE__ */ React.createElement("div", { className: "px-6 pb-6" }, sTab === "api" && /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("label", { className: "text-white/60 text-sm font-medium block mb-2" }, "AI Engine"), /* @__PURE__ */ React.createElement("p", { className: "text-white/35 text-xs mb-3" }, "Choose how BookForge generates text and images."), /* @__PURE__ */ React.createElement("div", { className: "grid grid-cols-2 gap-2 mb-5" }, (() => {
+    const fs = failoverStatus();
+    return fs.routedTo && fs.routedTo !== fs.original ? /* @__PURE__ */ React.createElement("div", { className: "bg-amber-500/10 border border-amber-500/30 rounded-xl p-4 mb-4 flex items-center justify-between gap-3" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("p", { className: "text-amber-200 text-sm font-semibold" }, "\u21A9\uFE0E Failover active \u2014 ", fs.original, " hit its limit"), /* @__PURE__ */ React.createElement("p", { className: "text-white/40 text-xs mt-0.5" }, "Calls are routing to ", /* @__PURE__ */ React.createElement("span", { className: "text-amber-300 font-semibold" }, fs.routedTo), fs.exhaustedFor ? ` \u2014 reverts automatically in ~${fs.exhaustedFor} min` : "", ". Click revert to switch back immediately.")), /* @__PURE__ */ React.createElement("button", { onClick: () => {
+      clearBackendFailover(getBackend());
+      setTestStatus(null);
+    }, className: "bg-amber-500/20 text-amber-200 border border-amber-500/40 px-3 py-2 rounded-lg text-xs font-semibold hover:bg-amber-500/30 shrink-0" }, "\u21A9\uFE0E Revert now")) : null;
+  })(), BACKENDS.map((b) => {
     const sel = getBackend() === b.id;
     return /* @__PURE__ */ React.createElement("button", { key: b.id, onClick: () => {
       setBackend(b.id);
@@ -3062,7 +3153,10 @@ function Header({ onBack, title, subtitle, onSettings, onTour, activeTab, setAct
   const isGroq = getBackend() === "groq";
   const groqPct = groqRate.remaining != null && groqRate.limit != null ? Math.round(groqRate.remaining / groqRate.limit * 100) : 100;
   const groqTokenPct = groqRate.tokensRemaining != null && groqRate.tokensLimit != null ? Math.round(groqRate.tokensRemaining / groqRate.tokensLimit * 100) : 100;
-  return /* @__PURE__ */ React.createElement("div", { className: "border-b border-white/10 bg-black/30 backdrop-blur-sm sticky top-0 z-20" }, /* @__PURE__ */ React.createElement("div", { className: "max-w-7xl mx-auto px-4 sm:px-6 py-3 flex items-center justify-between gap-3" }, /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-3 min-w-0" }, onBack && /* @__PURE__ */ React.createElement("button", { onClick: onBack, className: "text-white/40 hover:text-white text-sm shrink-0" }, "\u2190 Back"), /* @__PURE__ */ React.createElement("div", { className: "w-9 h-9 bg-gradient-to-br from-purple-500 to-pink-500 rounded-xl flex items-center justify-center text-lg shrink-0" }, "\u{1F4DA}"), /* @__PURE__ */ React.createElement("div", { className: "min-w-0" }, /* @__PURE__ */ React.createElement("h1", { className: "text-white font-bold text-base leading-tight truncate" }, title || "BookForge AI"), subtitle && /* @__PURE__ */ React.createElement("p", { className: "text-white/30 text-xs truncate" }, subtitle))), /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-2 shrink-0" }, getBackend() === "gemini" && /* @__PURE__ */ React.createElement("div", { className: "bg-white/5 border border-white/10 rounded-lg px-3 py-1.5 flex items-center gap-2" }, /* @__PURE__ */ React.createElement("span", { className: `text-xs font-bold ${pct >= 90 ? "text-red-400" : pct >= 70 ? "text-amber-400" : "text-green-400"}` }, usage, "/", DAILY_LIMIT), /* @__PURE__ */ React.createElement("div", { className: "w-10 h-1 bg-white/10 rounded-full overflow-hidden" }, /* @__PURE__ */ React.createElement("div", { className: `h-full rounded-full ${pct >= 90 ? "bg-red-500" : pct >= 70 ? "bg-amber-500" : "bg-green-500"}`, style: { width: `${pct}%` } }))), getBackend() === "puter" && /* @__PURE__ */ React.createElement("span", { className: "text-xs text-purple-400 font-medium px-2 py-1 bg-purple-500/10 rounded-lg border border-purple-500/20" }, "\u26A1 Puter Free"), getBackend() === "cerebras" && /* @__PURE__ */ React.createElement("span", { className: "text-xs text-cyan-400 font-medium px-2 py-1 bg-cyan-500/10 rounded-lg border border-cyan-500/20" }, "\u{1F9E0} Cerebras 1M/day"), getBackend() === "kilo" && /* @__PURE__ */ React.createElement("span", { className: "text-xs text-green-400 font-medium px-2 py-1 bg-green-500/10 rounded-lg border border-green-500/20" }, "\u{1F381} Kilo Free"), getBackend() === "cloudflare" && /* @__PURE__ */ React.createElement("span", { className: "text-xs text-orange-400 font-medium px-2 py-1 bg-orange-500/10 rounded-lg border border-orange-500/20" }, "\u2601\uFE0F CF Workers AI"), getBackend() === "groq" && /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-2" }, /* @__PURE__ */ React.createElement("span", { className: "text-xs text-orange-400 font-medium px-2 py-1 bg-orange-500/10 rounded-lg border border-orange-500/20" }, "\u26A1 Groq Turbo"), groqRate.remaining != null && /* @__PURE__ */ React.createElement("div", { className: "bg-white/5 border border-white/10 rounded-lg px-2.5 py-1.5 flex items-center gap-2", title: `Groq rate limit: ${groqRate.remaining}/${groqRate.limit} requests left this minute` }, /* @__PURE__ */ React.createElement("span", { className: `text-xs font-bold ${groqPct >= 60 ? "text-green-400" : groqPct >= 30 ? "text-amber-400" : "text-red-400"}` }, groqRate.remaining, "/", groqRate.limit), /* @__PURE__ */ React.createElement("div", { className: "w-10 h-1 bg-white/10 rounded-full overflow-hidden" }, /* @__PURE__ */ React.createElement("div", { className: `h-full rounded-full ${groqPct >= 60 ? "bg-green-500" : groqPct >= 30 ? "bg-amber-500" : "bg-red-500"}`, style: { width: `${groqPct}%` } })), groqRate.tokensRemaining != null && /* @__PURE__ */ React.createElement("span", { className: `text-xs ${groqTokenPct >= 60 ? "text-green-400" : groqTokenPct >= 30 ? "text-amber-400" : "text-red-400"}`, title: "Token budget remaining" }, (groqRate.tokensRemaining / 1e3).toFixed(0), "K tok"))), qLen > 0 && /* @__PURE__ */ React.createElement("div", { className: "bg-cyan-500/20 border border-cyan-500/30 text-cyan-300 text-xs px-2.5 py-1.5 rounded-lg" }, "\u23F3 Queue: ", qLen), /* @__PURE__ */ React.createElement("button", { onClick: onSettings, "aria-label": "Settings", "data-close-btn": "true", className: "text-xs px-3 py-1.5 rounded-lg border border-white/20 text-white/50 hover:border-white/40 transition-all" }, "\u2699\uFE0F Settings"), onTour && /* @__PURE__ */ React.createElement("button", { onClick: onTour, title: "Page tour \u2014 learn how to use this page", className: "text-xs px-3 py-1.5 rounded-lg border border-purple-500/40 text-purple-300/70 hover:bg-purple-500/20 transition-all", id: "tour-btn" }, "\u2753 Tour"))), setActiveTab && /* @__PURE__ */ React.createElement("div", { id: "bf-home-tabs", className: "max-w-7xl mx-auto px-4 sm:px-6 flex gap-1" }, [["\u{1F4DA} Library", "library"], ["\u{1F4D7} Series", "series"], ["\u23F3 Queue", "queue"], ["\u{1F4AC} Help", "help"], ["\u{1F38C} Manga", "manga"]].map(([label, id]) => /* @__PURE__ */ React.createElement("button", { key: id, onClick: () => setActiveTab(id), className: `px-4 py-2.5 text-sm font-medium whitespace-nowrap rounded-t-lg transition-all ${activeTab === id ? "bg-white/10 text-white border-b-2 border-purple-500" : "text-white/35 hover:text-white/70"}` }, label))));
+  return /* @__PURE__ */ React.createElement("div", { className: "border-b border-white/10 bg-black/30 backdrop-blur-sm sticky top-0 z-20" }, /* @__PURE__ */ React.createElement("div", { className: "max-w-7xl mx-auto px-4 sm:px-6 py-3 flex items-center justify-between gap-3" }, /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-3 min-w-0" }, onBack && /* @__PURE__ */ React.createElement("button", { onClick: onBack, className: "text-white/40 hover:text-white text-sm shrink-0" }, "\u2190 Back"), /* @__PURE__ */ React.createElement("div", { className: "w-9 h-9 bg-gradient-to-br from-purple-500 to-pink-500 rounded-xl flex items-center justify-center text-lg shrink-0" }, "\u{1F4DA}"), /* @__PURE__ */ React.createElement("div", { className: "min-w-0" }, /* @__PURE__ */ React.createElement("h1", { className: "text-white font-bold text-base leading-tight truncate" }, title || "BookForge AI"), subtitle && /* @__PURE__ */ React.createElement("p", { className: "text-white/30 text-xs truncate" }, subtitle))), /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-2 shrink-0" }, getBackend() === "gemini" && /* @__PURE__ */ React.createElement("div", { className: "bg-white/5 border border-white/10 rounded-lg px-3 py-1.5 flex items-center gap-2" }, /* @__PURE__ */ React.createElement("span", { className: `text-xs font-bold ${pct >= 90 ? "text-red-400" : pct >= 70 ? "text-amber-400" : "text-green-400"}` }, usage, "/", DAILY_LIMIT), /* @__PURE__ */ React.createElement("div", { className: "w-10 h-1 bg-white/10 rounded-full overflow-hidden" }, /* @__PURE__ */ React.createElement("div", { className: `h-full rounded-full ${pct >= 90 ? "bg-red-500" : pct >= 70 ? "bg-amber-500" : "bg-green-500"}`, style: { width: `${pct}%` } }))), getBackend() === "puter" && /* @__PURE__ */ React.createElement("span", { className: "text-xs text-purple-400 font-medium px-2 py-1 bg-purple-500/10 rounded-lg border border-purple-500/20" }, "\u26A1 Puter Free"), (() => {
+    const fs = failoverStatus();
+    return fs.routedTo && fs.routedTo !== fs.original ? /* @__PURE__ */ React.createElement("span", { title: `${fs.original} hit its limit \u2014 auto-routing to ${fs.routedTo}. Reverts automatically when the limit resets (or use Revert in Settings).`, className: "text-xs text-amber-300 font-medium px-2 py-1 bg-amber-500/10 rounded-lg border border-amber-500/20" }, "\u21A9\uFE0E ", fs.original, " \u2192 ", fs.routedTo) : null;
+  })(), getBackend() === "cerebras" && /* @__PURE__ */ React.createElement("span", { className: "text-xs text-cyan-400 font-medium px-2 py-1 bg-cyan-500/10 rounded-lg border border-cyan-500/20" }, "\u{1F9E0} Cerebras 1M/day"), getBackend() === "kilo" && /* @__PURE__ */ React.createElement("span", { className: "text-xs text-green-400 font-medium px-2 py-1 bg-green-500/10 rounded-lg border border-green-500/20" }, "\u{1F381} Kilo Free"), getBackend() === "cloudflare" && /* @__PURE__ */ React.createElement("span", { className: "text-xs text-orange-400 font-medium px-2 py-1 bg-orange-500/10 rounded-lg border border-orange-500/20" }, "\u2601\uFE0F CF Workers AI"), getBackend() === "groq" && /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-2" }, /* @__PURE__ */ React.createElement("span", { className: "text-xs text-orange-400 font-medium px-2 py-1 bg-orange-500/10 rounded-lg border border-orange-500/20" }, "\u26A1 Groq Turbo"), groqRate.remaining != null && /* @__PURE__ */ React.createElement("div", { className: "bg-white/5 border border-white/10 rounded-lg px-2.5 py-1.5 flex items-center gap-2", title: `Groq rate limit: ${groqRate.remaining}/${groqRate.limit} requests left this minute` }, /* @__PURE__ */ React.createElement("span", { className: `text-xs font-bold ${groqPct >= 60 ? "text-green-400" : groqPct >= 30 ? "text-amber-400" : "text-red-400"}` }, groqRate.remaining, "/", groqRate.limit), /* @__PURE__ */ React.createElement("div", { className: "w-10 h-1 bg-white/10 rounded-full overflow-hidden" }, /* @__PURE__ */ React.createElement("div", { className: `h-full rounded-full ${groqPct >= 60 ? "bg-green-500" : groqPct >= 30 ? "bg-amber-500" : "bg-red-500"}`, style: { width: `${groqPct}%` } })), groqRate.tokensRemaining != null && /* @__PURE__ */ React.createElement("span", { className: `text-xs ${groqTokenPct >= 60 ? "text-green-400" : groqTokenPct >= 30 ? "text-amber-400" : "text-red-400"}`, title: "Token budget remaining" }, (groqRate.tokensRemaining / 1e3).toFixed(0), "K tok"))), qLen > 0 && /* @__PURE__ */ React.createElement("div", { className: "bg-cyan-500/20 border border-cyan-500/30 text-cyan-300 text-xs px-2.5 py-1.5 rounded-lg" }, "\u23F3 Queue: ", qLen), /* @__PURE__ */ React.createElement("button", { onClick: onSettings, "aria-label": "Settings", "data-close-btn": "true", className: "text-xs px-3 py-1.5 rounded-lg border border-white/20 text-white/50 hover:border-white/40 transition-all" }, "\u2699\uFE0F Settings"), onTour && /* @__PURE__ */ React.createElement("button", { onClick: onTour, title: "Page tour \u2014 learn how to use this page", className: "text-xs px-3 py-1.5 rounded-lg border border-purple-500/40 text-purple-300/70 hover:bg-purple-500/20 transition-all", id: "tour-btn" }, "\u2753 Tour"))), setActiveTab && /* @__PURE__ */ React.createElement("div", { id: "bf-home-tabs", className: "max-w-7xl mx-auto px-4 sm:px-6 flex gap-1" }, [["\u{1F4DA} Library", "library"], ["\u{1F4D7} Series", "series"], ["\u23F3 Queue", "queue"], ["\u{1F4AC} Help", "help"], ["\u{1F38C} Manga", "manga"]].map(([label, id]) => /* @__PURE__ */ React.createElement("button", { key: id, onClick: () => setActiveTab(id), className: `px-4 py-2.5 text-sm font-medium whitespace-nowrap rounded-t-lg transition-all ${activeTab === id ? "bg-white/10 text-white border-b-2 border-purple-500" : "text-white/35 hover:text-white/70"}` }, label))));
 }
 function ReviewPanel({ book, onApply, onSettings }) {
   const [review, setReview] = useState(book.review || null);
