@@ -2928,10 +2928,6 @@ function SettingsModal({onClose}){
                     <button onClick={testKey} disabled={!draft.trim()||testStatus==="testing"} className={`flex-1 py-3 rounded-xl font-semibold text-sm transition-all border ${testStatus==="ok"?"bg-green-500/20 border-green-500 text-green-400":testStatus==="fail"?"bg-red-500/20 border-red-500 text-red-400":testStatus==="testing"?"border-white/20 text-white/40":"border-white/20 text-white/60 hover:border-purple-400 hover:text-white"}`}>{testStatus==="testing"?"⏳ Testing…":testStatus==="ok"?"✅ Key works!":testStatus==="fail"?"❌ Invalid key":"🔬 Test Key"}</button>
                     <button onClick={save} disabled={!draft.trim()} className={`flex-1 py-3 rounded-xl font-semibold transition-all ${saved?"bg-green-500 text-white":"bg-gradient-to-r from-purple-500 to-pink-500 text-white hover:opacity-90 disabled:opacity-50"}`}>{saved?"✅ Saved!":"Save Key"}</button>
                   </div>
-                <button onClick={async()=>{setTestingConn(true);const r=await testConnection();setTestResult(r);setTestingConn(false);}} disabled={testingConn} className={`w-full py-3 rounded-xl font-semibold transition-all mb-4 ${testingConn?"bg-white/10 text-white/50":testResult?.ok?"bg-green-500/20 text-green-300 border border-green-500/30":testResult?"bg-red-500/20 text-red-300 border border-red-500/30":"bg-gradient-to-r from-purple-500 to-pink-500 text-white hover:opacity-90"}`}>
-                  {testingConn?"⏳ Testing…":"🔌 Test Connection"}
-                </button>
-                {testResult&&<div className={`mb-4 p-3 rounded-xl text-sm ${testResult.ok?"bg-green-500/10 text-green-300":"bg-red-500/10 text-red-300"}`}>{testResult.msg}</div>}
                 </div>
               )}
 
@@ -2973,6 +2969,16 @@ function SettingsModal({onClose}){
                   <p className="text-white/35 text-xs mt-3">ℹ️ Groq is text-only — cover images still use Pollinations.ai (free, no key).</p>
                 </div>
               )}
+
+              {/* 🔌 Test Connection — available for EVERY backend */}
+              <div className="mt-6 pt-5 border-t border-white/10">
+                <label className="text-white/60 text-sm font-medium block mb-2">Verify Your Setup</label>
+                <p className="text-white/35 text-xs mb-3">Sends one tiny test request to your selected AI engine and shows the response.</p>
+                <button onClick={async()=>{setTestingConn(true);const r=await testConnection();setTestResult(r);setTestingConn(false);}} disabled={testingConn} className={`w-full py-3 rounded-xl font-semibold transition-all mb-4 ${testingConn?"bg-white/10 text-white/50":testResult?.ok?"bg-green-500/20 text-green-300 border border-green-500/30":testResult?"bg-red-500/20 text-red-300 border border-red-500/30":"bg-gradient-to-r from-purple-500 to-pink-500 text-white hover:opacity-90"}`}>
+                  {testingConn?"⏳ Testing…":"🔌 Test Connection"}
+                </button>
+                {testResult&&<div className={`mb-4 p-3 rounded-xl text-sm ${testResult.ok?"bg-green-500/10 text-green-300":"bg-red-500/10 text-red-300"}`}>{testResult.msg}</div>}
+              </div>
             </div>
           )}
           {sTab==="voice"&&<VoiceTrainingPanel onClose={onClose}/>}
