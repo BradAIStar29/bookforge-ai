@@ -10,13 +10,12 @@ INDEX_FILE="index.html"
 
 echo "🔧 Compiling JSX with esbuild..."
 npx esbuild "$JSX_FILE" \
-  --bundle \
-  --format=iife \
-  --jsx=automatic \
+  --bundle=false \
+  --format=esm \
+  --platform=browser \
+  --jsx=transform \
   --jsx-factory=React.createElement \
   --jsx-fragment=React.Fragment \
-  --minify \
-  --target=es2020 \
   --outfile=/tmp/bookforge_compiled.js
 
 echo "📦 Building HTML..."
