@@ -18,6 +18,9 @@ npx esbuild "$JSX_FILE" \
   --jsx-fragment=React.Fragment \
   --outfile=/tmp/bookforge_compiled.js
 
+echo "🛡️  Scope gate (acorn unresolved-ref scan)..."
+node bugcheck_scope.js /tmp/bookforge_compiled.js
+
 echo "📦 Building HTML..."
 python3 << 'PYEOF'
 with open('bookforge.html') as f:
