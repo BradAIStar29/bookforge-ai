@@ -4247,7 +4247,7 @@ function QueuePage({navigate,onSettings}){
           const qVoiceCtx=qVP?.sample_analysis?`\n\nVOICE STYLE TO MATCH: ${qVP.sample_analysis}\nSentence rhythm: ${qVP.sentence_rhythm||''}\nDistinctive patterns: ${(qVP.distinctive_patterns||[]).join(', ')}\nWrite EXACTLY in this style.`:'';
           const qChars=getCharacters(id);
           const qCharCtx=qChars.length?`\n\nESTABLISHED CHARACTERS (maintain exact consistency):\n${qChars.map(c=>`${c.name} [${c.role||''}]: ${c.appearance||''} — ${c.personality||''}`).join('\n')}`:'';
-          const qLangNote=book.writing_language&&book.writing_language!=="English"?`\n\nWRITE IN: ${fb.writing_language}`:'';
+          const qLangNote=book.writing_language&&book.writing_language!=="English"?`\n\nWRITE IN: ${book.writing_language}`:'';
           const qNfNote=book.nonfiction_mode?"\n\nNONFICTION MODE: End the chapter with a clearly marked Exercise, Reflection question, and Action Step.":"";
           const prevChaps=chapters.slice(0,i).filter(c=>c.generated);
           const prev=prevChaps.length===0?"None":
@@ -5211,6 +5211,91 @@ function BookStatsBar({book}){
 }
 
 // ── Inline Chapter Editor ─────────────────────────────────────────────────────
+// Module-level (hoisted out of EditorPage — the Queue builder also calls this;
+// it was accidentally nested inside EditorPage by an old splice, making it
+// invisible to QueuePage → every Queue cover silently failed).
+async function genCoverImage(prompt,opts={}){
+  const imgModel=getPuterImageModel();
+  const w=opts.width||832,h=opts.height||1216;
+  
+  // Smart routing: if user hasn't explicitly chosen a model, auto-pick based on backend
+  const effectiveModel=imgModel==="pollinations"&&getBackend()==="puter"?"black-forest-labs/flux-2-pro":imgModel;
+  if(effectiveModel==="pollinations"||getBackend()==="gemini"||getBackend()==="groq"||getBackend()==="kilo"||getBackend()==="cerebras"||getBackend()==="cloudflare"){
+    // Pollinations URL-based approach — no Puter account needed, zero friction
+    try{
+      const url=`https://image.pollinations.ai/prompt/${encodeURIComponent(prompt.trim())}?width=${w}&height=${h}&model=flux&nologo=true&seed=${Date.now()}`;
+      // Verify the URL is reachable with a quick HEAD check (3s timeout)
+      const probe=await Promise.race([
+        fetch(url,{method:"HEAD"}),
+        new Promise((_,reject)=>setTimeout(()=>reject(new Error("timeout")),3000))
+      ]);
+      if(probe.ok)return {url,method:"url"};
+    }catch(e){
+      // Pollinations unreachable — fall through to Puter.js txt2img if available
+      if(typeof puter!=="undefined"){
+        try{
+          const imgEl=await puter.ai.txt2img(prompt,{model:"black-forest-labs/flux-2-pro"});
+          let src="";
+          if(typeof imgEl==="string")src=imgEl;
+          else if(imgEl?.src)src=imgEl.src;
+          else if(imgEl?.toString().startsWith("data:"))src=imgEl.toString();
+          else src=String(imgEl);
+          if(src.startsWith("data:"))return {url:src,method:"puter"};
+          // Try canvas conversion
+          if(imgEl instanceof HTMLImageElement||imgEl?.tagName==="IMG"){
+            const canvas=document.createElement("canvas");
+            canvas.width=w;canvas.height=h;
+            const ctx=canvas.getContext("2d");
+            ctx.drawImage(imgEl,0,0,w,h);
+            return {url:canvas.toDataURL("image/jpeg",0.92),method:"puter"};
+          }
+          return {url:src,method:"puter"};
+        }catch(pe){
+          // Both failed — return a placeholder data URI
+          return {url:"data:image/svg+xml;base64,"+btoa(`<svg xmlns='http://www.w3.org/2000/svg' width='${w}' height='${h}'><rect width='100%' height='100%' fill='%231a1a2e'/><text x='50%' y='50%' fill='%23888' font-size='20' text-anchor='middle' dy='.3em'>Cover generation failed — try again</text></svg>`),method:"fallback"};
+        }
+      }
+      // No Puter available — return error
+      throw{code:"IMAGE_FAILED",msg:"Cover generation failed — Pollinations unreachable and Puter.js not loaded."};
+    }
+  }
+  
+  // Puter.js image generation — returns an <img> element, convert to data URL
+  if(typeof puter==="undefined")throw{code:"PUTER_NOT_LOADED"};
+  const imgEl=await puter.ai.txt2img(prompt,{model:effectiveModel});
+  // Convert image element to canvas then data URL
+  const canvas=document.createElement("canvas");
+  canvas.width=w;canvas.height=h;
+  const ctx=canvas.getContext("2d");
+  // The returned element might be an <img> or already a data URL
+  let src="";
+  if(typeof imgEl==="string"){src=imgEl;}
+  else if(imgEl?.src){src=imgEl.src;}
+  else if(imgEl?.toString().startsWith("data:")){src=imgEl.toString();}
+  else{src=String(imgEl);}
+  
+  // If it's already a data URL, return directly
+  if(src.startsWith("data:")){
+    return {url:src,method:"data"};
+  }
+  
+  // Otherwise load the image and composite to our target size
+  return new Promise((resolve,reject)=>{
+    const img=new Image();
+    img.crossOrigin="anonymous";
+    img.onload=()=>{
+      // Cover-fit draw (crop to fill)
+      const scale=Math.max(w/img.width,h/img.height);
+      const sw=w/scale,sh=h/scale;
+      const sx=(img.width-sw)/2,sy=(img.height-sh)/2;
+      ctx.drawImage(img,sx,sy,sw,sh,0,0,w,h);
+      resolve({url:canvas.toDataURL("image/jpeg",0.9),method:"data"});
+    };
+    img.onerror=()=>reject(new Error("Puter image load failed"));
+    img.src=src;
+  });
+}
+
 function ChapterEditor({book,chIdx,upd}){
   const ch=book.chapters?.[chIdx];
   const [editing,setEditing]=useState(false);
@@ -5285,7 +5370,7 @@ function ChapterEditor({book,chIdx,upd}){
   const [proofErr,setProofErr]=useState("");
 
   const runProofread=async()=>{
-    if(!ch?.content){flash&&flash("No content to proofread");return;}
+    if(!ch?.content){setProofErr("No content to proofread");return;}
     setProofreading(true);setProofErr("");setProofResults(null);
     try{
       const issues=await proofreadText(ch.content);
@@ -5505,7 +5590,7 @@ function EditorPage({bookId,navigate,onSettings}){
           const charCtx=chars.length?`\n\nESTABLISHED CHARACTERS (maintain exact consistency):\n${chars.map(c=>`${c.name} [${c.role||""}]: ${c.appearance||""} — ${c.personality||""}`).join("\n")}`:"";
           const langNote=b.writing_language&&b.writing_language!=="English"?`\n\nWRITE IN: ${b.writing_language}`:"";
           const nonfictionNote=b.nonfiction_mode?"\n\nNONFICTION MODE: End the chapter with a clearly marked Exercise, Reflection question, and Action Step.":"";
-          const content=await callAIStream(`Write Chapter ${chapters[i].number}: "${chapters[i].title}" for a ${b.genre} book titled "${outline.title}".${seriesCtx}${voiceCtx}${charCtx}${langNote}${nonfictionNote}\n\nChapter: ${chapters[i].description}\nPrevious: ${prev}\nAudience: ${b.target_audience}\n\n${(()=>{const tw=ch?.target_words||3800;return `${Math.round(tw*0.75).toLocaleString()}–${tw.toLocaleString()} words`;})()}. Match genre tone precisely.\n\nSTRUCTURE:\n• 3-5 distinct scenes per chapter, separated by: ⁂\n• Each scene has a clear goal → obstacle → outcome\n• Chapter must END on a hook, unresolved tension, or revelation that forces reading on\n• DO NOT wrap up cleanly — the best chapters end mid-breath\n\nWRITING RULES — violating these will get this chapter rejected:\n• NEVER start a sentence with 'He/She/They couldn't help but', 'In that moment', 'It dawned on', 'Something about the way', 'A wave of', 'A surge of'\n• NEVER state emotions directly ('he felt sad', 'warmth spread through her') — express through physical action, dialogue, or specific sensory detail\n• NEVER use em-dashes for dramatic effect more than once per page\n• VARY sentence length violently: one-word sentences. Fragments. Then a long, breathing sentence that winds through a scene and refuses to end neatly.\n• Dialogue must be messy and human: people talk past each other, leave things half-said, interrupt, change subject\n• Use SPECIFIC details: not 'the coffee shop smelled like coffee' but the burnt-sugar smell of the espresso machine at 6am, the sticky ring on the table from someone's iced latte\n• No clean emotional resolutions — conflict leaves residue\n• Character psychology must be specific, not convenient\n• Read like a novel — no chapter summaries, no scene headers, no markdown`,0.85,{task:"creative",onStream:rafThrottle(t=>setBuildStep(`Ch.${i+1}/${chapters.length}: ${t.split(/\s+/).filter(Boolean).length} words streamed…`))});
+          const content=await callAIStream(`Write Chapter ${chapters[i].number}: "${chapters[i].title}" for a ${b.genre} book titled "${outline.title}".${seriesCtx}${voiceCtx}${charCtx}${langNote}${nonfictionNote}\n\nChapter: ${chapters[i].description}\nPrevious: ${prev}\nAudience: ${b.target_audience}\n\n${(()=>{const tw=chapters[i]?.target_words||3800;return `${Math.round(tw*0.75).toLocaleString()}–${tw.toLocaleString()} words`;})()}. Match genre tone precisely.\n\nSTRUCTURE:\n• 3-5 distinct scenes per chapter, separated by: ⁂\n• Each scene has a clear goal → obstacle → outcome\n• Chapter must END on a hook, unresolved tension, or revelation that forces reading on\n• DO NOT wrap up cleanly — the best chapters end mid-breath\n\nWRITING RULES — violating these will get this chapter rejected:\n• NEVER start a sentence with 'He/She/They couldn't help but', 'In that moment', 'It dawned on', 'Something about the way', 'A wave of', 'A surge of'\n• NEVER state emotions directly ('he felt sad', 'warmth spread through her') — express through physical action, dialogue, or specific sensory detail\n• NEVER use em-dashes for dramatic effect more than once per page\n• VARY sentence length violently: one-word sentences. Fragments. Then a long, breathing sentence that winds through a scene and refuses to end neatly.\n• Dialogue must be messy and human: people talk past each other, leave things half-said, interrupt, change subject\n• Use SPECIFIC details: not 'the coffee shop smelled like coffee' but the burnt-sugar smell of the espresso machine at 6am, the sticky ring on the table from someone's iced latte\n• No clean emotional resolutions — conflict leaves residue\n• Character psychology must be specific, not convenient\n• Read like a novel — no chapter summaries, no scene headers, no markdown`,0.85,{task:"creative",onStream:rafThrottle(t=>setStreamText(t))});
           setStreamText(null);
           bump();chapters[i]={...chapters[i],content,generated:true};
           const wc=chapters.reduce((a,c)=>a+(c.content?c.content.split(/\s+/).length:0),0);
@@ -5799,88 +5884,6 @@ const genSEO=async()=>{if(quotaHit||isBuilding)return;setBusy(true);setError("")
   };
 
   // Generate a cover image URL — routes to Puter or Pollinations based on settings
-async function genCoverImage(prompt,opts={}){
-  const imgModel=getPuterImageModel();
-  const w=opts.width||832,h=opts.height||1216;
-  
-  // Smart routing: if user hasn't explicitly chosen a model, auto-pick based on backend
-  const effectiveModel=imgModel==="pollinations"&&getBackend()==="puter"?"black-forest-labs/flux-2-pro":imgModel;
-  if(effectiveModel==="pollinations"||getBackend()==="gemini"||getBackend()==="groq"||getBackend()==="kilo"||getBackend()==="cerebras"||getBackend()==="cloudflare"){
-    // Pollinations URL-based approach — no Puter account needed, zero friction
-    try{
-      const url=`https://image.pollinations.ai/prompt/${encodeURIComponent(prompt.trim())}?width=${w}&height=${h}&model=flux&nologo=true&seed=${Date.now()}`;
-      // Verify the URL is reachable with a quick HEAD check (3s timeout)
-      const probe=await Promise.race([
-        fetch(url,{method:"HEAD"}),
-        new Promise((_,reject)=>setTimeout(()=>reject(new Error("timeout")),3000))
-      ]);
-      if(probe.ok)return {url,method:"url"};
-    }catch(e){
-      // Pollinations unreachable — fall through to Puter.js txt2img if available
-      if(typeof puter!=="undefined"){
-        try{
-          const imgEl=await puter.ai.txt2img(prompt,{model:"black-forest-labs/flux-2-pro"});
-          let src="";
-          if(typeof imgEl==="string")src=imgEl;
-          else if(imgEl?.src)src=imgEl.src;
-          else if(imgEl?.toString().startsWith("data:"))src=imgEl.toString();
-          else src=String(imgEl);
-          if(src.startsWith("data:"))return {url:src,method:"puter"};
-          // Try canvas conversion
-          if(imgEl instanceof HTMLImageElement||imgEl?.tagName==="IMG"){
-            const canvas=document.createElement("canvas");
-            canvas.width=w;canvas.height=h;
-            const ctx=canvas.getContext("2d");
-            ctx.drawImage(imgEl,0,0,w,h);
-            return {url:canvas.toDataURL("image/jpeg",0.92),method:"puter"};
-          }
-          return {url:src,method:"puter"};
-        }catch(pe){
-          // Both failed — return a placeholder data URI
-          return {url:"data:image/svg+xml;base64,"+btoa(`<svg xmlns='http://www.w3.org/2000/svg' width='${w}' height='${h}'><rect width='100%' height='100%' fill='%231a1a2e'/><text x='50%' y='50%' fill='%23888' font-size='20' text-anchor='middle' dy='.3em'>Cover generation failed — try again</text></svg>`),method:"fallback"};
-        }
-      }
-      // No Puter available — return error
-      throw{code:"IMAGE_FAILED",msg:"Cover generation failed — Pollinations unreachable and Puter.js not loaded."};
-    }
-  }
-  
-  // Puter.js image generation — returns an <img> element, convert to data URL
-  if(typeof puter==="undefined")throw{code:"PUTER_NOT_LOADED"};
-  const imgEl=await puter.ai.txt2img(prompt,{model:effectiveModel});
-  // Convert image element to canvas then data URL
-  const canvas=document.createElement("canvas");
-  canvas.width=w;canvas.height=h;
-  const ctx=canvas.getContext("2d");
-  // The returned element might be an <img> or already a data URL
-  let src="";
-  if(typeof imgEl==="string"){src=imgEl;}
-  else if(imgEl?.src){src=imgEl.src;}
-  else if(imgEl?.toString().startsWith("data:")){src=imgEl.toString();}
-  else{src=String(imgEl);}
-  
-  // If it's already a data URL, return directly
-  if(src.startsWith("data:")){
-    return {url:src,method:"data"};
-  }
-  
-  // Otherwise load the image and composite to our target size
-  return new Promise((resolve,reject)=>{
-    const img=new Image();
-    img.crossOrigin="anonymous";
-    img.onload=()=>{
-      // Cover-fit draw (crop to fill)
-      const scale=Math.max(w/img.width,h/img.height);
-      const sw=w/scale,sh=h/scale;
-      const sx=(img.width-sw)/2,sy=(img.height-sh)/2;
-      ctx.drawImage(img,sx,sy,sw,sh,0,0,w,h);
-      resolve({url:canvas.toDataURL("image/jpeg",0.9),method:"data"});
-    };
-    img.onerror=()=>reject(new Error("Puter image load failed"));
-    img.src=src;
-  });
-}
-
 const genCover=async()=>{if(quotaHit||isBuilding)return;setBusy(true);setError("");try{let finalPrompt="";if(coverMode==="custom"&&customPrompt.trim()){finalPrompt=customPrompt.trim()+". Professional book cover, no text, no letters.";}else{const outline=(()=>{try{return JSON.parse(book.outline||"{}");}catch{return {};}})();const aiPrompt=await callAI(`You are a professional book cover art director. Generate a detailed Pollinations.ai image prompt for a stunning, commercially competitive book cover.\n\nBook: "${outline.title}"\nGenre: ${book.genre}\nTarget Audience: ${book.target_audience}\nDescription: ${outline.description}\n\nCOVER REQUIREMENTS:\n• Describe EXACTLY what the illustration shows: subjects (age, gender, expression, pose, clothing), setting, foreground/background\n• For romance: two emotionally connected characters, chemistry visible in body language\n• For gay/LGBT+ romance: two male characters, intimate and emotionally charged interaction\n• For thriller/mystery: dark, cinematic, tense atmosphere with strong single focal point\n• For nonfiction/self-help: clean, bold, aspirational — minimalist design language\n• For fantasy/sci-fi: epic world-building detail, dramatic lighting, expansive scale\n\n• Color palette: specify 2-3 dominant colors that match the genre mood\n• Lighting: (e.g., "golden hour backlight", "neon noir", "cold winter morning", "dramatic studio")\n• Art style: (e.g., "painterly digital art", "photorealistic", "graphic novel ink", "watercolor", "CGI render")\n• Camera angle and composition (rule of thirds, centered, low angle)\n• Quality tags: masterpiece, award-winning book cover, professional commercial illustration, 4k detail\n\nCRITICAL RULES:\n• NO text, letters, words, numbers, watermarks of any kind\n• Portrait orientation optimized for book covers\n• Return ONLY the image prompt — no explanations, no JSON, just the prompt string.`);bump();finalPrompt=aiPrompt.trim()+". No text, no words, no letters.";setLastAiPrompt(finalPrompt);}const _artResult3=await genCoverImage(finalPrompt);const artUrl=_artResult3.url;const _ol=(()=>{try{return JSON.parse(book.outline||"{}");}catch{return {};}})();const finalUrl=await finalizeCoverImage(artUrl,_ol.title||book.title,getAuthorProfile().name,book.subtitle);upd({cover_art_url:artUrl,cover_image_url:finalUrl});flash(getAuthorProfile().name?"Cover generated! 🎨":"Cover generated! 🎨 (set your author name in Settings to replace the \"Author\" placeholder)");}catch(e){handleErr(e);}finally{setBusy(false);}};
 
   const newVariation=async()=>{if(!book?.cover_art_url&&!book?.cover_image_url)return;setBusy(true);try{const base=book.cover_art_url||book.cover_image_url;const u=new URL(base);u.searchParams.set("seed",Date.now().toString());const artUrl=u.toString();const _ol=(()=>{try{return JSON.parse(book.outline||"{}");}catch{return {};}})();const finalUrl=await finalizeCoverImage(artUrl,_ol.title||book.title,getAuthorProfile().name,book.subtitle);upd({cover_art_url:artUrl,cover_image_url:finalUrl});flash("New variation! 🎨");}catch(e){handleErr(e);}finally{setBusy(false);}};
@@ -7110,6 +7113,8 @@ function AudioStudioPanel({book,bookId,onSettings,flash}){
       <div className="bg-white/3 border border-white/8 rounded-xl p-4 text-xs text-white/30 leading-relaxed">
         <strong className="text-white/50">How it works:</strong> Kokoro-82M runs entirely in your browser via WebAssembly. The model (~82MB) downloads once and is cached permanently. Audio is WAV format (24kHz, 16-bit PCM) — import into Audacity, Adobe Premiere, or ACX-compatible software for final mastering. Each chapter generates independently so you can regenerate just the chapters that need it.
       </div>
+      {readingMode&&<BookReader book={book} onClose={()=>setReadingMode(false)}/>}
+      {showFindReplace&&<FindReplaceModal book={book} onClose={()=>setShowFindReplace(false)} onUpdateBook={upd} flash={flash}/>}
     </div>
   );
 }
@@ -7220,8 +7225,6 @@ function TranslatePanel({book,upd,quotaHit,bump,handleErr,flash}){
           </button>
         </div>
       </Card>
-      {readingMode&&<BookReader book={book} onClose={()=>setReadingMode(false)}/>}
-      {showFindReplace&&<FindReplaceModal book={book} onClose={()=>setShowFindReplace(false)} onUpdateBook={upd} flash={flash}/>}
     </div>
   );
 }
