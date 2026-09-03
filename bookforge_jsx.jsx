@@ -541,17 +541,23 @@ async function puterWithTimeout(fn,ms){
   }finally{clearTimeout(timer);}
 }
 
+// Reasoning-style models (DeepSeek V4 Flash, etc.) reject the `temperature`
+// param with 400 "Unsupported parameter". Remember which models do, and call
+// them without it — costs nothing on the happy path.
+const PUTER_NO_TEMP=new Set();
 async function callPuter(prompt,temperature=0.85,opts={}){
   if(typeof puter==="undefined")throw{code:"PUTER_NOT_LOADED"};
   const model=resolveModel(prompt,opts)||getPuterTextModel();
   const maxRetries=opts.maxRetries??2;
   const timeoutMs=opts.timeoutMs??180000; // 3 min — Puter free models can be slow
   let lastErr=null;
+  const noTemp=PUTER_NO_TEMP.has(model);
+  const chatOpts=(stream)=>{const o={model};if(!noTemp)o.temperature=Math.min(temperature,1);if(stream)o.stream=true;return o;};
   for(let attempt=0;attempt<=maxRetries;attempt++){
     try{
       // Streaming mode — Puter.js supports async iterators when stream:true
       if(opts.onStream){
-        const resp=await puterWithTimeout(()=>puter.ai.chat(prompt,{model,temperature:Math.min(temperature,1),stream:true}),timeoutMs);
+        const resp=await puterWithTimeout(()=>puter.ai.chat(prompt,chatOpts(true)),timeoutMs);
         let fullText="";
         // Puter returns an async iterable for streaming
         if(resp&&typeof resp[Symbol.asyncIterator]==="function"){
@@ -572,7 +578,7 @@ async function callPuter(prompt,temperature=0.85,opts={}){
         if(!fullText)throw{code:"EMPTY"};
         return fullText;
       }
-      const resp=await puterWithTimeout(()=>puter.ai.chat(prompt,{model,temperature:Math.min(temperature,1)}),timeoutMs);
+      const resp=await puterWithTimeout(()=>puter.ai.chat(prompt,chatOpts(false)),timeoutMs);
       // Puter returns text directly or in message.content
       let text="";
       if(typeof resp==="string")text=resp;
@@ -584,6 +590,12 @@ async function callPuter(prompt,temperature=0.85,opts={}){
       if(!text)throw{code:"EMPTY"};
       return text;
     }catch(err){
+      // Model rejects `temperature` (reasoning models) — remember + retry immediately without it
+      const em=String(err?.message||err?.error?.message||err||"").toLowerCase();
+      if(em.includes("temperature")&&em.includes("support")&&!noTemp){
+        PUTER_NO_TEMP.add(model);
+        return callPuter(prompt,temperature,{...opts,maxRetries:Math.max(0,attempt-1)});
+      }
       // Don't retry our own explicit throws
       if(err?.code==="EMPTY"&&attempt<maxRetries){
         await sleep(RETRY_DELAYS_MS[attempt]||2000);

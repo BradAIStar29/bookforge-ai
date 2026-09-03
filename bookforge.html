@@ -655,16 +655,24 @@ async function puterWithTimeout(fn, ms) {
     clearTimeout(timer);
   }
 }
+const PUTER_NO_TEMP = /* @__PURE__ */ new Set();
 async function callPuter(prompt2, temperature = 0.85, opts = {}) {
   if (typeof puter === "undefined") throw { code: "PUTER_NOT_LOADED" };
   const model = resolveModel(prompt2, opts) || getPuterTextModel();
   const maxRetries = opts.maxRetries ?? 2;
   const timeoutMs = opts.timeoutMs ?? 18e4;
   let lastErr = null;
+  const noTemp = PUTER_NO_TEMP.has(model);
+  const chatOpts = (stream) => {
+    const o = { model };
+    if (!noTemp) o.temperature = Math.min(temperature, 1);
+    if (stream) o.stream = true;
+    return o;
+  };
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
       if (opts.onStream) {
-        const resp2 = await puterWithTimeout(() => puter.ai.chat(prompt2, { model, temperature: Math.min(temperature, 1), stream: true }), timeoutMs);
+        const resp2 = await puterWithTimeout(() => puter.ai.chat(prompt2, chatOpts(true)), timeoutMs);
         let fullText = "";
         if (resp2 && typeof resp2[Symbol.asyncIterator] === "function") {
           for await (const part of resp2) {
@@ -683,7 +691,7 @@ async function callPuter(prompt2, temperature = 0.85, opts = {}) {
         if (!fullText) throw { code: "EMPTY" };
         return fullText;
       }
-      const resp = await puterWithTimeout(() => puter.ai.chat(prompt2, { model, temperature: Math.min(temperature, 1) }), timeoutMs);
+      const resp = await puterWithTimeout(() => puter.ai.chat(prompt2, chatOpts(false)), timeoutMs);
       let text = "";
       if (typeof resp === "string") text = resp;
       else if (resp?.message?.content) text = typeof resp.message.content === "string" ? resp.message.content : resp.message.content.map((p) => p.text || "").join("");
@@ -694,6 +702,11 @@ async function callPuter(prompt2, temperature = 0.85, opts = {}) {
       if (!text) throw { code: "EMPTY" };
       return text;
     } catch (err) {
+      const em = String(err?.message || err?.error?.message || err || "").toLowerCase();
+      if (em.includes("temperature") && em.includes("support") && !noTemp) {
+        PUTER_NO_TEMP.add(model);
+        return callPuter(prompt2, temperature, { ...opts, maxRetries: Math.max(0, attempt - 1) });
+      }
       if (err?.code === "EMPTY" && attempt < maxRetries) {
         await sleep(RETRY_DELAYS_MS[attempt] || 2e3);
         continue;
