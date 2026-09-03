@@ -3343,6 +3343,25 @@ const AI_TELLS = [
   "moving forward",
   "one step at a time"
 ];
+function chapterHash(s) {
+  let h = 5381;
+  for (let i = 0; i < s.length; i++) {
+    h = (h << 5) + h + s.charCodeAt(i) | 0;
+  }
+  return "q" + (h >>> 0).toString(36);
+}
+function localChapterIssues(ch2) {
+  const issues = [];
+  const content = ch2.content || "";
+  const wc = content.split(/\s+/).filter(Boolean).length;
+  const tw = ch2.target_words || 3800;
+  if (wc < Math.round(tw * 0.7)) issues.push(`too short (${wc.toLocaleString()} words vs ${tw.toLocaleString()} target)`);
+  if (wc > Math.round(tw * 1.8)) issues.push(`too long (${wc.toLocaleString()} words vs ${tw.toLocaleString()} target)`);
+  const lower = content.toLowerCase();
+  const tellHits = AI_TELLS.filter((t) => lower.includes(t.toLowerCase()));
+  if (tellHits.length >= 6) issues.push(`${tellHits.length} AI-tell phrases (${tellHits.slice(0, 2).join(" / ")} and more)`);
+  return issues;
+}
 async function analyzeChapterHumanness(chapterText, bookTitle, genre, chapterTitle) {
   const sample = chapterText.length > 4e3 ? chapterText.slice(0, 1400) + "\n...\n" + chapterText.slice(Math.floor(chapterText.length / 2) - 700, Math.floor(chapterText.length / 2) + 700) + "\n...\n" + chapterText.slice(-900) : chapterText;
   const localTells = AI_TELLS.filter((t) => chapterText.toLowerCase().includes(t.toLowerCase()));
@@ -6137,6 +6156,87 @@ ${chars.map((c) => `\u2022 ${c.name}: ${c.personality || ""} \u2014 Voice: ${c.v
         if (!fb22?.chapters?.[i]?.generated) {
           await genChapter(i);
         }
+      }
+    }
+    const fbQ = getBook(bookId);
+    if (fbQ && !fbQ.gates_passed && (fbQ.chapters || []).some((c) => c.generated)) {
+      let kept = 0, rewritten = 0, flagged = 0;
+      const all = getBook(bookId)?.chapters || [];
+      const stampChapter = (idx, verdict) => {
+        const fbs = getBook(bookId);
+        if (!fbs) return;
+        const cs = [...fbs.chapters || []];
+        if (!cs[idx]) return;
+        cs[idx] = { ...cs[idx], quality_hash: chapterHash(cs[idx].content || ""), quality_verdict: verdict, quality_date: (/* @__PURE__ */ new Date()).toISOString() };
+        updateBook(bookId, { chapters: cs });
+      };
+      for (let i = 0; i < all.length; i++) {
+        if (quotaBlocked()) {
+          setQuotaHit(true);
+          break;
+        }
+        const ch2 = all[i];
+        if (!ch2.generated || !ch2.content) continue;
+        const hash = chapterHash(ch2.content);
+        if (ch2.quality_hash === hash && ch2.quality_verdict === "ok") {
+          kept++;
+          continue;
+        }
+        const issues = localChapterIssues(ch2);
+        let needsImprove = issues.length > 0;
+        let aiNote = "";
+        if (!needsImprove) {
+          try {
+            const evRaw = await callAI(`You are a ruthless developmental editor evaluating a chapter of a ${fbQ.genre} book written for ${fbQ.target_audience}.
+
+Chapter ${ch2.number}: "${ch2.title}"
+
+---
+${ch2.content}
+---
+
+Score this chapter 0-100 on: prose quality, scene structure (goal\u2192obstacle\u2192outcome), emotional depth, ending hook, and whether it reads like human fiction vs generic AI prose.
+Be strict but fair: only set needs_improvement=true if the score is below 75 or there are structural problems (flat scenes, no hook, rushed pacing, heavy AI patterns).
+
+Respond ONLY valid JSON: {"needs_improvement":false,"score":85,"issues":["short issue descriptions"]}`, 0.3);
+            bump();
+            const em = evRaw.match(/\{[\s\S]*\}/);
+            if (em) {
+              try {
+                const ev = JSON.parse(em[0]);
+                if (ev.needs_improvement) {
+                  needsImprove = true;
+                  issues.push(...(ev.issues || ["below quality bar"]).slice(0, 4));
+                  aiNote = ` (AI score ${ev.score ?? "<75"})`;
+                } else {
+                  aiNote = ` (AI score ${ev.score ?? ""})`;
+                }
+              } catch (pe) {
+              }
+            }
+          } catch (eE) {
+          }
+        }
+        if (needsImprove) {
+          if (rewritten < 5) {
+            flash2(`\u{1F501} Ch.${i + 1} needs improvement${aiNote} \u2014 rewriting\u2026`);
+            await genChapter(i);
+            rewritten++;
+            stampChapter(i, "ok");
+          } else {
+            flagged++;
+            stampChapter(i, "improve");
+          }
+        } else {
+          kept++;
+          stampChapter(i, "ok");
+        }
+      }
+      if (kept + rewritten + flagged > 0) {
+        let qMsg = "\u{1F9D0} Quality pass: " + kept + " kept \u2713";
+        if (rewritten) qMsg += ", " + rewritten + " rewritten";
+        if (flagged) qMsg += ", " + flagged + " flagged (rewrite cap \u2014 click Write All again)";
+        flash2(qMsg);
       }
     }
     const fb2 = getBook(bookId);

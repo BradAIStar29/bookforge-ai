@@ -3372,6 +3372,28 @@ const AI_TELLS=[
   "a new chapter","a fresh start","moving forward","one step at a time"
 ];
 
+// ── Write All quality evaluation helpers ─────────────────────────────────────
+// Cheap djb2 hash so we can tell whether a chapter changed since it was last
+// evaluated (quality stamps carry the hash they were computed from).
+function chapterHash(s){
+  let h=5381;for(let i=0;i<s.length;i++){h=((h<<5)+h+s.charCodeAt(i))|0;}
+  return"q"+(h>>>0).toString(36);
+}
+// Level 1 — FREE local pre-check (no API): word count vs target + AI-tell density.
+// Catches obviously weak chapters so the AI evaluation only spends calls on
+// chapters that look structurally fine.
+function localChapterIssues(ch){
+  const issues=[];
+  const content=ch.content||"";
+  const wc=content.split(/\s+/).filter(Boolean).length;
+  const tw=ch.target_words||3800;
+  if(wc<Math.round(tw*0.7))issues.push(`too short (${wc.toLocaleString()} words vs ${tw.toLocaleString()} target)`);
+  if(wc>Math.round(tw*1.8))issues.push(`too long (${wc.toLocaleString()} words vs ${tw.toLocaleString()} target)`);
+  const lower=content.toLowerCase();
+  const tellHits=AI_TELLS.filter(t=>lower.includes(t.toLowerCase()));
+  if(tellHits.length>=6)issues.push(`${tellHits.length} AI-tell phrases (${tellHits.slice(0,2).join(" / ")} and more)`);
+  return issues;
+}
 async function analyzeChapterHumanness(chapterText, bookTitle, genre, chapterTitle){
   // Sample 4000 chars from different parts for better coverage
   const sample = chapterText.length > 4000
@@ -5963,6 +5985,69 @@ const genCover=async()=>{if(quotaHit||isBuilding)return;setBusy(true);setError("
         if(quotaBlocked()){setQuotaHit(true);break;}
         const fb2=getBook(bookId);
         if(!fb2?.chapters?.[i]?.generated){await genChapter(i);}
+      }
+    }
+    // ⚡ QUALITY EVALUATION PASS — clicking Write All on already-written chapters:
+    // the agent evaluates each one. Good chapters are kept (and stamped so
+    // repeat clicks stay cheap), weak ones are rewritten automatically.
+    const fbQ=getBook(bookId);
+    if(fbQ&&!fbQ.gates_passed&&(fbQ.chapters||[]).some(c=>c.generated)){
+      let kept=0,rewritten=0,flagged=0;
+      const all=(getBook(bookId)?.chapters||[]);
+      const stampChapter=(idx,verdict)=>{
+        const fbs=getBook(bookId);if(!fbs)return;
+        const cs=[...(fbs.chapters||[])];if(!cs[idx])return;
+        cs[idx]={...cs[idx],quality_hash:chapterHash(cs[idx].content||""),quality_verdict:verdict,quality_date:new Date().toISOString()};
+        updateBook(bookId,{chapters:cs});
+      };
+      for(let i=0;i<all.length;i++){
+        if(quotaBlocked()){setQuotaHit(true);break;}
+        const ch=all[i];
+        if(!ch.generated||!ch.content)continue;
+        const hash=chapterHash(ch.content);
+        if(ch.quality_hash===hash&&ch.quality_verdict==="ok"){kept++;continue;} // evaluated before & unchanged
+        // Level 1 — free local checks
+        const issues=localChapterIssues(ch);
+        let needsImprove=issues.length>0;
+        let aiNote="";
+        // Level 2 — AI editor evaluation (only for chapters that pass local checks)
+        if(!needsImprove){
+          try{
+            const evRaw=await callAI(`You are a ruthless developmental editor evaluating a chapter of a ${fbQ.genre} book written for ${fbQ.target_audience}.
+
+Chapter ${ch.number}: "${ch.title}"
+
+---
+${ch.content}
+---
+
+Score this chapter 0-100 on: prose quality, scene structure (goal→obstacle→outcome), emotional depth, ending hook, and whether it reads like human fiction vs generic AI prose.
+Be strict but fair: only set needs_improvement=true if the score is below 75 or there are structural problems (flat scenes, no hook, rushed pacing, heavy AI patterns).
+
+Respond ONLY valid JSON: {"needs_improvement":false,"score":85,"issues":["short issue descriptions"]}`,0.3);
+            bump();
+            const em=evRaw.match(/\{[\s\S]*\}/);
+            if(em){try{const ev=JSON.parse(em[0]);if(ev.needs_improvement){needsImprove=true;issues.push(...(ev.issues||["below quality bar"]).slice(0,4));aiNote=` (AI score ${ev.score??"<75"})`;}else{aiNote=` (AI score ${ev.score??""})`;}}catch(pe){/* eval JSON malformed — keep chapter */}}
+          }catch(eE){/* AI eval failed — keep the chapter, don't block the pass */}
+        }
+        if(needsImprove){
+          if(rewritten<5){
+            flash(`🔁 Ch.${i+1} needs improvement${aiNote} — rewriting…`);
+            await genChapter(i); // full rewrite via the existing tested path
+            rewritten++;
+            stampChapter(i,"ok"); // new content gets a fresh stamp; a later Write All re-evaluates it
+          }else{
+            flagged++;stampChapter(i,"improve");
+          }
+        }else{
+          kept++;stampChapter(i,"ok");
+        }
+      }
+      if(kept+rewritten+flagged>0){
+        let qMsg="🧐 Quality pass: "+kept+" kept ✓";
+        if(rewritten)qMsg+=", "+rewritten+" rewritten";
+        if(flagged)qMsg+=", "+flagged+" flagged (rewrite cap — click Write All again)";
+        flash(qMsg);
       }
     }
     // Check if all chapters are now done — if so, trigger remaining pipeline
