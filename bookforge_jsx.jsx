@@ -1940,7 +1940,7 @@ function ChapterPacingChart({book}){
         "Avg: ",React.createElement("span",{className:"text-white/70 font-semibold"},avgWords.toLocaleString())," words"
       )
     ),
-    wordCounts.length===0?React.createElement("p",{className:"text-white/20 text-xs text-center py-4"},"No chapters written yet."):
+    wordCounts.length===0?React.createElement("p",{className:"text-white/50 text-xs text-center py-4"},"No chapters written yet."):
     React.createElement("div",{className:"space-y-2"},
       wordCounts.map((wc,i)=>{
         const pct=Math.round((wc/maxWords)*100);
@@ -2159,7 +2159,7 @@ function VocabularyAnalyzer({book}){
     className:"text-xs bg-blue-500/20 text-blue-300 border border-blue-500/30 px-3 py-1.5 rounded-lg hover:bg-blue-500/30"
   },"📚 Vocabulary Analysis");
   
-  if(!analysis)return React.createElement("div",{className:"text-white/30 text-xs"},"Analyzing…");
+  if(!analysis)return React.createElement("div",{className:"text-white/60 text-xs"},"Analyzing…");
   
   const barColor=analysis.typeTokenRatio>0.15?"#10b981":analysis.typeTokenRatio>0.08?"#f59e0b":"#ef4444";
   const barPct=Math.min(analysis.typeTokenRatio*400,100);
@@ -2167,24 +2167,24 @@ function VocabularyAnalyzer({book}){
   return React.createElement("div",{className:"bg-white/5 rounded-xl p-4 border border-white/10 space-y-4"},
     React.createElement("div",{className:"flex items-center justify-between"},
       React.createElement("h3",{className:"text-white font-bold text-sm"},"📚 Vocabulary Analysis"),
-      React.createElement("button",{onClick:()=>setShow(false),className:"text-white/30 hover:text-white text-xs"},"✕ Close")
+      React.createElement("button",{onClick:()=>setShow(false),className:"text-white/60 hover:text-white text-xs"},"✕ Close")
     ),
     React.createElement("div",{className:"grid grid-cols-2 sm:grid-cols-4 gap-3"},
       React.createElement("div",{className:"bg-white/5 rounded-lg p-3 text-center"},
         React.createElement("div",{className:"text-xl font-bold text-white"},analysis.totalWords.toLocaleString()),
-        React.createElement("div",{className:"text-white/30 text-xs"},"Total Words")
+        React.createElement("div",{className:"text-white/60 text-xs"},"Total Words")
       ),
       React.createElement("div",{className:"bg-white/5 rounded-lg p-3 text-center"},
         React.createElement("div",{className:"text-xl font-bold text-white"},analysis.uniqueWords.toLocaleString()),
-        React.createElement("div",{className:"text-white/30 text-xs"},"Unique Words")
+        React.createElement("div",{className:"text-white/60 text-xs"},"Unique Words")
       ),
       React.createElement("div",{className:"bg-white/5 rounded-lg p-3 text-center"},
         React.createElement("div",{className:"text-xl font-bold",style:{color:barColor}},analysis.typeTokenRatio),
-        React.createElement("div",{className:"text-white/30 text-xs"},"Diversity (TTR)")
+        React.createElement("div",{className:"text-white/60 text-xs"},"Diversity (TTR)")
       ),
       React.createElement("div",{className:"bg-white/5 rounded-lg p-3 text-center"},
         React.createElement("div",{className:"text-xl font-bold text-white"},analysis.dialogueRatio+"%"),
-        React.createElement("div",{className:"text-white/30 text-xs"},"Dialogue")
+        React.createElement("div",{className:"text-white/60 text-xs"},"Dialogue")
       )
     ),
     React.createElement("div",null,
@@ -2389,11 +2389,11 @@ function TrailerStudio({book,onClose}){
   const endShowing=playing&&script&&!currentScene;
 
   return(
-    <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+    <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4 bf-modal" role="dialog" aria-modal="true">
       <div className="bg-slate-800 border border-fuchsia-500/30 rounded-2xl max-w-2xl w-full max-h-[85vh] overflow-y-auto shadow-2xl">
         <div className="sticky top-0 bg-slate-800 border-b border-white/10 px-6 py-4 flex items-center justify-between">
           <div><h2 className="text-white font-bold text-lg">🎬 Book Trailer Studio</h2><p className="text-fuchsia-300 text-sm">{book.title}</p></div>
-          <button onClick={()=>{stopPlay();onClose();}} className="text-white/30 hover:text-white text-2xl">✕</button>
+          <button onClick={()=>{stopPlay();onClose();}} className="text-white/60 hover:text-white text-2xl">✕</button>
         </div>
         <div className="p-6 space-y-5">
           {error&&<div className="bg-red-500/20 border border-red-500/30 text-red-300 rounded-xl p-3 text-sm">{error}</div>}
@@ -2408,7 +2408,7 @@ function TrailerStudio({book,onClose}){
 
           {script&&(
             <>
-              {script.tagline&&<div className="bg-fuchsia-500/10 border border-fuchsia-500/30 rounded-xl p-4 text-center"><p className="text-white/25 text-xs uppercase tracking-wider mb-1">Tagline</p><p className="text-fuchsia-200 text-lg font-semibold italic">"{script.tagline}"</p></div>}
+              {script.tagline&&<div className="bg-fuchsia-500/10 border border-fuchsia-500/30 rounded-xl p-4 text-center"><p className="text-white/50 text-xs uppercase tracking-wider mb-1">Tagline</p><p className="text-fuchsia-200 text-lg font-semibold italic">"{script.tagline}"</p></div>}
 
               {/* Player */}
               <div className="relative rounded-xl overflow-hidden border border-white/10 bg-black aspect-video flex items-center justify-center">
@@ -2426,7 +2426,7 @@ function TrailerStudio({book,onClose}){
                     </>
                   ):(
                     <div>
-                      <p className="text-white/30 text-sm mb-3">{script.scenes.length} scenes ready</p>
+                      <p className="text-white/60 text-sm mb-3">{script.scenes.length} scenes ready</p>
                       <div className="flex gap-2 justify-center">
                         <button onClick={play} className="bg-fuchsia-500 hover:bg-fuchsia-400 text-white px-5 py-2.5 rounded-lg font-semibold text-sm">▶ Play Trailer</button>
                         <button onClick={()=>setTtsOn(!ttsOn)} className={`px-4 py-2.5 rounded-lg text-sm font-medium border ${ttsOn?"border-fuchsia-500/40 text-fuchsia-300":"border-white/20 text-white/40"}`}>{ttsOn?"🔊 Voice On":"🔇 Voice Off"}</button>
@@ -2445,7 +2445,7 @@ function TrailerStudio({book,onClose}){
                     {s.voiceover&&<p className="text-white/40 text-xs italic ml-7">🎙 "{s.voiceover}"</p>}
                   </div>
                 ))}
-                {script.end_card&&<div className="bg-gradient-to-r from-fuchsia-500/10 to-pink-500/10 border border-fuchsia-500/20 rounded-xl p-3"><p className="text-white/25 text-xs uppercase tracking-wider mb-1">End Card</p><p className="text-white font-semibold text-sm">{script.end_card.on_screen_text}</p>{script.end_card.cta&&<p className="text-fuchsia-300 text-xs mt-1">{script.end_card.cta}</p>}</div>}
+                {script.end_card&&<div className="bg-gradient-to-r from-fuchsia-500/10 to-pink-500/10 border border-fuchsia-500/20 rounded-xl p-3"><p className="text-white/50 text-xs uppercase tracking-wider mb-1">End Card</p><p className="text-white font-semibold text-sm">{script.end_card.on_screen_text}</p>{script.end_card.cta&&<p className="text-fuchsia-300 text-xs mt-1">{script.end_card.cta}</p>}</div>}
               </div>
 
               {/* Actions */}
@@ -2455,7 +2455,7 @@ function TrailerStudio({book,onClose}){
                 <button onClick={genTeaser} disabled={vidLoading} className="bg-gradient-to-r from-violet-500 to-fuchsia-500 text-white px-4 py-2 rounded-lg text-sm font-semibold hover:opacity-90 disabled:opacity-40">{vidLoading?<><Spin size="h-3 w-3"/>Rendering…</>:"🎥 AI Video Teaser (Puter)"}</button>
               </div>
               {vidUrl&&<video src={vidUrl} controls className="w-full rounded-xl border border-white/10"/>}
-              <p className="text-white/20 text-xs">💡 Free ways to turn this into a real video: Canva, CapCut, or Clipchamp — paste the script + your cover + Audio Studio voiceover.</p>
+              <p className="text-white/50 text-xs">💡 Free ways to turn this into a real video: Canva, CapCut, or Clipchamp — paste the script + your cover + Audio Studio voiceover.</p>
             </>
           )}
         </div>
@@ -2587,7 +2587,7 @@ function applySeriesFix(series,fix){
         if(!ch.content)return ch;
         const before=ch.content;
         const after=before.replace(re,m=>{hits++;return m[0]===m[0].toLowerCase()?fix.to.charAt(0).toLowerCase()+fix.to.slice(1):fix.to;});
-        return after===before?ch:{...ch,content:after};
+        return after===before?ch:{...withVersionSnapshot(ch,"AI rewrite"),content:after};
       });
       if(hits>0){
         const idx=books.findIndex(x=>x.id===b.id);
@@ -2698,7 +2698,7 @@ function applyUndoRecord(series,rec){
         if(!ch.content)return ch;
         const before=ch.content;
         const after=before.replace(re,m=>{hits++;return m[0]===m[0].toLowerCase()?rec.to.charAt(0).toLowerCase()+rec.to.slice(1):rec.to;});
-        return after===before?ch:{...ch,content:after};
+        return after===before?ch:{...withVersionSnapshot(ch,"AI rewrite"),content:after};
       });
       if(hits>0)books[i]={...books[i],chapters};
     });
@@ -2808,17 +2808,17 @@ function SeriesContinuityModal({seriesId,onClose}){
   );
 
   return(
-    <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+    <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4 bf-modal" role="dialog" aria-modal="true">
       <div className="bg-slate-800 border border-cyan-500/30 rounded-2xl max-w-2xl w-full max-h-[85vh] overflow-y-auto shadow-2xl">
         <div className="sticky top-0 bg-slate-800 border-b border-white/10 px-6 py-4 flex items-center justify-between">
           <div><h2 className="text-white font-bold text-lg">🔍 Continuity Check</h2><p className="text-cyan-300 text-sm">{series.name}</p></div>
-          <button onClick={onClose} className="text-white/30 hover:text-white text-2xl">✕</button>
+          <button onClick={onClose} aria-label="Close" data-close-btn="true" className="text-white/60 hover:text-white text-2xl">✕</button>
         </div>
         <div className="p-6 space-y-5">
           <div className="bg-white/5 rounded-xl p-4 flex items-center justify-between">
             <div>
               <p className="text-white/40 text-xs uppercase tracking-wider">Continuity Score</p>
-              <p className={`text-3xl font-bold ${scoreColor}`}>{result.score}<span className="text-white/20 text-lg">/100</span></p>
+              <p className={`text-3xl font-bold ${scoreColor}`}>{result.score}<span className="text-white/50 text-lg">/100</span></p>
             </div>
             <div className="text-right text-xs text-white/40">
               <p>{result.writtenCount} of {result.totalPlanned} books written</p>
@@ -2842,7 +2842,7 @@ function SeriesContinuityModal({seriesId,onClose}){
           {log.length>0&&(
             <div className="bg-emerald-500/10 border border-emerald-500/30 rounded-xl p-3">
               <p className="text-emerald-300 text-xs font-bold uppercase tracking-wider mb-2">Applied Fixes</p>
-              <div className="space-y-1">{log.map((l,i)=><p key={l.ts+"-"+i} className="text-white/60 text-xs">✅ {l.msg}</p>)}</div>
+              <div role="log" aria-live="polite" className="space-y-1">{log.map((l,i)=><p key={l.ts+"-"+i} className="text-white/60 text-xs">✅ {l.msg}</p>)}</div>
             </div>
           )}
 
@@ -2851,7 +2851,7 @@ function SeriesContinuityModal({seriesId,onClose}){
               <h3 className="text-red-300 text-sm font-bold mb-2">❌ Issues ({result.issues.length})</h3>
               <div className="space-y-2">{result.issues.map((iss,i)=>(
                 <div key={i} className="bg-red-500/10 border border-red-500/30 rounded-lg p-3 flex items-start justify-between gap-3">
-                  <div><span className="text-red-400 text-xs font-bold uppercase">{iss.type}</span><p className="text-white/70 text-sm mt-0.5">{iss.msg}</p>{iss.fix?.reason&&<p className="text-white/30 text-xs mt-0.5 italic">{iss.fix.reason}</p>}</div>
+                  <div><span className="text-red-400 text-xs font-bold uppercase">{iss.type}</span><p className="text-white/70 text-sm mt-0.5">{iss.msg}</p>{iss.fix?.reason&&<p className="text-white/60 text-xs mt-0.5 italic">{iss.fix.reason}</p>}</div>
                   {iss.fix&&<FixBtn fix={iss.fix}/>}
                 </div>
               ))}</div>
@@ -2871,7 +2871,7 @@ function SeriesContinuityModal({seriesId,onClose}){
           {result.issues.length===0&&result.warnings.length===0&&(
             <div className="bg-green-500/10 border border-green-500/30 rounded-xl p-4 text-center"><p className="text-green-300 font-bold">✅ No continuity problems found!</p><p className="text-white/40 text-xs mt-1">Roster names are unique, planned books exist, pacing is consistent.</p></div>
           )}
-          <p className="text-white/20 text-xs">Runs instantly with no API calls. Rename fixes edit book text directly — but every fix pushes an undo record (↩️ above, up to 10 batches, survives refresh). Pacing warnings need manual rewrites (no auto-fix).</p>
+          <p className="text-white/50 text-xs">Runs instantly with no API calls. Rename fixes edit book text directly — but every fix pushes an undo record (↩️ above, up to 10 batches, survives refresh). Pacing warnings need manual rewrites (no auto-fix).</p>
         </div>
       </div>
     </div>
@@ -3008,11 +3008,11 @@ function SettingsModal({onClose}){
   };
 
   return(
-    <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+    <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center p-4 bf-modal" role="dialog" aria-modal="true" aria-label="Settings">
       <div className="bg-slate-800 border border-white/10 rounded-2xl max-w-lg w-full shadow-2xl max-h-[90vh] overflow-y-auto">
         <div className="sticky top-0 bg-slate-800 border-b border-white/10 px-6 py-4 flex items-center justify-between">
           <h2 className="text-white text-xl font-bold">⚙️ Settings</h2>
-          <button onClick={onClose} aria-label="Close settings" data-close-btn="true" className="text-white/30 hover:text-white text-xl">✕</button>
+          <button onClick={onClose} aria-label="Close settings" data-close-btn="true" className="text-white/60 hover:text-white text-xl">✕</button>
         </div>
         {/* Settings tabs */}
         <div className="px-6 pt-4">
@@ -3156,7 +3156,7 @@ function SettingsModal({onClose}){
                   <li className="flex gap-2"><span className="text-purple-400">✍️</span>Analyze chapters for AI-tell rewrites and apply them if writing quality score &lt; 78</li>
                   <li className="flex gap-2"><span className="text-purple-400">🔄</span>Re-run both quality checks and report the improved scores</li>
                 </ul>
-                <p className="text-white/30 text-xs mt-3 italic">Each step is quota-guarded — won't run if you're low on daily API requests.</p>
+                <p className="text-white/60 text-xs mt-3 italic">Each step is quota-guarded — won't run if you're low on daily API requests.</p>
               </div>
             </div>
           )}
@@ -3187,7 +3187,7 @@ function Header({onBack,title,subtitle,onSettings,onTour,activeTab,setActiveTab}
         <div className="flex items-center gap-3 min-w-0">
           {onBack&&<button onClick={onBack} className="text-white/40 hover:text-white text-sm shrink-0">← Back</button>}
           <div className="w-9 h-9 bg-gradient-to-br from-purple-500 to-pink-500 rounded-xl flex items-center justify-center text-lg shrink-0">📚</div>
-          <div className="min-w-0"><h1 className="text-white font-bold text-base leading-tight truncate">{title||"BookForge AI"}</h1>{subtitle&&<p className="text-white/30 text-xs truncate">{subtitle}</p>}</div>
+          <div className="min-w-0"><h1 className="text-white font-bold text-base leading-tight truncate">{title||"BookForge AI"}</h1>{subtitle&&<p className="text-white/60 text-xs truncate">{subtitle}</p>}</div>
         </div>
         <div className="flex items-center gap-2 shrink-0">
           {getBackend()==="gemini"&&(
@@ -3312,7 +3312,7 @@ function ReviewPanel({book,onApply,onSettings}){
         {review.seo_rewrite&&<Card><h3 className="text-white font-semibold mb-2">🔍 Rewritten SEO Description</h3><p className="text-white/70 text-sm leading-relaxed mb-3 bg-white/5 rounded-xl p-4">{review.seo_rewrite}</p><button onClick={()=>applySEO(review.seo_rewrite)} className={`text-sm px-4 py-2 rounded-lg border ${applied.seo?"border-green-500/40 text-green-400":"border-purple-500/40 text-purple-300 hover:bg-purple-500/20"}`}>{applied.seo?"Applied ✓":"Apply Description"}</button></Card>}
         {review.top_3_fixes?.length>0&&<Card><h3 className="text-white font-semibold mb-3">🎯 Top 3 Fixes (Act on These First)</h3><div className="space-y-2">{review.top_3_fixes.map((f,i)=><div key={i} className="flex gap-3 bg-amber-500/10 border border-amber-500/20 rounded-xl px-4 py-3"><span className="text-amber-400 font-bold text-sm shrink-0">#{i+1}</span><p className="text-white/80 text-sm">{f}</p></div>)}</div></Card>}
         {(review.hook_strength_score||review.hook_analysis)&&<Card><div className="flex items-center justify-between mb-3"><h3 className="text-white font-semibold">🪝 Hook Strength</h3><ScoreBadge score={review.hook_strength_score||0}/></div>{review.hook_analysis&&<p className="text-white/60 text-sm leading-relaxed bg-white/5 rounded-xl p-4">{review.hook_analysis}</p>}</Card>}
-        {review.amazon_search_prediction&&<Card><h3 className="text-white font-semibold mb-2">🔎 Most Likely Amazon Search Query</h3><div className="bg-blue-500/10 border border-blue-500/20 rounded-xl p-4"><p className="text-blue-200 text-sm font-mono">"{review.amazon_search_prediction}"</p></div><p className="text-white/30 text-xs mt-2">This is the search phrase most likely to surface your book. Make sure your title and keywords cover it.</p></Card>}
+        {review.amazon_search_prediction&&<Card><h3 className="text-white font-semibold mb-2">🔎 Most Likely Amazon Search Query</h3><div className="bg-blue-500/10 border border-blue-500/20 rounded-xl p-4"><p className="text-blue-200 text-sm font-mono">"{review.amazon_search_prediction}"</p></div><p className="text-white/60 text-xs mt-2">This is the search phrase most likely to surface your book. Make sure your title and keywords cover it.</p></Card>}
       </>)}
     </div>
   );
@@ -3370,7 +3370,7 @@ function CompetitorPanel({book,onSettings}){
       {data&&(<>
         <Card><h3 className="text-white font-semibold mb-2">📊 Market Overview</h3><p className="text-white/70 text-sm leading-relaxed">{data.market_summary}</p></Card>
         {data.positioning_statement&&<div className="bg-gradient-to-r from-purple-900/60 to-pink-900/40 border border-purple-500/30 rounded-2xl p-5"><p className="text-white/40 text-xs uppercase tracking-wider mb-2">Your Positioning Statement</p><p className="text-white font-semibold text-lg leading-snug">"{data.positioning_statement}"</p></div>}
-        {data.top_competitors?.length>0&&<Card><h3 className="text-white font-semibold mb-3">📚 Top Competitors</h3><div className="space-y-3">{data.top_competitors.map((c,i)=><div key={i} className="bg-white/5 rounded-xl p-4"><p className="text-white font-medium text-sm">{c.title}<span className="text-white/30 font-normal"> by {c.author}</span></p><p className="text-green-400/70 text-xs mt-1">✓ {c.what_works}</p><p className="text-red-400/70 text-xs mt-0.5">✗ {c.weakness}</p></div>)}</div></Card>}
+        {data.top_competitors?.length>0&&<Card><h3 className="text-white font-semibold mb-3">📚 Top Competitors</h3><div className="space-y-3">{data.top_competitors.map((c,i)=><div key={i} className="bg-white/5 rounded-xl p-4"><p className="text-white font-medium text-sm">{c.title}<span className="text-white/60 font-normal"> by {c.author}</span></p><p className="text-green-400/70 text-xs mt-1">✓ {c.what_works}</p><p className="text-red-400/70 text-xs mt-0.5">✗ {c.weakness}</p></div>)}</div></Card>}
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           {data.market_gaps?.length>0&&<Card><h3 className="text-white font-semibold mb-3">💡 Market Gaps You Can Fill</h3><ul className="space-y-2">{data.market_gaps.map((g,i)=><li key={i} className="text-white/70 text-sm flex gap-2"><span className="text-purple-400 shrink-0">→</span>{g}</li>)}</ul></Card>}
           {data.reader_pain_points?.length>0&&<Card><h3 className="text-white font-semibold mb-3">❤️ What Readers Crave</h3><ul className="space-y-2">{data.reader_pain_points.map((p,i)=><li key={i} className="text-white/70 text-sm flex gap-2"><span className="text-pink-400 shrink-0">•</span>{p}</li>)}</ul></Card>}
@@ -3379,7 +3379,7 @@ function CompetitorPanel({book,onSettings}){
           {data.pricing_recommendation&&<Card><h3 className="text-white font-semibold mb-2">💰 Price Strategy</h3><p className="text-3xl font-bold text-green-400 mb-1">{data.pricing_recommendation.launch_price}</p><p className="text-white/50 text-sm">{data.pricing_recommendation.rationale}</p></Card>}
           {data.ku_recommendation&&<Card><h3 className="text-white font-semibold mb-2">📖 KU vs Wide</h3><p className={`text-lg font-bold mb-1 ${data.ku_recommendation.enroll_in_ku?"text-cyan-400":"text-amber-400"}`}>{data.ku_recommendation.enroll_in_ku?"✅ Enroll in KU":"❌ Go Wide"}</p><p className="text-white/50 text-sm">{data.ku_recommendation.rationale}</p></Card>}
         </div>
-        {data.categories&&<Card><h3 className="text-white font-semibold mb-3">🏆 Amazon Categories for Bestseller Badge</h3><div className="space-y-2"><div className="bg-white/5 rounded-xl p-3"><p className="text-white/30 text-xs mb-1">Primary</p><p className="text-white text-sm font-medium">{data.categories.primary}</p></div><div className="bg-white/5 rounded-xl p-3"><p className="text-white/30 text-xs mb-1">Secondary</p><p className="text-white text-sm font-medium">{data.categories.secondary}</p></div><p className="text-white/40 text-xs mt-2">{data.categories.why}</p></div></Card>}
+        {data.categories&&<Card><h3 className="text-white font-semibold mb-3">🏆 Amazon Categories for Bestseller Badge</h3><div className="space-y-2"><div className="bg-white/5 rounded-xl p-3"><p className="text-white/60 text-xs mb-1">Primary</p><p className="text-white text-sm font-medium">{data.categories.primary}</p></div><div className="bg-white/5 rounded-xl p-3"><p className="text-white/60 text-xs mb-1">Secondary</p><p className="text-white text-sm font-medium">{data.categories.secondary}</p></div><p className="text-white/40 text-xs mt-2">{data.categories.why}</p></div></Card>}
         {data.launch_strategy?.length>0&&<Card><h3 className="text-white font-semibold mb-3">🚀 Launch Strategy</h3><div className="space-y-2">{data.launch_strategy.map((s,i)=><div key={i} className="flex gap-3 items-start"><span className="w-6 h-6 bg-purple-500/30 text-purple-300 rounded-full flex items-center justify-center text-xs font-bold shrink-0 mt-0.5">{i+1}</span><p className="text-white/70 text-sm">{s}</p></div>)}</div></Card>}
       </>)}
     </div>
@@ -3437,11 +3437,11 @@ function HookPanel({book,onSettings}){
       </Card>
       {data&&(<>
         {data.tagline&&<div className="bg-gradient-to-r from-purple-900/60 to-pink-900/40 border border-purple-500/30 rounded-2xl p-5 text-center"><p className="text-white/40 text-xs uppercase tracking-wider mb-2">Tagline</p><p className="text-white font-bold text-2xl">"{data.tagline}"</p></div>}
-        {data.opening_lines?.length>0&&<Card><h3 className="text-white font-semibold mb-3">✍️ Opening Line Options <span className="text-white/30 font-normal text-sm">(5 styles — pick your favorite)</span></h3><div className="space-y-3">{data.opening_lines.map((l,i)=>{const lineText=typeof l==="object"?l.line:l;const style=typeof l==="object"?l.style:null;return(<div key={i} className="bg-white/5 rounded-xl p-4 flex justify-between gap-3 items-start"><div className="flex-1">{style&&<span className="text-xs font-bold text-purple-400 uppercase tracking-wider mb-1 block">{style}</span>}<p className="text-white/80 text-sm leading-relaxed italic">"{lineText}"</p></div><button onClick={()=>copy(lineText)} className="text-xs border border-white/20 text-white/30 px-2 py-1 rounded-lg hover:text-white shrink-0">Copy</button></div>);})}</div></Card>}
-        {data.back_cover_blurbs?.length>0&&<Card><h3 className="text-white font-semibold mb-3">📖 Back Cover Blurbs</h3><div className="space-y-4">{data.back_cover_blurbs.map((b,i)=><div key={i} className="bg-white/5 rounded-xl p-4"><div className="flex justify-between items-center mb-2"><p className="text-white/30 text-xs">Version {i+1}</p><button onClick={()=>copy(b)} className="text-xs border border-white/20 text-white/30 px-2 py-1 rounded-lg hover:text-white">Copy</button></div><p className="text-white/75 text-sm leading-relaxed">{b}</p></div>)}</div></Card>}
-        {data.social_media_hooks?.length>0&&<Card><h3 className="text-white font-semibold mb-3">📱 Social Media Hooks</h3><div className="space-y-2">{data.social_media_hooks.map((h,i)=><div key={i} className="bg-white/5 rounded-xl px-4 py-3 flex justify-between gap-3 items-center"><p className="text-white/75 text-sm flex-1">{h}</p><button onClick={()=>copy(h)} className="text-xs border border-white/20 text-white/30 px-2 py-1 rounded-lg hover:text-white shrink-0">Copy</button></div>)}</div></Card>}
-        {data.email_subject_lines?.length>0&&<Card><h3 className="text-white font-semibold mb-3">📧 Launch Email Subject Lines</h3><div className="space-y-2">{data.email_subject_lines.map((s,i)=><div key={i} className="bg-white/5 rounded-xl px-4 py-3 flex justify-between gap-3 items-center"><p className="text-white/75 text-sm flex-1">{s}</p><button onClick={()=>copy(s)} className="text-xs border border-white/20 text-white/30 px-2 py-1 rounded-lg hover:text-white shrink-0">Copy</button></div>)}</div></Card>}
-        {data.series_read_order_page&&<Card><h3 className="text-white font-semibold mb-2">📗 Series Read-Order Page <span className="text-white/30 font-normal text-sm">(embed at end of book)</span></h3><div className="bg-white/5 rounded-xl p-4 mb-3 max-h-48 overflow-y-auto"><p className="text-white/70 text-sm leading-relaxed whitespace-pre-wrap">{data.series_read_order_page}</p></div><button onClick={()=>copy(data.series_read_order_page)} className="text-sm border border-white/20 text-white/50 px-4 py-2 rounded-lg hover:bg-white/5">Copy Full Page</button></Card>}
+        {data.opening_lines?.length>0&&<Card><h3 className="text-white font-semibold mb-3">✍️ Opening Line Options <span className="text-white/60 font-normal text-sm">(5 styles — pick your favorite)</span></h3><div className="space-y-3">{data.opening_lines.map((l,i)=>{const lineText=typeof l==="object"?l.line:l;const style=typeof l==="object"?l.style:null;return(<div key={i} className="bg-white/5 rounded-xl p-4 flex justify-between gap-3 items-start"><div className="flex-1">{style&&<span className="text-xs font-bold text-purple-400 uppercase tracking-wider mb-1 block">{style}</span>}<p className="text-white/80 text-sm leading-relaxed italic">"{lineText}"</p></div><button onClick={()=>copy(lineText)} className="text-xs border border-white/20 text-white/60 px-2 py-1 rounded-lg hover:text-white shrink-0">Copy</button></div>);})}</div></Card>}
+        {data.back_cover_blurbs?.length>0&&<Card><h3 className="text-white font-semibold mb-3">📖 Back Cover Blurbs</h3><div className="space-y-4">{data.back_cover_blurbs.map((b,i)=><div key={i} className="bg-white/5 rounded-xl p-4"><div className="flex justify-between items-center mb-2"><p className="text-white/60 text-xs">Version {i+1}</p><button onClick={()=>copy(b)} className="text-xs border border-white/20 text-white/60 px-2 py-1 rounded-lg hover:text-white">Copy</button></div><p className="text-white/75 text-sm leading-relaxed">{b}</p></div>)}</div></Card>}
+        {data.social_media_hooks?.length>0&&<Card><h3 className="text-white font-semibold mb-3">📱 Social Media Hooks</h3><div className="space-y-2">{data.social_media_hooks.map((h,i)=><div key={i} className="bg-white/5 rounded-xl px-4 py-3 flex justify-between gap-3 items-center"><p className="text-white/75 text-sm flex-1">{h}</p><button onClick={()=>copy(h)} className="text-xs border border-white/20 text-white/60 px-2 py-1 rounded-lg hover:text-white shrink-0">Copy</button></div>)}</div></Card>}
+        {data.email_subject_lines?.length>0&&<Card><h3 className="text-white font-semibold mb-3">📧 Launch Email Subject Lines</h3><div className="space-y-2">{data.email_subject_lines.map((s,i)=><div key={i} className="bg-white/5 rounded-xl px-4 py-3 flex justify-between gap-3 items-center"><p className="text-white/75 text-sm flex-1">{s}</p><button onClick={()=>copy(s)} className="text-xs border border-white/20 text-white/60 px-2 py-1 rounded-lg hover:text-white shrink-0">Copy</button></div>)}</div></Card>}
+        {data.series_read_order_page&&<Card><h3 className="text-white font-semibold mb-2">📗 Series Read-Order Page <span className="text-white/60 font-normal text-sm">(embed at end of book)</span></h3><div className="bg-white/5 rounded-xl p-4 mb-3 max-h-48 overflow-y-auto"><p className="text-white/70 text-sm leading-relaxed whitespace-pre-wrap">{data.series_read_order_page}</p></div><button onClick={()=>copy(data.series_read_order_page)} className="text-sm border border-white/20 text-white/50 px-4 py-2 rounded-lg hover:bg-white/5">Copy Full Page</button></Card>}
         {data.amazon_a_plus_headline&&<Card><h3 className="text-white font-semibold mb-2">🏆 Amazon A+ Headline</h3><p className="text-white/80 text-sm bg-white/5 rounded-xl p-4 italic">"{data.amazon_a_plus_headline}"</p></Card>}
       </>)}
     </div>
@@ -3739,20 +3739,20 @@ function WritingQualityPanel({book,onSettings,onApply}){
             return React.createElement("div",{className:"mt-3 flex items-center gap-4 bg-white/5 rounded-xl p-3"},
               React.createElement("div",{className:"text-center shrink-0"},
                 React.createElement("div",{className:"text-2xl font-bold text-white/80"},r.ease),
-                React.createElement("div",{className:"text-white/30 text-xs"},"Reading Ease")
+                React.createElement("div",{className:"text-white/60 text-xs"},"Reading Ease")
               ),
               React.createElement("div",{className:"text-center shrink-0"},
                 React.createElement("div",{className:"text-2xl font-bold text-white/80"},r.grade),
-                React.createElement("div",{className:"text-white/30 text-xs"},"Grade Level")
+                React.createElement("div",{className:"text-white/60 text-xs"},"Grade Level")
               ),
               React.createElement("div",{className:"flex-1"},
                 React.createElement("p",{className:"text-white/60 text-sm font-medium"},r.label),
-                React.createElement("p",{className:"text-white/30 text-xs"},r.wordCount.toLocaleString()+" words analyzed")
+                React.createElement("p",{className:"text-white/60 text-xs"},r.wordCount.toLocaleString()+" words analyzed")
               )
             );
           })()}
           </div>
-          {avgHuman!==null&&<div className="text-center shrink-0"><div className={`text-3xl font-bold ${hc(avgHuman)}`}>{avgHuman}</div><div className="text-white/30 text-xs">avg human score</div></div>}
+          {avgHuman!==null&&<div className="text-center shrink-0"><div className={`text-3xl font-bold ${hc(avgHuman)}`}>{avgHuman}</div><div className="text-white/60 text-xs">avg human score</div></div>}
         </div>
         {manuscript&&(
           <div className={`rounded-xl border p-4 mt-3 ${msPassed?"bg-green-500/10 border-green-500/30":"bg-red-500/10 border-red-500/30"}`}>
@@ -3779,13 +3779,13 @@ function WritingQualityPanel({book,onSettings,onApply}){
           <button onClick={runMsCheck} disabled={loadingMs||writtenCount===0} className="w-full bg-gradient-to-r from-purple-500 to-pink-500 text-white py-3.5 rounded-xl font-semibold hover:opacity-90 disabled:opacity-50 flex items-center justify-center gap-2">
             {loadingMs?<><Spin/>Analyzing manuscript…</>:manuscript?"🔄 Re-analyze Manuscript":"🔍 Analyze Full Manuscript"}
           </button>
-          {writtenCount===0&&<p className="text-white/25 text-sm text-center">Write at least one chapter first.</p>}
+          {writtenCount===0&&<p className="text-white/50 text-sm text-center">Write at least one chapter first.</p>}
           {manuscript&&(<>
             {wqFlash&&<div className="bg-purple-500/15 border border-purple-500/40 text-purple-200 rounded-xl p-3 text-sm text-center font-medium">{wqFlash}</div>}
             {hasRewrites&&<button onClick={improveWriting} disabled={improving||loadingMs} className="w-full bg-gradient-to-r from-amber-500 to-orange-500 text-white py-4 rounded-xl font-bold text-lg hover:opacity-90 disabled:opacity-50 flex items-center justify-center gap-2 shadow-lg shadow-amber-900/30">
               {improving?<><Spin/>Applying {totalRewrites} rewrites & re-scoring…</>:"🚀 Improve My Writing — Apply All Rewrites"}
             </button>}
-            {!hasRewrites&&manuscript?.manuscript_verdict!=="PASS"&&<p className="text-white/30 text-xs text-center bg-white/5 rounded-xl p-3">💡 Run Chapter-by-Chapter analysis to get specific rewrite suggestions you can auto-apply here.</p>}
+            {!hasRewrites&&manuscript?.manuscript_verdict!=="PASS"&&<p className="text-white/60 text-xs text-center bg-white/5 rounded-xl p-3">💡 Run Chapter-by-Chapter analysis to get specific rewrite suggestions you can auto-apply here.</p>}
             {/* Dimension breakdown */}
             <Card>
               <h3 className="text-white font-semibold mb-4">Manuscript Assessment</h3>
@@ -3850,7 +3850,7 @@ function WritingQualityPanel({book,onSettings,onApply}){
                         <div key={i} className="bg-black/30 rounded-xl p-3">
                           <div className="flex gap-2 mb-2"><span className="text-red-400 text-xs shrink-0 mt-0.5">AI:</span><p className="text-red-300/70 text-xs italic">"{ex.original}"</p></div>
                           <div className="flex gap-2 mb-1"><span className="text-green-400 text-xs shrink-0 mt-0.5">Human:</span><p className="text-green-300/80 text-xs italic">"{ex.rewrite}"</p></div>
-                          {ex.why&&<p className="text-white/25 text-xs ml-12">{ex.why}</p>}
+                          {ex.why&&<p className="text-white/50 text-xs ml-12">{ex.why}</p>}
                         </div>
                       ))}
                     </div>
@@ -3858,7 +3858,7 @@ function WritingQualityPanel({book,onSettings,onApply}){
                   {s.overall_advice&&<p className="text-white/40 text-xs italic bg-white/5 rounded-lg p-3">💡 {s.overall_advice}</p>}
                   {s.strengths?.length>0&&<div className="mt-2 space-y-1">{s.strengths.map((st,i)=><p key={i} className="text-green-400/60 text-xs flex gap-1"><span>✓</span>{st}</p>)}</div>}
                 </>)}
-                {!ch.content&&<p className="text-white/20 text-xs">Write this chapter first</p>}
+                {!ch.content&&<p className="text-white/50 text-xs">Write this chapter first</p>}
               </div>
             );
           })}
@@ -3872,7 +3872,7 @@ function WritingQualityPanel({book,onSettings,onApply}){
               <p className="text-white/40 text-sm">Scans all chapters for overused words, repeated phrases, and adverb frequency. Instant — no API call needed.</p>
               <button onClick={run} disabled={owAnalyzing} className="text-xs bg-purple-500/20 text-purple-300 border border-purple-500/30 px-4 py-2 rounded-lg hover:bg-purple-500/30 disabled:opacity-40 flex items-center gap-1.5 shrink-0">{owAnalyzing?<><Spin size="h-3 w-3"/>Analyzing…</>:"🔍 Analyze Words"}</button>
             </div>
-            {!owAnalysis&&!owAnalyzing&&<p className="text-white/20 text-sm text-center py-8">Click "Analyze Words" to scan your manuscript for repetition patterns.</p>}
+            {!owAnalysis&&!owAnalyzing&&<p className="text-white/50 text-sm text-center py-8">Click "Analyze Words" to scan your manuscript for repetition patterns.</p>}
             {owAnalysis&&(
               <div className="space-y-5">
                 <div className="bg-white/5 border border-white/10 rounded-xl p-4">
@@ -3880,7 +3880,7 @@ function WritingQualityPanel({book,onSettings,onApply}){
                   {owAnalysis.overused.length===0?<p className="text-green-300/60 text-sm">✅ No significantly overused words found!</p>:(
                     <div className="flex flex-wrap gap-2">{owAnalysis.overused.map(([word,count])=><span key={word} className={`px-3 py-1.5 rounded-lg text-xs font-medium ${count>=50?"bg-red-500/20 text-red-300 border border-red-500/30":count>=30?"bg-amber-500/20 text-amber-300 border border-amber-500/30":"bg-yellow-500/20 text-yellow-300 border border-yellow-500/30"}`}>{word} <span className="font-bold">{count}</span></span>)}</div>
                   )}
-                  <p className="text-white/20 text-xs mt-2">🔴 50+ uses · 🟡 30-49 · 🟡 15-29</p>
+                  <p className="text-white/50 text-xs mt-2">🔴 50+ uses · 🟡 30-49 · 🟡 15-29</p>
                 </div>
                 {owAnalysis.repeatedPhrases.length>0&&(
                   <div className="bg-white/5 border border-white/10 rounded-xl p-4">
@@ -3920,7 +3920,7 @@ function WritingQualityPanel({book,onSettings,onApply}){
                   <p className="text-white/40 text-xs uppercase tracking-wider">Average AI Detection Risk</p>
                   <span className={`text-2xl font-bold ${aiResults.avgScore<30?"text-green-400":aiResults.avgScore<60?"text-amber-400":"text-red-400"}`}>{aiResults.avgScore}/100</span>
                 </div>
-                <p className="text-white/30 text-xs mt-1">{aiResults.avgScore<30?"✅ Low risk — reads human across the manuscript":aiResults.avgScore<60?"⚠️ Moderate risk — some chapters need attention":"❌ High risk — several chapters trigger AI detection patterns"}</p>
+                <p className="text-white/60 text-xs mt-1">{aiResults.avgScore<30?"✅ Low risk — reads human across the manuscript":aiResults.avgScore<60?"⚠️ Moderate risk — some chapters need attention":"❌ High risk — several chapters trigger AI detection patterns"}</p>
               </div>
             )}
             {aiResults&&aiResults.results.map((r,i)=>(
@@ -3937,7 +3937,7 @@ function WritingQualityPanel({book,onSettings,onApply}){
                 ):<p className="text-green-300/60 text-xs">✅ No AI patterns detected</p>}
               </div>
             ))}
-            {!aiResults&&!aiScanning&&<p className="text-white/20 text-sm text-center py-8">Click "Scan for AI Patterns" to check your manuscript against common AI writing patterns.</p>}
+            {!aiResults&&!aiScanning&&<p className="text-white/50 text-sm text-center py-8">Click "Scan for AI Patterns" to check your manuscript against common AI writing patterns.</p>}
           </div>
         );
       })()}
@@ -4007,16 +4007,16 @@ function ChapterQualityPanel({book,onSettings}){
               {s&&<>
                 <div className="grid grid-cols-5 gap-2 mb-3">
                   {[["Pacing","pacing_score"],["Dialogue%","dialogue_ratio"],["Tension","tension_score"],["Voice","character_voice_score"],["Prose","prose_quality_score"],["Hook","hook_score"]].map(([label,key])=>(
-                    <div key={key} className="text-center"><div className={`text-sm font-bold ${scoreColor(s[key])}`}>{s[key]}</div><div className="text-white/25 text-xs">{label}</div></div>
+                    <div key={key} className="text-center"><div className={`text-sm font-bold ${scoreColor(s[key])}`}>{s[key]}</div><div className="text-white/50 text-xs">{label}</div></div>
                   ))}
                 </div>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mb-2">
                   {s.strengths?.map((st,i)=><p key={i} className="text-green-400/70 text-xs flex gap-1"><span>✓</span>{st}</p>)}
                   {s.weaknesses?.map((w,i)=><p key={i} className="text-red-400/70 text-xs flex gap-1"><span>✗</span>{w}</p>)}
                 </div>
-                {s.rewrite_suggestion&&<p className="text-white/30 text-xs italic bg-white/5 rounded-lg p-3 mt-1">💡 {s.rewrite_suggestion}</p>}
+                {s.rewrite_suggestion&&<p className="text-white/60 text-xs italic bg-white/5 rounded-lg p-3 mt-1">💡 {s.rewrite_suggestion}</p>}
               </>}
-              {!ch.content&&<p className="text-white/20 text-xs">Write this chapter first</p>}
+              {!ch.content&&<p className="text-white/50 text-xs">Write this chapter first</p>}
             </div>
           );
         })}
@@ -4111,7 +4111,7 @@ function CharactersPanel({book,onSettings}){
 
       {/* Character list */}
       {chars.length===0
-        ?<div className="text-center py-10 text-white/20"><p>No characters yet. Add manually or auto-extract from chapters.</p></div>
+        ?<div className="text-center py-10 text-white/50"><p>No characters yet. Add manually or auto-extract from chapters.</p></div>
         :<div className="space-y-3">
           {chars.map((c,i)=>(
             <div key={c.id||i} className="bg-white/5 border border-white/10 rounded-2xl p-5">
@@ -4119,15 +4119,15 @@ function CharactersPanel({book,onSettings}){
                 <div className="flex items-center gap-2 flex-wrap">
                   <span className="text-white font-bold">{c.name}</span>
                   {c.role&&<span className="bg-purple-500/20 text-purple-300 text-xs px-2 py-0.5 rounded-full border border-purple-500/20">{c.role}</span>}
-                  {c.age&&<span className="text-white/30 text-xs">age {c.age}</span>}
+                  {c.age&&<span className="text-white/60 text-xs">age {c.age}</span>}
                 </div>
                 <div className="flex gap-1 shrink-0">
-                  <button onClick={()=>edit(c)} className="text-xs text-white/30 hover:text-white px-2 py-1">✏️</button>
+                  <button onClick={()=>edit(c)} className="text-xs text-white/60 hover:text-white px-2 py-1">✏️</button>
                   <button onClick={()=>del(c.id)} className="text-xs text-red-400/40 hover:text-red-400 px-2 py-1">✕</button>
                 </div>
               </div>
-              {c.appearance&&<p className="text-white/50 text-xs mb-1"><span className="text-white/25">Appearance: </span>{c.appearance}</p>}
-              {c.personality&&<p className="text-white/50 text-xs mb-1"><span className="text-white/25">Personality: </span>{c.personality}</p>}
+              {c.appearance&&<p className="text-white/50 text-xs mb-1"><span className="text-white/50">Appearance: </span>{c.appearance}</p>}
+              {c.personality&&<p className="text-white/50 text-xs mb-1"><span className="text-white/50">Personality: </span>{c.personality}</p>}
               {c.arc&&<p className="text-cyan-300/50 text-xs italic">{c.arc}</p>}
             </div>
           ))}
@@ -4183,7 +4183,7 @@ function VoiceTrainingPanel({onClose}){
       <div>
         <label className="text-white/60 text-sm font-medium block mb-2">Your Writing Sample</label>
         <textarea rows={8} value={sample} onChange={e=>setSample(e.target.value)} placeholder="Paste at least 200 characters of your writing — a chapter excerpt, a few paragraphs from a previous book, a blog post..." className="w-full bg-white/10 border border-white/20 rounded-xl px-4 py-3 text-white placeholder-white/20 focus:outline-none focus:border-purple-500 resize-none text-sm"/>
-        <p className="text-white/20 text-xs mt-1">{sample.length} chars</p>
+        <p className="text-white/50 text-xs mt-1">{sample.length} chars</p>
       </div>
       <div className="flex gap-3">
         <button onClick={onClose} className="flex-1 border border-white/20 text-white/50 py-2.5 rounded-xl hover:bg-white/5 text-sm">Done</button>
@@ -4259,7 +4259,7 @@ function QueuePage({navigate,onSettings}){
             `${(()=>{const tw=chapters[i]?.target_words||3800;const wMin=Math.round(tw*0.75);const wMax=tw;return `${wMin.toLocaleString()}–${wMax.toLocaleString()} words`;})()}. Match genre tone. Aim for the full word count.\n\nSTRUCTURE:\n• 3-5 distinct scenes per chapter, separated by: ⁂\n• Each scene has a clear goal → obstacle → outcome\n• Chapter must END on a hook, unresolved tension, or revelation that forces reading on\n• DO NOT wrap up cleanly — the best chapters end mid-breath\n\nWRITING RULES — violating these will get this chapter rejected:\n• NEVER start a sentence with 'He/She/They couldn't help but', 'In that moment', 'It dawned on', 'Something about the way', 'A wave of', 'A surge of'\n• NEVER state emotions directly ('he felt sad', 'warmth spread through her') — express through physical action, dialogue, or specific sensory detail\n• NEVER use em-dashes for dramatic effect more than once per page\n• VARY sentence length violently: one-word sentences. Fragments. Then a long, breathing sentence that winds through a scene and refuses to end neatly.\n• Dialogue must be messy and human: people talk past each other, leave things half-said, interrupt, change subject\n• Use SPECIFIC details: not 'the coffee shop smelled like coffee' but the burnt-sugar smell of the espresso machine at 6am, the sticky ring on the table from someone's iced latte\n• No clean emotional resolutions — conflict leaves residue\n• Character psychology must be specific, not convenient\n• Every scene must have a sensory anchor: a smell, a texture, a specific sound\n• Read like a published novel — no chapter summaries, no scene headers, no markdown`,0.85,{task:"creative",onStream:t=>{addLog(`  ✍️ Ch.${i+1}/${chapters.length}: ${t.split(/\s+/).filter(Boolean).length} words streamed…`);}}
           );
           trackUsage();
-          chapters[i]={...chapters[i],content,generated:true};setChDone(prev=>prev+1);
+          chapters[i]={...withVersionSnapshot(chapters[i],"queue write"),content,generated:true};setChDone(prev=>prev+1);
           const wc=chapters.reduce((a,c)=>a+(c.content?c.content.split(/\s+/).length:0),0);
           updateBook(id,{chapters:[...chapters],word_count:wc});
           reload();
@@ -4342,15 +4342,15 @@ function QueuePage({navigate,onSettings}){
         const mins=Math.round(etaSecs/60);
         const pct=Math.round(builtSoFar/totalToBuild*100);
         return(<div className="mb-4">
-          <div className="flex items-center justify-between mb-2"><span className="text-white/50 text-sm font-medium">{builtSoFar}/{totalToBuild} books · {pct}%</span><span className="text-white/30 text-xs">{mins>0?`~${mins} min remaining`:"Almost done…"}</span></div>
+          <div className="flex items-center justify-between mb-2"><span className="text-white/50 text-sm font-medium">{builtSoFar}/{totalToBuild} books · {pct}%</span><span className="text-white/60 text-xs">{mins>0?`~${mins} min remaining`:"Almost done…"}</span></div>
           <div className="h-2 bg-white/10 rounded-full overflow-hidden"><div className="h-full bg-gradient-to-r from-cyan-500 to-blue-500 rounded-full transition-all" style={{width:pct+"%"}}/></div>
-          {chTotal>0&&<p className="text-white/20 text-xs mt-2 text-center">{chDone}/{chTotal} chapters written</p>}
+          {chTotal>0&&<p className="text-white/50 text-xs mt-2 text-center">{chDone}/{chTotal} chapters written</p>}
         </div>);
       })()}
       {/* Live log */}
       {log.length>0&&(
-        <div className="bg-black/40 border border-white/10 rounded-2xl p-4 mb-6 max-h-48 overflow-y-auto">
-          <p className="text-white/30 text-xs uppercase tracking-wider mb-2">Build Log</p>
+        <div role="log" aria-live="polite" className="bg-black/40 border border-white/10 rounded-2xl p-4 mb-6 max-h-48 overflow-y-auto">
+          <p className="text-white/60 text-xs uppercase tracking-wider mb-2">Build Log</p>
           {log.map((l,i)=><p key={i} className="text-white/60 text-xs font-mono">[{l.time}] {l.msg}</p>)}
         </div>
       )}
@@ -4365,15 +4365,15 @@ function QueuePage({navigate,onSettings}){
               const isCurrent=id===currentId;
               return(
                 <div key={id} className={`flex items-center gap-3 bg-white/5 border rounded-xl px-4 py-3 ${isCurrent?"border-purple-500/50 bg-purple-500/10":"border-white/10"}`}>
-                  <span className="text-white/30 text-sm w-5 text-center">{i+1}</span>
+                  <span className="text-white/60 text-sm w-5 text-center">{i+1}</span>
                   {isCurrent&&<Spin size="h-4 w-4"/>}
                   <div className="flex-1 min-w-0">
                     <p className="text-white text-sm font-medium truncate">{b.title}</p>
-                    <p className="text-white/30 text-xs">{b.genre} · {b.chapters?.filter(c=>c.generated).length||0}/{b.chapters?.length||0} chapters</p>
+                    <p className="text-white/60 text-xs">{b.genre} · {b.chapters?.filter(c=>c.generated).length||0}/{b.chapters?.length||0} chapters</p>
                   </div>
                   <div className="flex gap-1 shrink-0">
-                    <button onClick={()=>moveUp(id)} disabled={i===0||running} className="w-7 h-7 text-white/30 hover:text-white disabled:opacity-20">↑</button>
-                    <button onClick={()=>moveDown(id)} disabled={i===queuedIds.length-1||running} className="w-7 h-7 text-white/30 hover:text-white disabled:opacity-20">↓</button>
+                    <button aria-label="Move book up in queue" onClick={()=>moveUp(id)} disabled={i===0||running} className="w-7 h-7 text-white/60 hover:text-white disabled:opacity-20">↑</button>
+                    <button aria-label="Move book down in queue" onClick={()=>moveDown(id)} disabled={i===queuedIds.length-1||running} className="w-7 h-7 text-white/60 hover:text-white disabled:opacity-20">↓</button>
                     <button onClick={()=>removeFromQueue(id)} disabled={running} className="w-7 h-7 text-red-400/40 hover:text-red-400 disabled:opacity-20">✕</button>
                   </div>
                 </div>
@@ -4387,7 +4387,7 @@ function QueuePage({navigate,onSettings}){
       <div>
         <p className="text-white/40 text-xs uppercase tracking-wider mb-3">Add Books to Queue</p>
         {eligibleBooks.length===0
-          ?<div className="text-center py-10 text-white/20"><p>All books are complete or published.</p><button onClick={()=>setQueueState(getQueue())} className="mt-2 text-purple-400 text-sm hover:text-purple-300">Refresh</button></div>
+          ?<div className="text-center py-10 text-white/50"><p>All books are complete or published.</p><button onClick={()=>setQueueState(getQueue())} className="mt-2 text-purple-400 text-sm hover:text-purple-300">Refresh</button></div>
           :<div className="space-y-2">
             {eligibleBooks.map(b=>{
               const inQueue=queuedIds.includes(b.id);
@@ -4395,7 +4395,7 @@ function QueuePage({navigate,onSettings}){
                 <div key={b.id} className="flex items-center gap-3 bg-white/5 border border-white/10 rounded-xl px-4 py-3">
                   <div className="flex-1 min-w-0">
                     <p className="text-white text-sm font-medium truncate">{b.title}</p>
-                    <p className="text-white/30 text-xs">{b.genre} · {b.chapters?.filter(c=>c.generated).length||0}/{b.chapters?.length||"?"} chapters written</p>
+                    <p className="text-white/60 text-xs">{b.genre} · {b.chapters?.filter(c=>c.generated).length||0}/{b.chapters?.length||"?"} chapters written</p>
                   </div>
                   <button onClick={()=>inQueue?removeFromQueue(b.id):addToQueue(b.id)} disabled={running}
                     className={`text-xs px-3 py-1.5 rounded-lg border transition-all disabled:opacity-40 ${inQueue?"border-red-500/40 text-red-400 hover:bg-red-500/10":"border-purple-500/40 text-purple-300 hover:bg-purple-500/10"}`}>
@@ -4641,11 +4641,11 @@ function SeriesPage({navigate,onSettings}){
       {continuityId&&<SeriesContinuityModal seriesId={continuityId} onClose={()=>setContinuity(null)}/>}
       {/* World Bible Modal */}
       {bibleSeries&&(
-        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4 bf-modal" role="dialog" aria-modal="true">
           <div className="bg-slate-800 border border-cyan-500/30 rounded-2xl max-w-3xl w-full max-h-[85vh] overflow-y-auto shadow-2xl">
             <div className="sticky top-0 bg-slate-800 border-b border-white/10 px-6 py-4 flex items-center justify-between">
               <div><h2 className="text-white font-bold text-lg">📖 Series Bible</h2><p className="text-cyan-300 text-sm">{bibleSeries.name}</p></div>
-              <button onClick={()=>setViewBible(null)} className="text-white/30 hover:text-white text-2xl">✕</button>
+              <button onClick={()=>setViewBible(null)} className="text-white/60 hover:text-white text-2xl">✕</button>
             </div>
             <div className="p-6 space-y-5">
               {bibleSeries.plan?.series_description&&<div><h3 className="text-cyan-300 text-xs uppercase tracking-wider font-semibold mb-2">Overview</h3><p className="text-white/70 text-sm leading-relaxed">{bibleSeries.plan.series_description}</p></div>}
@@ -4653,8 +4653,8 @@ function SeriesPage({navigate,onSettings}){
               {bibleSeries.plan?.world_setting&&<div><h3 className="text-cyan-300 text-xs uppercase tracking-wider font-semibold mb-2">World & Setting</h3><p className="text-white/70 text-sm leading-relaxed">{bibleSeries.plan.world_setting}</p></div>}
               {bibleSeries.plan?.world_rules?.length>0&&<div><h3 className="text-cyan-300 text-xs uppercase tracking-wider font-semibold mb-2">World Rules & Lore</h3><ul className="space-y-1">{bibleSeries.plan.world_rules.map((r,i)=><li key={i} className="text-white/60 text-sm flex gap-2"><span className="text-cyan-400">•</span>{r}</li>)}</ul></div>}
               {bibleSeries.plan?.tone_style&&<div><h3 className="text-cyan-300 text-xs uppercase tracking-wider font-semibold mb-2">Tone & Style</h3><p className="text-white/70 text-sm">{bibleSeries.plan.tone_style}</p></div>}
-              {bibleSeries.character_roster?.length>0&&<div><h3 className="text-cyan-300 text-xs uppercase tracking-wider font-semibold mb-3">Character Roster ({bibleSeries.character_roster.length})</h3><div className="space-y-3">{bibleSeries.character_roster.map((c,i)=><div key={i} className="bg-white/5 border border-white/10 rounded-xl p-4"><div className="flex items-center gap-2 mb-1"><span className="text-white font-semibold text-sm">{c.name}</span>{c.role&&<span className="text-xs bg-purple-500/20 text-purple-300 px-2 py-0.5 rounded-full border border-purple-500/30">{c.role}</span>}<span className="text-xs text-white/25">· {c.first_appears}</span></div>{c.description&&<p className="text-white/55 text-xs leading-relaxed mb-1">{c.description}</p>}{c.arc&&<p className="text-cyan-300/50 text-xs italic">{c.arc}</p>}</div>)}</div></div>}
-              {bibleSeries.world_locations?.length>0&&<div><h3 className="text-cyan-300 text-xs uppercase tracking-wider font-semibold mb-3">Locations</h3><div className="space-y-2">{bibleSeries.world_locations.map((l,i)=><div key={i} className="bg-white/5 border border-white/10 rounded-xl p-4"><p className="text-white font-semibold text-sm mb-1">{l.name}<span className="text-white/25 text-xs font-normal ml-2">· {l.first_appears}</span></p>{l.description&&<p className="text-white/55 text-xs leading-relaxed">{l.description}</p>}</div>)}</div></div>}
+              {bibleSeries.character_roster?.length>0&&<div><h3 className="text-cyan-300 text-xs uppercase tracking-wider font-semibold mb-3">Character Roster ({bibleSeries.character_roster.length})</h3><div className="space-y-3">{bibleSeries.character_roster.map((c,i)=><div key={i} className="bg-white/5 border border-white/10 rounded-xl p-4"><div className="flex items-center gap-2 mb-1"><span className="text-white font-semibold text-sm">{c.name}</span>{c.role&&<span className="text-xs bg-purple-500/20 text-purple-300 px-2 py-0.5 rounded-full border border-purple-500/30">{c.role}</span>}<span className="text-xs text-white/50">· {c.first_appears}</span></div>{c.description&&<p className="text-white/55 text-xs leading-relaxed mb-1">{c.description}</p>}{c.arc&&<p className="text-cyan-300/50 text-xs italic">{c.arc}</p>}</div>)}</div></div>}
+              {bibleSeries.world_locations?.length>0&&<div><h3 className="text-cyan-300 text-xs uppercase tracking-wider font-semibold mb-3">Locations</h3><div className="space-y-2">{bibleSeries.world_locations.map((l,i)=><div key={i} className="bg-white/5 border border-white/10 rounded-xl p-4"><p className="text-white font-semibold text-sm mb-1">{l.name}<span className="text-white/50 text-xs font-normal ml-2">· {l.first_appears}</span></p>{l.description&&<p className="text-white/55 text-xs leading-relaxed">{l.description}</p>}</div>)}</div></div>}
               {bibleSeries.plot_events?.length>0&&<div><h3 className="text-cyan-300 text-xs uppercase tracking-wider font-semibold mb-3">Series Timeline</h3><div className="space-y-2">{bibleSeries.plot_events.map((e,i)=><div key={i} className="flex gap-3"><span className="text-cyan-400/50 text-xs shrink-0 pt-0.5">[{e.book}]</span><p className="text-white/55 text-xs">{e.event}</p></div>)}</div></div>}
             </div>
           </div>
@@ -4698,7 +4698,7 @@ function SeriesPage({navigate,onSettings}){
               <div><label className="text-white/60 text-sm font-medium block mb-2">Number of Books *</label><select value={form.book_count} onChange={e=>setForm({...form,book_count:Number(e.target.value)})} className="w-full bg-white/10 border border-white/20 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-cyan-500 text-sm">{[2,3,4,5,6,7,8,9,10].map(n=><option key={n} value={n}>{n} Books</option>)}</select></div>
             </div>
             <div><label className="text-white/60 text-sm font-medium block mb-2">Series Concept *</label><textarea rows={3} value={form.concept} onChange={e=>setForm({...form,concept:e.target.value})} placeholder='E.g. "Standalone gay romance novels set in a competitive sports world, each book a different couple"' className="w-full bg-white/10 border border-white/20 rounded-xl px-4 py-3 text-white placeholder-white/25 focus:outline-none focus:border-cyan-500 resize-none text-sm"/></div>
-            <div><label className="text-white/60 text-sm font-medium block mb-2">Tone & Style <span className="text-white/25">(optional)</span></label><input value={form.tone} onChange={e=>setForm({...form,tone:e.target.value})} placeholder='E.g. "Steamy, emotionally intense, HEA guaranteed, slow burn"' className="w-full bg-white/10 border border-white/20 rounded-xl px-4 py-3 text-white placeholder-white/25 focus:outline-none focus:border-cyan-500 text-sm"/></div>
+            <div><label className="text-white/60 text-sm font-medium block mb-2">Tone & Style <span className="text-white/50">(optional)</span></label><input value={form.tone} onChange={e=>setForm({...form,tone:e.target.value})} placeholder='E.g. "Steamy, emotionally intense, HEA guaranteed, slow burn"' className="w-full bg-white/10 border border-white/20 rounded-xl px-4 py-3 text-white placeholder-white/25 focus:outline-none focus:border-cyan-500 text-sm"/></div>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div><label className="text-white/60 text-sm font-medium block mb-2">Genre *</label><select value={form.genre} onChange={e=>setForm({...form,genre:e.target.value})} className="w-full bg-white/10 border border-white/20 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-cyan-500 text-sm"><option value="">Select…</option>{GENRES.map(g=><option key={g} value={g}>{g}</option>)}</select></div>
               <div><label className="text-white/60 text-sm font-medium block mb-2">Target Audience *</label><select value={form.audience} onChange={e=>setForm({...form,audience:e.target.value})} className="w-full bg-white/10 border border-white/20 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-cyan-500 text-sm"><option value="">Select…</option>{AUDIENCES.map(a=><option key={a} value={a}>{a}</option>)}</select></div>
@@ -4733,13 +4733,13 @@ function SeriesPage({navigate,onSettings}){
                   <div className="flex items-center gap-2 shrink-0">
                     <button onClick={()=>setViewBible(series.id)} className="text-xs border border-cyan-500/40 text-cyan-300 px-3 py-2 rounded-lg hover:bg-cyan-500/10">📖 View Bible</button>
                     <button onClick={()=>setContinuity(series.id)} className="text-xs border border-emerald-500/40 text-emerald-300 px-3 py-2 rounded-lg hover:bg-emerald-500/10">🔍 Continuity</button>
-                    <button onClick={e=>deleteSeries(series.id,e)} className="text-white/20 hover:text-red-400 text-sm px-2">🗑</button>
+                    <button onClick={e=>deleteSeries(series.id,e)} className="text-white/50 hover:text-red-400 text-sm px-2">🗑</button>
                   </div>
                 </div>
-                {series.plan?.series_arc&&<div className="mt-4 bg-white/5 rounded-xl p-3"><p className="text-white/25 text-xs uppercase tracking-wider mb-1">Series Arc</p><p className="text-white/55 text-xs leading-relaxed">{series.plan.series_arc}</p></div>}
+                {series.plan?.series_arc&&<div className="mt-4 bg-white/5 rounded-xl p-3"><p className="text-white/50 text-xs uppercase tracking-wider mb-1">Series Arc</p><p className="text-white/55 text-xs leading-relaxed">{series.plan.series_arc}</p></div>}
               </div>
               <div className="p-4">
-                <p className="text-white/30 text-xs uppercase tracking-wider mb-3 px-2">Books in This Series</p>
+                <p className="text-white/60 text-xs uppercase tracking-wider mb-3 px-2">Books in This Series</p>
                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
                   {series.plan?.books?.map((bp,i)=>{
                     const existingBook=series.book_ids?.map(id=>getBook(id)).find(b=>b&&b.series_number===bp.number);
@@ -4750,7 +4750,7 @@ function SeriesPage({navigate,onSettings}){
                         {bp.subtitle&&<p className="text-purple-300/70 text-xs mb-1">{bp.subtitle}</p>}
                         {bp.character_focus&&<p className="text-cyan-300/50 text-xs mb-1">👥 {bp.character_focus}</p>}
                         <p className="text-white/35 text-xs leading-relaxed mb-3 line-clamp-3">{bp.description}</p>
-                        {existingBook?(<div className="space-y-2"><div className="flex items-center gap-2 flex-wrap"><span className={`text-xs px-2 py-0.5 rounded-full border ${existingBook.status==="published"?"bg-green-500/20 text-green-300 border-green-500/30":existingBook.status==="ready"?"bg-blue-500/20 text-blue-300 border-blue-500/30":"bg-purple-500/20 text-purple-300 border-purple-500/30"}`}>{existingBook.status}</span>{existingBook.word_count>0&&<span className="text-white/30 text-xs">{(existingBook.word_count||0).toLocaleString()}w</span>}{existingBook.review?.overall_score>=70&&<span className="text-xs text-amber-300/70">⭐ {existingBook.review.overall_score}</span>}</div><button onClick={()=>navigate("editor",existingBook.id)} className="w-full text-xs border border-white/20 text-white/50 py-2 rounded-lg hover:bg-white/5">Open Editor →</button></div>):<button onClick={()=>buildBook(series,bp)} className="w-full text-xs bg-gradient-to-r from-purple-500 to-pink-500 text-white py-2 rounded-lg hover:opacity-90">✨ Build This Book</button>}
+                        {existingBook?(<div className="space-y-2"><div className="flex items-center gap-2 flex-wrap"><span className={`text-xs px-2 py-0.5 rounded-full border ${existingBook.status==="published"?"bg-green-500/20 text-green-300 border-green-500/30":existingBook.status==="ready"?"bg-blue-500/20 text-blue-300 border-blue-500/30":"bg-purple-500/20 text-purple-300 border-purple-500/30"}`}>{existingBook.status}</span>{existingBook.word_count>0&&<span className="text-white/60 text-xs">{(existingBook.word_count||0).toLocaleString()}w</span>}{existingBook.review?.overall_score>=70&&<span className="text-xs text-amber-300/70">⭐ {existingBook.review.overall_score}</span>}</div><button onClick={()=>navigate("editor",existingBook.id)} className="w-full text-xs border border-white/20 text-white/50 py-2 rounded-lg hover:bg-white/5">Open Editor →</button></div>):<button onClick={()=>buildBook(series,bp)} className="w-full text-xs bg-gradient-to-r from-purple-500 to-pink-500 text-white py-2 rounded-lg hover:opacity-90">✨ Build This Book</button>}
                       </div>
                     );
                   })}
@@ -4812,7 +4812,7 @@ function HomePage({navigate,onSettings}){
           const publishReady=allBooks.filter(b=>b.review?.verdict==="PASS"&&b.manuscript_quality?.manuscript_verdict==="PASS").length;
           const wLabel=totalWords>=1000?Math.round(totalWords/1000)+"K":totalWords;
           return [{label:"Total Books",value:allBooks.length,icon:"📚",sub:null},{label:"Words Written",value:wLabel,icon:"✍️",sub:totalWords>0?Math.round(totalWords/250)+"pg est.":null},{label:"Publish Ready",value:publishReady,icon:"🚀",sub:publishReady>0?"Dual-gate passed":null},{label:"Published",value:allBooks.filter(b=>b.status==="published").length,icon:"🌟",sub:null}].map(s=>(
-            <div key={s.label} className="bg-white/5 border border-white/10 rounded-2xl p-4"><div className="text-2xl mb-1">{s.icon}</div><div className="text-white text-2xl font-bold">{s.value}</div><div className="text-white/40 text-xs">{s.label}</div>{s.sub&&<div className="text-white/20 text-xs mt-0.5">{s.sub}</div>}</div>
+            <div key={s.label} className="bg-white/5 border border-white/10 rounded-2xl p-4"><div className="text-2xl mb-1">{s.icon}</div><div className="text-white text-2xl font-bold">{s.value}</div><div className="text-white/40 text-xs">{s.label}</div>{s.sub&&<div className="text-white/50 text-xs mt-0.5">{s.sub}</div>}</div>
           ));
         })()}
       </div>
@@ -4850,10 +4850,10 @@ function HomePage({navigate,onSettings}){
                 <div className="p-5">
                   <h3 className="text-white font-bold text-base leading-tight mb-1 line-clamp-2">{book.title||"Untitled"}</h3>
                   {book.subtitle&&<p className="text-white/40 text-sm mb-2 line-clamp-1">{book.subtitle}</p>}
-                  <div className="flex items-center justify-between mt-2"><span className="text-white/25 text-xs">{book.genre}</span><span className="text-white/25 text-xs">{book.word_count?`${Number(book.word_count).toLocaleString()} words · ~${Math.ceil(book.word_count/200)}min`:"0 words"}</span></div>
+                  <div className="flex items-center justify-between mt-2"><span className="text-white/50 text-xs">{book.genre}</span><span className="text-white/50 text-xs">{book.word_count?`${Number(book.word_count).toLocaleString()} words · ~${Math.ceil(book.word_count/200)}min`:"0 words"}</span></div>
                   {book.auto_build&&!book.build_complete&&<p className="text-cyan-400 text-xs mt-2 truncate animate-pulse">🔄 {book.build_step||"Building…"}</p>}
                   {book.build_complete&&<p className={`text-xs mt-2 ${book.gates_passed?"text-green-400":"text-amber-400"}`}>{book.gates_passed?"✅ Ready to publish":"⚠️ Review needed"}</p>}
-                  {book.chapters?.length>0&&<div className="mt-3"><div className="h-1 bg-white/10 rounded-full overflow-hidden"><div className="h-full bg-gradient-to-r from-purple-500 to-pink-500 rounded-full" style={{width:`${pct(book)}%`}}/></div><p className="text-white/20 text-xs mt-1">{book.chapters.filter(c=>c.generated).length}/{book.chapters.length} chapters</p></div>}
+                  {book.chapters?.length>0&&<div className="mt-3"><div className="h-1 bg-white/10 rounded-full overflow-hidden"><div className="h-full bg-gradient-to-r from-purple-500 to-pink-500 rounded-full" style={{width:`${pct(book)}%`}}/></div><p className="text-white/50 text-xs mt-1">{book.chapters.filter(c=>c.generated).length}/{book.chapters.length} chapters</p></div>}
                 </div>
               </div>
               <button onClick={e=>dup(book.id,e)} aria-label="Duplicate book" className="absolute top-2 right-2 w-7 h-7 bg-purple-500/80 hover:bg-purple-600 rounded-full text-white text-xs opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center shadow" title="Duplicate">📋</button><button onClick={e=>del(book.id,e)} aria-label="Delete book" className="absolute top-2 left-2 w-7 h-7 bg-red-500/80 hover:bg-red-600 rounded-full text-white text-xs opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center shadow">✕</button>
@@ -5004,7 +5004,7 @@ setOutline(_ol);setPendingPremise(null);setStep(2);
   };
   return(
     <div className="max-w-3xl mx-auto px-4 sm:px-6 py-8">
-      <div className="flex items-center gap-3 mb-8">{["Book Concept","Review & Approve"].map((label,i)=>(<div key={i} className="flex items-center gap-2"><div className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold ${step>i+1?"bg-green-500 text-white":step===i+1?"bg-purple-500 text-white":"bg-white/10 text-white/30"}`}>{step>i+1?"✓":i+1}</div><span className={`text-sm ${step===i+1?"text-white":"text-white/30"}`}>{label}</span>{i<1&&<div className="w-10 h-px bg-white/20 mx-1"/>}</div>))}</div>
+      <div className="flex items-center gap-3 mb-8">{["Book Concept","Review & Approve"].map((label,i)=>(<div key={i} className="flex items-center gap-2"><div className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold ${step>i+1?"bg-green-500 text-white":step===i+1?"bg-purple-500 text-white":"bg-white/10 text-white/60"}`}>{step>i+1?"✓":i+1}</div><span className={`text-sm ${step===i+1?"text-white":"text-white/60"}`}>{label}</span>{i<1&&<div className="w-10 h-px bg-white/20 mx-1"/>}</div>))}</div>
       {error&&<div className="bg-red-500/20 border border-red-500/30 text-red-300 rounded-xl p-4 mb-5 text-sm">{error}</div>}
       {step===1&&(
         <Card>
@@ -5048,9 +5048,9 @@ setOutline(_ol);setPendingPremise(null);setStep(2);
             ):(
               <div>
                 <label className="text-white/70 text-sm font-medium block mb-2">Paste Your Draft / Notes *</label>
-                <p className="text-white/30 text-xs mb-2">Paste any existing writing — partial manuscript, notes, outline, chapter drafts. AI builds a polished outline from it.</p>
+                <p className="text-white/60 text-xs mb-2">Paste any existing writing — partial manuscript, notes, outline, chapter drafts. AI builds a polished outline from it.</p>
                 <textarea rows={8} placeholder="Paste your draft, notes, partial chapters, or outline here..." value={importText} onChange={e=>setImportText(e.target.value)} className="w-full bg-white/10 border border-white/20 rounded-xl px-4 py-3 text-white placeholder-white/20 focus:outline-none focus:border-purple-500 resize-none text-sm font-mono"/>
-                <p className="text-white/20 text-xs mt-1">{importText.length.toLocaleString()} chars pasted</p>
+                <p className="text-white/50 text-xs mt-1">{importText.length.toLocaleString()} chars pasted</p>
               </div>
             )}
             <div><label className="text-white/70 text-sm font-medium block mb-3">Genre *</label><div className="grid grid-cols-2 sm:grid-cols-3 gap-2">{GENRES.map(g=><button key={g} onClick={()=>setForm({...form,genre:g})} className={`text-xs px-3 py-2 rounded-lg border text-left transition-all ${form.genre===g?"border-purple-500 bg-purple-500/25 text-white":"border-white/15 text-white/40 hover:border-white/30 hover:text-white/70"}`}>{g}</button>)}</div></div>
@@ -5063,7 +5063,7 @@ setOutline(_ol);setPendingPremise(null);setStep(2);
                 </select>
               </div>
               <div>
-                <label className="text-white/70 text-sm font-medium block mb-2">Style Notes <span className="text-white/25">(optional)</span></label>
+                <label className="text-white/70 text-sm font-medium block mb-2">Style Notes <span className="text-white/50">(optional)</span></label>
                 <input value={form.style} onChange={e=>setForm({...form,style:e.target.value})} placeholder='E.g. "gritty, dark humor, Cormac McCarthy-esque"' className="w-full bg-white/10 border border-white/20 rounded-xl px-4 py-3 text-white placeholder-white/20 focus:outline-none focus:border-purple-500 text-sm"/>
               </div>
             </div>
@@ -5092,7 +5092,7 @@ setOutline(_ol);setPendingPremise(null);setStep(2);
                       <input type="number" min="5" max="60" value={form.custom_chapters_min}
                         onChange={e=>setForm(f=>({...f,custom_chapters_min:parseInt(e.target.value)||5}))}
                         className="w-20 bg-white/5 border border-white/10 rounded-lg px-2 py-1.5 text-white text-sm focus:outline-none focus:border-purple-500"/>
-                      <span className="text-white/30 text-xs">to</span>
+                      <span className="text-white/60 text-xs">to</span>
                       <input type="number" min="5" max="60" value={form.custom_chapters_max}
                         onChange={e=>setForm(f=>({...f,custom_chapters_max:parseInt(e.target.value)||5}))}
                         className="w-20 bg-white/5 border border-white/10 rounded-lg px-2 py-1.5 text-white text-sm focus:outline-none focus:border-purple-500"/>
@@ -5104,7 +5104,7 @@ setOutline(_ol);setPendingPremise(null);setStep(2);
                       <input type="number" min="500" max="10000" step="100" value={form.custom_words_min}
                         onChange={e=>setForm(f=>({...f,custom_words_min:parseInt(e.target.value)||500}))}
                         className="w-24 bg-white/5 border border-white/10 rounded-lg px-2 py-1.5 text-white text-sm focus:outline-none focus:border-purple-500"/>
-                      <span className="text-white/30 text-xs">to</span>
+                      <span className="text-white/60 text-xs">to</span>
                       <input type="number" min="500" max="10000" step="100" value={form.custom_words_max}
                         onChange={e=>setForm(f=>({...f,custom_words_max:parseInt(e.target.value)||500}))}
                         className="w-24 bg-white/5 border border-white/10 rounded-lg px-2 py-1.5 text-white text-sm focus:outline-none focus:border-purple-500"/>
@@ -5123,7 +5123,7 @@ setOutline(_ol);setPendingPremise(null);setStep(2);
                 const pagesMin=Math.round(chMin*wMin/250);
                 const pagesMax=Math.round(chMax*wMax/250);
                 return(
-                  <p className="text-white/30 text-xs mt-2">
+                  <p className="text-white/60 text-xs mt-2">
                     Est. {chMin}–{chMax} chapters · {estMin}K–{estMax}K words · ~{pagesMin}–{pagesMax} pages
                   </p>
                 );
@@ -5140,7 +5140,7 @@ setOutline(_ol);setPendingPremise(null);setStep(2);
             <div className="bg-white/5 rounded-xl p-4 mb-5"><p className="text-white/40 text-xs uppercase tracking-wider mb-2">Description</p><p className="text-white/80 text-sm leading-relaxed">{outline.description}</p></div>
             <p className="text-white/40 text-xs uppercase tracking-wider mb-3">Chapters ({outline.chapters?.length})</p>
             <div className="space-y-2 max-h-72 overflow-y-auto pr-1">{outline.chapters?.map((ch,i)=><div key={i} className="bg-white/5 rounded-lg px-4 py-3 flex gap-3"><span className="text-purple-400 font-bold text-sm min-w-[24px]">{ch.number}.</span><div><p className="text-white text-sm font-medium">{ch.title}</p>{ch.description&&<p className="text-white/35 text-xs mt-0.5">{ch.description}</p>}</div></div>)}</div>
-            {outline.estimated_word_count&&<p className="text-white/30 text-sm mt-4">📊 ~{outline.estimated_word_count.toLocaleString()} words</p>}
+            {outline.estimated_word_count&&<p className="text-white/60 text-sm mt-4">📊 ~{outline.estimated_word_count.toLocaleString()} words</p>}
           </Card>
           <div className="bg-gradient-to-br from-purple-900/60 to-pink-900/40 border border-purple-500/30 rounded-2xl p-6">
             <h3 className="text-white font-bold text-lg mb-1">🚀 Approve & Auto-Build</h3>
@@ -5296,6 +5296,48 @@ async function genCoverImage(prompt,opts={}){
   });
 }
 
+// ── Chapter Version History ─────────────────────────────────────────────────
+// Snapshots live on the chapter itself (ch.versions, capped) so they persist with
+// the book in IndexedDB. Restore swaps current content back in (undo-of-undo works).
+const MAX_CH_VERSIONS=3;
+function withVersionSnapshot(ch,reason){
+  try{
+    if(!ch||!ch.content)return ch; // nothing to save (fresh chapter)
+    const v=Array.isArray(ch.versions)?ch.versions:[];
+    if(v[0]&&v[0].content===ch.content)return {...ch,versions:v}; // no change since last snapshot
+    const nv=[{content:ch.content,ts:Date.now(),reason:reason||"edit"},...v].slice(0,MAX_CH_VERSIONS);
+    return {...ch,versions:nv};
+  }catch(e){return ch;}
+}
+function restoreChapterVersion(ch){
+  try{
+    if(!ch||!Array.isArray(ch.versions)||!ch.versions.length)return ch;
+    const snap=ch.versions[0];
+    let keep=ch.versions.slice(1);
+    if(snap.content!==ch.content)keep=[{content:ch.content,ts:Date.now(),reason:"before restore"},...keep].slice(0,MAX_CH_VERSIONS);
+    return {...ch,content:snap.content,versions:keep};
+  }catch(e){return ch;}
+}
+
+// ── Accessibility: focus trap for open modals (.bf-modal) ──────────────────
+// Keeps Tab/Shift+Tab cycling inside the topmost open modal. Escape closing is
+// handled by the existing global [data-close-btn] keydown listener.
+function installFocusTrap(){
+  document.addEventListener("keydown",(e)=>{
+    if(e.key!=="Tab")return;
+    const modals=[...document.querySelectorAll(".bf-modal")].filter(m=>m.offsetParent!==null);
+    const top=modals[modals.length-1];
+    if(!top)return;
+    const f=[...top.querySelectorAll('a[href],button:not([disabled]),textarea:not([disabled]),input:not([disabled]),select:not([disabled]),[tabindex]:not([tabindex="-1"])')].filter(el=>el.offsetParent!==null);
+    if(!f.length)return;
+    const first=f[0],last=f[f.length-1];
+    const ae=document.activeElement;
+    if(e.shiftKey&&(ae===first||!top.contains(ae))){e.preventDefault();last.focus();}
+    else if(!e.shiftKey&&(ae===last||!top.contains(ae))){e.preventDefault();first.focus();}
+  },true);
+}
+installFocusTrap();
+
 function ChapterEditor({book,chIdx,upd}){
   const ch=book.chapters?.[chIdx];
   const [editing,setEditing]=useState(false);
@@ -5323,7 +5365,7 @@ function ChapterEditor({book,chIdx,upd}){
 
   const save=()=>{
     const chapters=[...(book.chapters||[])];
-    chapters[chIdx]={...chapters[chIdx],content:draft,generated:true};
+    chapters[chIdx]=draft!==(chapters[chIdx]?.content||"")?{...withVersionSnapshot(chapters[chIdx],"manual edit"),content:draft,generated:true}:{...chapters[chIdx],content:draft,generated:true};
     const wc=chapters.reduce((a,c)=>a+(c.content?c.content.split(/\s+/).length:0),0);
     const allDone=chapters.every(c=>c.generated);
     const curB=typeof getBook==="function"?getBook(book.id):null;
@@ -5332,6 +5374,16 @@ function ChapterEditor({book,chIdx,upd}){
       :{};
     upd({chapters,word_count:wc,...extraStamps});
     setEditing(false);
+  };
+
+  // Restore the most recent version snapshot (undo-of-undo is possible)
+  const restoreVersion=()=>{
+    const chapters=[...(book.chapters||[])];
+    if(!chapters[chIdx]||!chapters[chIdx].versions?.length)return;
+    chapters[chIdx]=restoreChapterVersion(chapters[chIdx]);
+    const wc=chapters.reduce((a,c)=>a+(c.content?c.content.split(/\s+/).length:0),0);
+    upd({chapters,word_count:wc});
+    setDraft(chapters[chIdx].content);
   };
 
   // Paragraph-level rewrite
@@ -5358,7 +5410,7 @@ function ChapterEditor({book,chIdx,upd}){
       // Immediately persist the rewrite — don't wait for autosave
       const chapters=[...(book.chapters||[])];
       if(chapters[chIdx]){
-        chapters[chIdx]={...chapters[chIdx],content:newContent};
+        chapters[chIdx]={...withVersionSnapshot(chapters[chIdx],"proofread fix"),content:newContent};
         const wc=chapters.reduce((a,c)=>a+(c.content?c.content.split(/\s+/).length:0),0);
         updateBook(book.id,{chapters,word_count:wc});
       }
@@ -5433,11 +5485,12 @@ function ChapterEditor({book,chIdx,upd}){
           return(<>
             <span className="text-white/40 text-xs">{wc.toLocaleString()} words</span>
             {target>0&&<span className={`text-xs font-medium ${color}`}>{pct}% of {target.toLocaleString()} target</span>}
-            {wc>0&&<span className="text-white/25 text-xs">~{Math.ceil(wc/200)} min read</span>}
+            {wc>0&&<span className="text-white/50 text-xs">~{Math.ceil(wc/200)} min read</span>}
           </>);
         })()}
         </div>
         <div className="flex gap-2">
+          {ch?.versions?.length>0&&<button onClick={restoreVersion} title={ch.versions.map(v=>new Date(v.ts).toLocaleString()+" — "+v.reason).join("\n")} aria-label={"Restore previous version ("+ch.versions.length+" saved)"} className="text-xs px-3 py-1.5 rounded-lg bg-amber-500/10 text-amber-300 border border-amber-500/20 hover:bg-amber-500/20 transition-all">↩️ Restore ({ch.versions.length})</button>}
           <button onClick={runProofread} disabled={proofreading||!ch?.content} className="text-xs px-3 py-1.5 rounded-lg bg-blue-500/10 text-blue-300 border border-blue-500/20 hover:bg-blue-500/20 transition-all disabled:opacity-40">{proofreading?"⏳ Checking…":"🔍 Proofread"}</button>
           <button onClick={()=>{setDraft(ch?.content||"");setEditing(true);}} className="text-xs px-3 py-1.5 rounded-lg bg-white/5 text-white/50 border border-white/10 hover:bg-white/10 hover:text-white/80 transition-all">✏️ Edit & Rewrite</button>
         </div>
@@ -5447,7 +5500,7 @@ function ChapterEditor({book,chIdx,upd}){
         <div className="mb-3 p-3 bg-blue-500/5 border border-blue-500/15 rounded-xl">
           <div className="flex items-center justify-between mb-2">
             <p className="text-blue-300 text-xs font-medium">{proofResults.length===0?"✅ No issues found!":`📋 ${proofResults.length} potential issue${proofResults.length===1?"":"s"} found`}</p>
-            <button onClick={()=>setProofResults(null)} className="text-white/30 hover:text-white/60 text-xs">✕</button>
+            <button onClick={()=>setProofResults(null)} className="text-white/60 hover:text-white/60 text-xs">✕</button>
           </div>
           {proofResults.length>0&&(
             <div className="space-y-2 max-h-48 overflow-y-auto pr-1">
@@ -5464,7 +5517,7 @@ function ChapterEditor({book,chIdx,upd}){
       )}
       {(ch?.opening_hook||ch?.notes)&&(
         <details className="mb-3">
-          <summary className="text-white/30 text-xs cursor-pointer hover:text-white/50 select-none">📋 Chapter brief</summary>
+          <summary className="text-white/60 text-xs cursor-pointer hover:text-white/50 select-none">📋 Chapter brief</summary>
           <div className="mt-2 p-3 bg-white/5 border border-white/8 rounded-xl space-y-1.5">
             {ch?.opening_hook&&<p className="text-white/40 text-xs"><span className="text-purple-400/70 font-medium">Hook: </span>{ch.opening_hook}</p>}
             {ch?.notes&&<p className="text-white/40 text-xs"><span className="text-blue-400/70 font-medium">Notes: </span>{ch.notes}</p>}
@@ -5592,7 +5645,7 @@ function EditorPage({bookId,navigate,onSettings}){
           const nonfictionNote=b.nonfiction_mode?"\n\nNONFICTION MODE: End the chapter with a clearly marked Exercise, Reflection question, and Action Step.":"";
           const content=await callAIStream(`Write Chapter ${chapters[i].number}: "${chapters[i].title}" for a ${b.genre} book titled "${outline.title}".${seriesCtx}${voiceCtx}${charCtx}${langNote}${nonfictionNote}\n\nChapter: ${chapters[i].description}\nPrevious: ${prev}\nAudience: ${b.target_audience}\n\n${(()=>{const tw=chapters[i]?.target_words||3800;return `${Math.round(tw*0.75).toLocaleString()}–${tw.toLocaleString()} words`;})()}. Match genre tone precisely.\n\nSTRUCTURE:\n• 3-5 distinct scenes per chapter, separated by: ⁂\n• Each scene has a clear goal → obstacle → outcome\n• Chapter must END on a hook, unresolved tension, or revelation that forces reading on\n• DO NOT wrap up cleanly — the best chapters end mid-breath\n\nWRITING RULES — violating these will get this chapter rejected:\n• NEVER start a sentence with 'He/She/They couldn't help but', 'In that moment', 'It dawned on', 'Something about the way', 'A wave of', 'A surge of'\n• NEVER state emotions directly ('he felt sad', 'warmth spread through her') — express through physical action, dialogue, or specific sensory detail\n• NEVER use em-dashes for dramatic effect more than once per page\n• VARY sentence length violently: one-word sentences. Fragments. Then a long, breathing sentence that winds through a scene and refuses to end neatly.\n• Dialogue must be messy and human: people talk past each other, leave things half-said, interrupt, change subject\n• Use SPECIFIC details: not 'the coffee shop smelled like coffee' but the burnt-sugar smell of the espresso machine at 6am, the sticky ring on the table from someone's iced latte\n• No clean emotional resolutions — conflict leaves residue\n• Character psychology must be specific, not convenient\n• Read like a novel — no chapter summaries, no scene headers, no markdown`,0.85,{task:"creative",onStream:rafThrottle(t=>setStreamText(t))});
           setStreamText(null);
-          bump();chapters[i]={...chapters[i],content,generated:true};
+          bump();chapters[i]={...withVersionSnapshot(chapters[i],"auto-build rewrite"),content,generated:true};
           const wc=chapters.reduce((a,c)=>a+(c.content?c.content.split(/\s+/).length:0),0);
           updateBook(bookId,{chapters:[...chapters],word_count:wc});setBook(getBook(bookId));
           if(b.series_id&&getUsage()<DAILY_LIMIT-2){try{
@@ -5716,7 +5769,7 @@ function EditorPage({bookId,navigate,onSettings}){
                   rewritesApplied++;
                 }
               }
-              return {...ch,content};
+              return content===ch.content?ch:{...withVersionSnapshot(ch,"AI rewrite (Improve My Writing)"),content};
             });
             if(rewritesApplied>0){
               log(`  ✍️ Applied ${rewritesApplied} rewrite fixes across manuscript…`);
@@ -5775,7 +5828,7 @@ function EditorPage({bookId,navigate,onSettings}){
       const langNote=fb.writing_language&&fb.writing_language!=="English"?`\n\nWRITE IN: ${fb.writing_language}`:"";
       const nfNote=fb.nonfiction_mode?"\n\nEnd with: Exercise, Reflection, Action Step.":"";
       const content=await callAIStream(`Write Chapter ${ch.number}: "${ch.title}" for a ${fb.genre} book titled "${outline.title}".${seriesCtx}${voiceCtx}${charCtx}${langNote}${nfNote}\n\nDesc: ${ch.description}\nPrevious: ${prev}\nAudience: ${fb.target_audience}\n\n${(()=>{const tw=fb.chapters?.[idx]?.target_words||3800;return `${Math.round(tw*0.75).toLocaleString()}–${tw.toLocaleString()} words`;})()}. Match genre tone.\n\nSTRUCTURE:\n• 3-5 distinct scenes per chapter, separated by: ⁂\n• Each scene has a clear goal → obstacle → outcome\n• Chapter must END on a hook, unresolved tension, or revelation that forces reading on\n• DO NOT wrap up cleanly — the best chapters end mid-breath\n\nWRITING RULES — violating these will get this chapter rejected:\n• NEVER start a sentence with 'He/She/They couldn't help but', 'In that moment', 'It dawned on', 'Something about the way', 'A wave of', 'A surge of'\n• NEVER state emotions directly ('he felt sad', 'warmth spread through her') — express through physical action, dialogue, or specific sensory detail\n• NEVER use em-dashes for dramatic effect more than once per page\n• VARY sentence length violently: one-word sentences. Fragments. Then a long, breathing sentence that winds through a scene and refuses to end neatly.\n• Dialogue must be messy and human: people talk past each other, leave things half-said, interrupt, change subject\n• Use SPECIFIC details: not 'the coffee shop smelled like coffee' but the burnt-sugar smell of the espresso machine at 6am, the sticky ring on the table from someone's iced latte\n• No clean emotional resolutions — conflict leaves residue\n• Character psychology must be specific, not convenient\n• Read like a novel — no chapter summaries, no scene headers, no markdown`,0.85,{task:"creative",onStream:rafThrottle(t=>setStreamText(t))});
-      bump();const chapters=[...(fb.chapters||[])];chapters[idx]={...chapters[idx],content,generated:true};
+      bump();const chapters=[...(fb.chapters||[])];chapters[idx]={...withVersionSnapshot(chapters[idx],"AI chapter write"),content,generated:true};
       const wc=chapters.reduce((a,c)=>a+(c.content?c.content.split(/\s+/).length:0),0);
       // If all chapters now done + pipeline already ran → auto-stamp build_complete
       const allDone=chapters.every(c=>c.generated);
@@ -6008,14 +6061,23 @@ const genCover=async()=>{if(quotaHit||isBuilding)return;setBusy(true);setError("
   const reviewScore=book.review?.overall_score;
   const writingPassed=book.manuscript_quality?.manuscript_verdict==="PASS";
   const writingScore=book.manuscript_quality?.overall_human_score;
+  // Accessibility: arrow-key navigation across the tab bar (roving tabindex)
+  const onTabBarKey=(e)=>{
+    if(e.key!=="ArrowRight"&&e.key!=="ArrowLeft")return;
+    e.preventDefault();
+    const nn=TABS.length;
+    const next=e.key==="ArrowRight"?(tab+1)%nn:(tab-1+nn)%nn;
+    setTab(next);
+    requestAnimationFrame(()=>{const b=document.querySelector('[data-tab-btn="'+next+'"]');if(b)b.focus();});
+  };
 
   return(
     <div>
       {showTrailer&&<TrailerStudio book={book} onClose={()=>setShowTrailer(false)}/>}
       <div className="border-b border-white/10 bg-black/10">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 flex gap-1 overflow-x-auto">
+        <div role="tablist" aria-label="Book sections" onKeyDown={onTabBarKey} className="max-w-7xl mx-auto px-4 sm:px-6 flex gap-1 overflow-x-auto">
           {TABS.map((t,i)=>(
-            <button key={i} onClick={()=>setTab(i)} className={`px-3 py-2.5 text-xs sm:text-sm font-medium whitespace-nowrap rounded-t-lg transition-all relative ${tab===i?"bg-white/10 text-white border-b-2 border-purple-500":"text-white/35 hover:text-white/70"}`}>
+            <button key={i} role="tab" aria-selected={tab===i} tabIndex={tab===i?0:-1} data-tab-btn={i} onClick={()=>setTab(i)} className={`px-3 py-2.5 text-xs sm:text-sm font-medium whitespace-nowrap rounded-t-lg transition-all relative ${tab===i?"bg-white/10 text-white border-b-2 border-purple-500":"text-white/35 hover:text-white/70"}`}>
               {t}
               {i===4&&book.review&&<span className={`ml-1 text-xs font-bold ${reviewPassed?"text-green-400":"text-red-400"}`}>{reviewScore}</span>}
               {i===8&&book.manuscript_quality&&<span className={`ml-1 text-xs font-bold ${writingPassed?"text-green-400":"text-red-400"}`}>{writingScore}</span>}
@@ -6040,16 +6102,16 @@ const genCover=async()=>{if(quotaHit||isBuilding)return;setBusy(true);setError("
               ["🪝","Hooks",!!book.hooks_done],
               ["📊","Writing",!!book.wq_done],
             ].map(([icon,label,done])=>(
-              <div key={label} className={`flex items-center gap-1 rounded-lg px-2 py-1 text-xs ${done?"bg-green-500/20 text-green-300":"bg-white/5 text-white/30"}`}>
+              <div key={label} className={`flex items-center gap-1 rounded-lg px-2 py-1 text-xs ${done?"bg-green-500/20 text-green-300":"bg-white/5 text-white/60"}`}>
                 <span>{done?"✅":icon}</span><span className="truncate">{label}</span>
               </div>
             ))}
           </div>
-          <div className="space-y-1 max-h-24 overflow-y-auto">{buildLog.slice(-5).map((l,i)=><p key={i} className="text-purple-200/50 text-xs">{l}</p>)}</div>
+          <div role="log" aria-live="polite" className="space-y-1 max-h-24 overflow-y-auto">{buildLog.slice(-5).map((l,i)=><p key={i} className="text-purple-200/50 text-xs">{l}</p>)}</div>
         </div>}
         {quotaHit&&<div className="bg-amber-500/20 border border-amber-500/40 rounded-xl p-4 mb-5 flex gap-3 items-start"><span className="text-2xl">⏳</span><div className="flex-1"><p className="text-amber-300 font-semibold">Daily Gemini Limit Reached</p><p className="text-amber-200/60 text-sm mt-0.5">Resets at midnight Pacific Time. All progress saved!</p></div><button onClick={()=>{setQuotaHit(false);setError("");}} className="text-amber-400/40 hover:text-amber-300">✕</button></div>}
         {error&&!quotaHit&&<div className="bg-red-500/20 border border-red-500/30 text-red-300 rounded-xl p-4 mb-5 text-sm flex items-center justify-between gap-3"><span className="flex-1">{error}</span><div className="flex items-center gap-2 shrink-0">{(book?.chapters?.length>0||book?.needs_outline)&&!isBuilding&&<button onClick={()=>{setError("");upd({auto_build:true});runAutoBuild(getBook(bookId));}} className="bg-cyan-500/20 border border-cyan-500/40 text-cyan-300 text-xs font-bold px-3 py-1.5 rounded-lg hover:bg-cyan-500/30">🔄 Retry</button>}<button onClick={()=>setError("")} className="text-red-300/60 hover:text-red-300">✕</button></div></div>}
-        {success&&<div className="bg-green-500/20 border border-green-500/30 text-green-300 rounded-xl p-4 mb-5 text-sm">{success}</div>}
+        {success&&<div role="status" aria-live="polite" className="bg-green-500/20 border border-green-500/30 text-green-300 rounded-xl p-4 mb-5 text-sm">{success}</div>}
         {!isBuilding&&!quotaHit&&book&&!book.build_complete&&!book.auto_build&&(book.needs_outline||(book.chapters?.length>0&&book.chapters.some(c=>!c.generated)))&&(
           <div className="bg-cyan-500/10 border border-cyan-500/30 rounded-xl p-4 mb-5 text-sm flex items-center justify-between gap-3">
             <span className="text-cyan-200">⏸️ This book's build stopped partway — {book.needs_outline?"outline not generated yet":`${book.chapters.filter(c=>c.generated).length}/${book.chapters.length} chapters done`}. Nothing is lost.</span>
@@ -6066,12 +6128,12 @@ const genCover=async()=>{if(quotaHit||isBuilding)return;setBusy(true);setError("
                   :"— pipeline ran to completion. Check Review and Writing Quality tabs for what needs improving."}
               </span>
             </div>
-            <button onClick={()=>upd({build_complete:false,gates_passed:false,seo_done:false,cover_done:false,review_done:false,competitor_done:false,hooks_done:false,wq_done:false})} className="text-white/30 text-xs hover:text-white/60 shrink-0" title="Reset all completion flags to re-run the full pipeline">↺ Re-run</button>
+            <button onClick={()=>upd({build_complete:false,gates_passed:false,seo_done:false,cover_done:false,review_done:false,competitor_done:false,hooks_done:false,wq_done:false})} className="text-white/60 text-xs hover:text-white/60 shrink-0" title="Reset all completion flags to re-run the full pipeline">↺ Re-run</button>
           </div>
         )}
 
         {/* OUTLINE */}
-        {tab===0&&<div className="max-w-3xl mx-auto"><Card>{book.series_name&&<div className="mb-3"><SeriesBibleInline bookId={bookId}/></div>}<div className="flex items-center gap-3 flex-wrap mb-1"><h2 className="text-white text-xl font-bold">{book.title}</h2>{book.book_length&&book.book_length!=="standard"&&(<span className="text-xs px-2 py-0.5 rounded-full bg-purple-500/20 border border-purple-500/30 text-purple-300 font-medium">{(BOOK_LENGTHS.find(x=>x.id===book.book_length)||{label:"Standard"}).label}</span>)}{book.length_words_min&&book.length_words_max&&(<span className="text-xs text-white/25">{book.length_words_min.toLocaleString()}–{book.length_words_max.toLocaleString()} words/ch</span>)}</div>{book.subtitle&&<p className="text-purple-300 mt-1 mb-4 text-sm">{book.subtitle}</p>}<p className="text-white/60 text-sm leading-relaxed mb-6">{book.description}</p>{book.chapters?.length>0&&<>{
+        {tab===0&&<div className="max-w-3xl mx-auto"><Card>{book.series_name&&<div className="mb-3"><SeriesBibleInline bookId={bookId}/></div>}<div className="flex items-center gap-3 flex-wrap mb-1"><h2 className="text-white text-xl font-bold">{book.title}</h2>{book.book_length&&book.book_length!=="standard"&&(<span className="text-xs px-2 py-0.5 rounded-full bg-purple-500/20 border border-purple-500/30 text-purple-300 font-medium">{(BOOK_LENGTHS.find(x=>x.id===book.book_length)||{label:"Standard"}).label}</span>)}{book.length_words_min&&book.length_words_max&&(<span className="text-xs text-white/50">{book.length_words_min.toLocaleString()}–{book.length_words_max.toLocaleString()} words/ch</span>)}</div>{book.subtitle&&<p className="text-purple-300 mt-1 mb-4 text-sm">{book.subtitle}</p>}<p className="text-white/60 text-sm leading-relaxed mb-6">{book.description}</p>{book.chapters?.length>0&&<>{
   (()=>{
     const gen=book.chapters.filter(c=>c.generated);
     const totalWords=gen.reduce((s,c)=>s+(c.content?c.content.trim().split(/\s+/).length:0),0);
@@ -6083,37 +6145,37 @@ const genCover=async()=>{if(quotaHit||isBuilding)return;setBusy(true);setError("
     return(
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-6">
         <div className="rounded-xl bg-white/5 border border-white/10 p-3">
-          <p className="text-white/30 text-xs">Total Words</p>
+          <p className="text-white/60 text-xs">Total Words</p>
           <p className="text-white text-lg font-bold mt-1">{totalWords.toLocaleString()}</p>
         </div>
         <div className="rounded-xl bg-white/5 border border-white/10 p-3">
-          <p className="text-white/30 text-xs">Chapters Done</p>
+          <p className="text-white/60 text-xs">Chapters Done</p>
           <p className="text-white text-lg font-bold mt-1">{gen.length}/{book.chapters.length}</p>
         </div>
         <div className="rounded-xl bg-white/5 border border-white/10 p-3">
-          <p className="text-white/30 text-xs">Avg Words/Ch</p>
+          <p className="text-white/60 text-xs">Avg Words/Ch</p>
           <p className="text-white text-lg font-bold mt-1">{avgWords.toLocaleString()}</p>
         </div>
         <div className="rounded-xl bg-white/5 border border-white/10 p-3">
-          <p className="text-white/30 text-xs">Read Time</p>
+          <p className="text-white/60 text-xs">Read Time</p>
           <p className="text-white text-lg font-bold mt-1">{readH>0?`${readH}h ${readM}m`:`${readM}m`}</p>
         </div>
         {pct!==null&&(
           <div className="col-span-2 sm:col-span-4">
             <div className="flex items-center justify-between mb-1">
-              <span className="text-white/30 text-xs">Progress toward target</span>
+              <span className="text-white/60 text-xs">Progress toward target</span>
               <span className="text-white/50 text-xs font-medium">{pct}%</span>
             </div>
             <div className="h-2 rounded-full bg-white/5 overflow-hidden">
               <div className="h-full rounded-full bg-gradient-to-r from-purple-500 to-green-500" style={{width:Math.min(pct,100)+"%"}}/>
             </div>
-            <p className="text-white/20 text-xs mt-1">{totalWords.toLocaleString()} / {totalTarget.toLocaleString()} words</p>
+            <p className="text-white/50 text-xs mt-1">{totalWords.toLocaleString()} / {totalTarget.toLocaleString()} words</p>
           </div>
         )}
       </div>
     );
   })()
-}<p className="text-white/40 text-xs uppercase tracking-wider mb-3">Chapters ({book.chapters.length})</p><div className="space-y-2">{book.chapters.map((ch,i)=><div key={i} className={`rounded-xl p-3 border flex gap-3 items-start ${ch.generated?"bg-green-500/10 border-green-500/20":"bg-white/5 border-white/10"}`}><div className="flex flex-col gap-1 mr-1"><button onClick={()=>{if(i>0){const updated=reorderChapters(book,i,i-1);updateBook(book.id,{chapters:updated.chapters});setBook(updated);}}} disabled={i===0} className="text-white/30 hover:text-purple-400 disabled:opacity-20 transition-colors text-xs leading-none">▲</button><button onClick={()=>{if(i<book.chapters.length-1){const updated=reorderChapters(book,i,i+1);updateBook(book.id,{chapters:updated.chapters});setBook(updated);}}} disabled={i===book.chapters.length-1} className="text-white/30 hover:text-purple-400 disabled:opacity-20 transition-colors text-xs leading-none">▼</button></div><span className={`font-bold text-sm min-w-[24px] ${ch.generated?"text-green-400":"text-purple-400"}`}>{ch.generated?"✓":ch.number+"."}</span><div className="flex-1"><p className="text-white text-sm font-medium">{ch.title}</p><p className="text-white/35 text-xs mt-0.5">{ch.description}</p>{ch.content&&<div className="flex items-center gap-3 mt-1.5"><span className="text-green-400/70 text-xs">{ch.content.split(/\s+/).length.toLocaleString()} words</span><span className="text-white/20 text-xs">~{Math.ceil(ch.content.split(/\s+/).length/200)} min read</span></div>}{ch.opening_hook&&!ch.content&&<p className="text-purple-300/50 text-xs mt-1 italic">Hook: {ch.opening_hook.slice(0,80)}…</p>}</div>{ch.generated?(()=>{
+}<p className="text-white/40 text-xs uppercase tracking-wider mb-3">Chapters ({book.chapters.length})</p><div className="space-y-2">{book.chapters.map((ch,i)=><div key={i} className={`rounded-xl p-3 border flex gap-3 items-start ${ch.generated?"bg-green-500/10 border-green-500/20":"bg-white/5 border-white/10"}`}><div className="flex flex-col gap-1 mr-1"><button onClick={()=>{if(i>0){const updated=reorderChapters(book,i,i-1);updateBook(book.id,{chapters:updated.chapters});setBook(updated);}}} disabled={i===0} className="text-white/60 hover:text-purple-400 disabled:opacity-20 transition-colors text-xs leading-none">▲</button><button onClick={()=>{if(i<book.chapters.length-1){const updated=reorderChapters(book,i,i+1);updateBook(book.id,{chapters:updated.chapters});setBook(updated);}}} disabled={i===book.chapters.length-1} className="text-white/60 hover:text-purple-400 disabled:opacity-20 transition-colors text-xs leading-none">▼</button></div><span className={`font-bold text-sm min-w-[24px] ${ch.generated?"text-green-400":"text-purple-400"}`}>{ch.generated?"✓":ch.number+"."}</span><div className="flex-1"><p className="text-white text-sm font-medium">{ch.title}</p><p className="text-white/35 text-xs mt-0.5">{ch.description}</p>{ch.content&&<div className="flex items-center gap-3 mt-1.5"><span className="text-green-400/70 text-xs">{ch.content.split(/\s+/).length.toLocaleString()} words</span><span className="text-white/50 text-xs">~{Math.ceil(ch.content.split(/\s+/).length/200)} min read</span></div>}{ch.opening_hook&&!ch.content&&<p className="text-purple-300/50 text-xs mt-1 italic">Hook: {ch.opening_hook.slice(0,80)}…</p>}</div>{ch.generated?(()=>{
   const wc=ch.content?ch.content.trim().split(/\s+/).length:0;
   const tw=ch.target_words||0;
   const isShort=tw>0&&wc<tw*0.6;
@@ -6121,10 +6183,10 @@ const genCover=async()=>{if(quotaHit||isBuilding)return;setBusy(true);setError("
     {isShort
       ?<span className="text-amber-400/70 text-xs">⚠️ Short ({wc.toLocaleString()}/{tw.toLocaleString()})</span>
       :<span className="text-green-400/50 text-xs">✅ Done</span>}
-    <button onClick={e=>{e.stopPropagation();downloadChapterTxt(book,i);}} className="text-white/30 hover:text-white/60 text-xs">📄 Export TXT</button>
+    <button onClick={e=>{e.stopPropagation();downloadChapterTxt(book,i);}} className="text-white/60 hover:text-white/60 text-xs">📄 Export TXT</button>
   </div>;
-})():<span className="text-white/20 text-xs shrink-0">Pending</span>}</div>)}</div><div className="mt-5"><ChapterPacingChart book={book}/></div>
-            <div className="mt-3 bg-white/5 rounded-xl p-4"><div className="flex justify-between text-xs text-white/40 mb-2"><span>Progress</span><span>{book.chapters.filter(c=>c.generated).length}/{book.chapters.length} chapters</span></div><div className="h-2 bg-white/10 rounded-full overflow-hidden"><div className="h-full bg-gradient-to-r from-purple-500 to-pink-500 rounded-full" style={{width:`${(book.chapters.filter(c=>c.generated).length/book.chapters.length)*100}%`}}/></div></div></>}{(!book.chapters||book.chapters.length===0)&&isBuilding&&<div className="text-center py-8 text-white/30"><Spin/><p className="mt-3 text-sm">Generating outline…</p></div>}<div className="mt-5 flex items-center gap-3 pt-4 border-t border-white/10"><button onClick={()=>setReadingMode(true)} disabled={!book.chapters?.some(c=>c.generated)} className="text-xs px-3 py-2 rounded-lg bg-purple-500/20 border border-purple-500/30 text-purple-300 hover:bg-purple-500/30 hover:text-purple-200 transition-all flex items-center gap-2 disabled:opacity-40">📖 Read Book</button><button onClick={()=>downloadPDF(book)} className="text-xs px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-white/60 hover:bg-white/10 hover:text-white/90 transition-all flex items-center gap-2">📄 Export PDF</button><button onClick={()=>downloadMarkdown(book)} className="text-xs px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-white/60 hover:bg-white/10 hover:text-white/90 transition-all flex items-center gap-2">📝 Export Markdown</button><button onClick={()=>downloadBookJSON(book)} className="text-xs px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-white/60 hover:bg-white/10 hover:text-white/90 transition-all flex items-center gap-2">💾 Export Backup (JSON)</button><label className="text-xs px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-white/60 hover:bg-white/10 hover:text-white/90 transition-all flex items-center gap-2 cursor-pointer">📥 Import Backup<input type="file" accept=".json" className="hidden" onChange={async(e)=>{const file=e.target.files?.[0];if(!file)return;try{const imported=await importBookJSON(file);const books=getBooks();books.unshift(imported);setBooks(books);await flushDB();alert("Imported \""+imported.title+"\" successfully!");window.location.reload();}catch(err){alert("Import failed: "+(err?.msg||err?.message||"unknown error"));}}}/></label></div></Card></div>}
+})():<span className="text-white/50 text-xs shrink-0">Pending</span>}</div>)}</div><div className="mt-5"><ChapterPacingChart book={book}/></div>
+            <div className="mt-3 bg-white/5 rounded-xl p-4"><div className="flex justify-between text-xs text-white/40 mb-2"><span>Progress</span><span>{book.chapters.filter(c=>c.generated).length}/{book.chapters.length} chapters</span></div><div className="h-2 bg-white/10 rounded-full overflow-hidden"><div className="h-full bg-gradient-to-r from-purple-500 to-pink-500 rounded-full" style={{width:`${(book.chapters.filter(c=>c.generated).length/book.chapters.length)*100}%`}}/></div></div></>}{(!book.chapters||book.chapters.length===0)&&isBuilding&&<div className="text-center py-8 text-white/60"><Spin/><p className="mt-3 text-sm">Generating outline…</p></div>}<div className="mt-5 flex items-center gap-3 pt-4 border-t border-white/10"><button onClick={()=>setReadingMode(true)} disabled={!book.chapters?.some(c=>c.generated)} className="text-xs px-3 py-2 rounded-lg bg-purple-500/20 border border-purple-500/30 text-purple-300 hover:bg-purple-500/30 hover:text-purple-200 transition-all flex items-center gap-2 disabled:opacity-40">📖 Read Book</button><button onClick={()=>downloadPDF(book)} className="text-xs px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-white/60 hover:bg-white/10 hover:text-white/90 transition-all flex items-center gap-2">📄 Export PDF</button><button onClick={()=>downloadMarkdown(book)} className="text-xs px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-white/60 hover:bg-white/10 hover:text-white/90 transition-all flex items-center gap-2">📝 Export Markdown</button><button onClick={()=>downloadBookJSON(book)} className="text-xs px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-white/60 hover:bg-white/10 hover:text-white/90 transition-all flex items-center gap-2">💾 Export Backup (JSON)</button><label className="text-xs px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-white/60 hover:bg-white/10 hover:text-white/90 transition-all flex items-center gap-2 cursor-pointer">📥 Import Backup<input type="file" accept=".json" className="hidden" onChange={async(e)=>{const file=e.target.files?.[0];if(!file)return;try{const imported=await importBookJSON(file);const books=getBooks();books.unshift(imported);setBooks(books);await flushDB();alert("Imported \""+imported.title+"\" successfully!");window.location.reload();}catch(err){alert("Import failed: "+(err?.msg||err?.message||"unknown error"));}}}/></label></div></Card></div>}
 
         {/* CHAPTERS */}
         {tab===1&&<div className="grid grid-cols-1 lg:grid-cols-3 gap-5"><div className="lg:col-span-1"><div className="bg-white/5 border border-white/10 rounded-2xl p-4 sticky top-24"><div className="flex items-center justify-between mb-3"><h3 className="text-white font-semibold text-sm">Chapters</h3><div className="flex gap-1.5"><button onClick={()=>setReadingMode(true)} disabled={!book.chapters?.some(c=>c.generated)} className="text-xs text-purple-300 hover:text-purple-200 disabled:opacity-30 px-2 py-1 rounded bg-purple-500/10">📖 Read</button><button onClick={()=>setShowFindReplace(true)} className="text-xs text-purple-300 hover:text-purple-200 disabled:opacity-30 px-2 py-1 rounded bg-purple-500/10 flex items-center gap-1">🔍 Find & Replace</button>{!isBuilding&&<button onClick={async()=>{
@@ -6214,23 +6276,23 @@ Respond ONLY valid JSON: {"needs_improvement":false,"score":85,"issues":["short 
         flash("All chapters written! ✅");
       }
     }
-  }} disabled={busy||busyCh!==null||quotaHit||isBuilding} className="text-xs bg-purple-500/20 text-purple-300 border border-purple-500/30 px-3 py-1.5 rounded-lg hover:bg-purple-500/30 disabled:opacity-40">Write All</button>}</div></div><InBookSearch book={book} onJump={idx=>setSelCh(idx)}/><div className="space-y-1">{(book.chapters||[]).map((ch,i)=><button key={i} onClick={()=>setSelCh(i)} className={`w-full text-left px-3 py-2 rounded-lg text-sm transition-all ${selCh===i?"bg-purple-500/20 text-white border border-purple-500/30":"text-white/50 hover:bg-white/5"}`}><span className={ch.generated?"text-green-400":""}>{ch.generated?"✓ ":""}</span>{ch.number}. {ch.title}</button>)}</div></div></div><div className="lg:col-span-2">{book.chapters?.[selCh]&&<Card><div className="flex items-start justify-between mb-5 gap-4"><div><h2 className="text-white text-lg font-bold">Ch. {book.chapters?.[selCh].number}: {book.chapters?.[selCh].title}</h2><p className="text-white/35 text-sm mt-1">{book.chapters?.[selCh].description}</p></div>{!isBuilding&&<div className="flex gap-2 shrink-0"><button onClick={()=>genChapterIllustration(selCh)} disabled={busyCh!==null||quotaHit||isBuilding||busy} className="bg-white/5 border border-white/10 text-white/60 px-3 py-2 rounded-xl font-medium text-sm hover:bg-white/10 disabled:opacity-40 flex items-center gap-1.5" title="Generate chapter illustration">🖼️</button><button onClick={()=>genChapter(selCh)} disabled={busyCh!==null||quotaHit||isBuilding} className="bg-gradient-to-r from-purple-500 to-pink-500 text-white px-4 py-2 rounded-xl font-medium text-sm hover:opacity-90 disabled:opacity-50 flex items-center gap-2">{busyCh===selCh?<><Spin size="h-4 w-4"/>Writing…</>:book.chapters?.[selCh].generated?"✍️ Rewrite":"✍️ Write"}</button></div>}</div>{book.chapters?.[selCh]?.illustration_url&&<div className="mb-4"><img src={book.chapters?.[selCh].illustration_url} alt={`Chapter ${book.chapters?.[selCh].number} illustration`} className="w-full rounded-xl max-h-48 object-cover border border-white/10"/><p className="text-white/20 text-xs mt-1 text-center italic">{book.chapters?.[selCh].illustration_prompt?.slice(0,80)}…</p></div>}{streamText&&busyCh===selCh?(
+  }} disabled={busy||busyCh!==null||quotaHit||isBuilding} className="text-xs bg-purple-500/20 text-purple-300 border border-purple-500/30 px-3 py-1.5 rounded-lg hover:bg-purple-500/30 disabled:opacity-40">Write All</button>}</div></div><InBookSearch book={book} onJump={idx=>setSelCh(idx)}/><div className="space-y-1">{(book.chapters||[]).map((ch,i)=><button key={i} onClick={()=>setSelCh(i)} className={`w-full text-left px-3 py-2 rounded-lg text-sm transition-all ${selCh===i?"bg-purple-500/20 text-white border border-purple-500/30":"text-white/50 hover:bg-white/5"}`}><span className={ch.generated?"text-green-400":""}>{ch.generated?"✓ ":""}</span>{ch.number}. {ch.title}</button>)}</div></div></div><div className="lg:col-span-2">{book.chapters?.[selCh]&&<Card><div className="flex items-start justify-between mb-5 gap-4"><div><h2 className="text-white text-lg font-bold">Ch. {book.chapters?.[selCh].number}: {book.chapters?.[selCh].title}</h2><p className="text-white/35 text-sm mt-1">{book.chapters?.[selCh].description}</p></div>{!isBuilding&&<div className="flex gap-2 shrink-0"><button onClick={()=>genChapterIllustration(selCh)} disabled={busyCh!==null||quotaHit||isBuilding||busy} className="bg-white/5 border border-white/10 text-white/60 px-3 py-2 rounded-xl font-medium text-sm hover:bg-white/10 disabled:opacity-40 flex items-center gap-1.5" title="Generate chapter illustration">🖼️</button><button onClick={()=>genChapter(selCh)} disabled={busyCh!==null||quotaHit||isBuilding} className="bg-gradient-to-r from-purple-500 to-pink-500 text-white px-4 py-2 rounded-xl font-medium text-sm hover:opacity-90 disabled:opacity-50 flex items-center gap-2">{busyCh===selCh?<><Spin size="h-4 w-4"/>Writing…</>:book.chapters?.[selCh].generated?"✍️ Rewrite":"✍️ Write"}</button></div>}</div>{book.chapters?.[selCh]?.illustration_url&&<div className="mb-4"><img src={book.chapters?.[selCh].illustration_url} alt={`Chapter ${book.chapters?.[selCh].number} illustration`} className="w-full rounded-xl max-h-48 object-cover border border-white/10"/><p className="text-white/50 text-xs mt-1 text-center italic">{book.chapters?.[selCh].illustration_prompt?.slice(0,80)}…</p></div>}{streamText&&busyCh===selCh?(
             <div className="rounded-xl border border-purple-500/30 bg-purple-500/5 p-4 max-h-[500px] overflow-y-auto">
               <div className="flex items-center gap-2 mb-3 pb-2 border-b border-white/10">
                 <Spin size="h-4 w-4"/>
                 <span className="text-purple-300 text-sm font-medium">Live writing — streaming from {getBackend()==="groq"?"Groq ⚡":getBackend()==="puter"?"Puter":"Gemini"}…</span>
-                <span className="text-white/30 text-xs ml-auto">{streamText.split(/\s+/).filter(Boolean).length} words{(book.chapters?.[selCh]?.target_words||0)>0?` / ${(book.chapters[selCh].target_words).toLocaleString()}`:""}</span>
+                <span className="text-white/60 text-xs ml-auto">{streamText.split(/\s+/).filter(Boolean).length} words{(book.chapters?.[selCh]?.target_words||0)>0?` / ${(book.chapters[selCh].target_words).toLocaleString()}`:""}</span>
               </div>
               <div className="text-white/70 text-sm leading-relaxed whitespace-pre-wrap font-serif">{streamText}<span className="inline-block w-2 h-4 bg-purple-400 animate-pulse ml-0.5"/></div>
               <div className="mt-3 pt-3 border-t border-white/10"><WordGoalBar current={streamText.split(/\s+/).filter(Boolean).length} target={book.chapters?.[selCh]?.target_words||0} label="Chapter word progress"/></div>
             </div>
-          ):book.chapters?.[selCh].content?<ChapterEditor book={book} chIdx={selCh} upd={upd}/>:<div className="text-center py-16 text-white/25"><div className="text-4xl mb-3">✍️</div><p>{isBuilding?"Generating…":"Click Write to generate"}</p></div>}</Card>}</div></div>}
+          ):book.chapters?.[selCh].content?<ChapterEditor book={book} chIdx={selCh} upd={upd}/>:<div className="text-center py-16 text-white/50"><div className="text-4xl mb-3">✍️</div><p>{isBuilding?"Generating…":"Click Write to generate"}</p></div>}</Card>}</div></div>}
 
         {/* COVER */}
-        {tab===2&&<div className="max-w-5xl mx-auto">{!getAuthorProfile().name&&<div className="bg-amber-500/15 border border-amber-500/40 rounded-xl p-4 mb-6 flex items-center gap-3"><span className="text-2xl">✍️</span><div className="flex-1"><p className="text-amber-300 font-semibold text-sm">No author name set</p><p className="text-amber-200/50 text-xs">Your cover will show "AUTHOR" as a placeholder until you add your name.</p></div><button onClick={onSettings} className="bg-amber-500 text-black text-xs font-bold px-4 py-2 rounded-lg hover:bg-amber-400 whitespace-nowrap">Set Name</button></div>}<div className="grid grid-cols-1 lg:grid-cols-2 gap-8"><div><h2 className="text-white text-xl font-bold mb-4">Cover Preview</h2>{book.cover_image_url?<><img src={book.cover_image_url} alt="Cover" className="w-full max-w-xs rounded-2xl shadow-2xl shadow-purple-900/60 mx-auto block"/><div className="flex gap-2 mt-4 justify-center"><button onClick={newVariation} disabled={busy||isBuilding} className="text-sm border border-white/20 text-white/50 px-4 py-2 rounded-lg hover:bg-white/5 disabled:opacity-40">🎲 Variation</button><a href={book.cover_image_url} download={`${(book.title||"cover").replace(/[^a-z0-9]/gi,"_")}_cover.jpg`} className="text-sm border border-white/20 text-white/50 px-4 py-2 rounded-lg hover:bg-white/5">⬇️ Download</a></div></>:<div className="w-full max-w-xs aspect-[2/3] bg-white/5 border-2 border-dashed border-white/15 rounded-2xl flex items-center justify-center mx-auto"><div className="text-center text-white/20">{isBuilding?<><Spin/><p className="text-sm mt-2">Generating…</p></>:<><div className="text-5xl mb-2">🎨</div><p className="text-sm">Cover appears here</p></>}</div></div>}</div><div className="space-y-5"><h2 className="text-white text-xl font-bold">Cover Settings</h2><div className="bg-white/5 border border-white/10 rounded-xl p-1 flex gap-1">{[["auto","✨ AI Auto"],["custom","✏️ Custom"]].map(([m,label])=><button key={m} onClick={()=>setCoverMode(m)} className={`flex-1 py-2 rounded-lg text-sm font-medium transition-all ${coverMode===m?"bg-purple-500 text-white":"text-white/40 hover:text-white"}`}>{label}</button>)}</div>{coverMode==="auto"?<div className="bg-white/5 border border-white/10 rounded-xl p-4 text-sm text-white/50">Gemini analyzes your book and writes a detailed character-specific prompt.{lastAiPrompt&&<p className="text-white/25 text-xs mt-3 italic leading-relaxed">{lastAiPrompt}</p>}</div>:<div><label className="text-white/60 text-sm font-medium block mb-2">Describe your cover</label><div className="flex flex-wrap gap-1.5 mb-2">{[["🌅 Painterly","painterly digital art, warm golden light, cinematic depth"],["🎨 Watercolor","loose expressive watercolor illustration, soft edges, artistic"],["📸 Photorealistic","hyperrealistic photography, studio lighting, cinematic"],["🖤 Dark Ink","dark ink graphic novel style, high contrast, moody shadows"],["✨ Fantasy","epic fantasy concept art, magical atmosphere, dramatic lighting, ArtStation"],["💫 Minimalist","clean minimalist design, bold typography space, subtle gradient background, modern"],["🌃 Neon Noir","cyberpunk neon noir, rain-slicked streets, atmospheric fog"],["🌸 Soft Romance","soft romantic illustration, warm pastels, bokeh background, dreamy"]].map(([label,tag])=><button key={label} onClick={()=>setCustomPrompt(p=>(p?p+", ":"")+tag)} className="text-xs bg-white/5 border border-white/10 text-white/50 hover:text-white/80 hover:border-purple-500/40 px-2.5 py-1.5 rounded-lg transition-all">{label}</button>)}</div><textarea rows={6} value={customPrompt} onChange={e=>setCustomPrompt(e.target.value)} placeholder="E.g. Two men in their 20s, dark curly hair and red hair, standing close on a rainy rooftop at dusk, golden light, painterly cinematic style, no text..." className="w-full bg-white/10 border border-white/20 rounded-xl px-4 py-3 text-white placeholder-white/20 focus:outline-none focus:border-purple-500 resize-none text-sm"/><p className="text-white/20 text-xs mt-1.5">💡 Click style chips to append — or type freely. Always generates no-text portrait covers.</p></div>}<button onClick={genCover} disabled={busy||quotaHit||isBuilding||(coverMode==="custom"&&!customPrompt.trim())} className="w-full bg-gradient-to-r from-purple-500 to-pink-500 text-white py-4 rounded-xl font-semibold text-lg hover:opacity-90 disabled:opacity-40 flex items-center justify-center gap-2">{busy?<><Spin/>Generating…</>:book.cover_image_url?"🔄 Regenerate":"🎨 Generate Cover"}</button></div></div></div>}
+        {tab===2&&<div className="max-w-5xl mx-auto">{!getAuthorProfile().name&&<div className="bg-amber-500/15 border border-amber-500/40 rounded-xl p-4 mb-6 flex items-center gap-3"><span className="text-2xl">✍️</span><div className="flex-1"><p className="text-amber-300 font-semibold text-sm">No author name set</p><p className="text-amber-200/50 text-xs">Your cover will show "AUTHOR" as a placeholder until you add your name.</p></div><button onClick={onSettings} className="bg-amber-500 text-black text-xs font-bold px-4 py-2 rounded-lg hover:bg-amber-400 whitespace-nowrap">Set Name</button></div>}<div className="grid grid-cols-1 lg:grid-cols-2 gap-8"><div><h2 className="text-white text-xl font-bold mb-4">Cover Preview</h2>{book.cover_image_url?<><img src={book.cover_image_url} alt="Cover" className="w-full max-w-xs rounded-2xl shadow-2xl shadow-purple-900/60 mx-auto block"/><div className="flex gap-2 mt-4 justify-center"><button onClick={newVariation} disabled={busy||isBuilding} className="text-sm border border-white/20 text-white/50 px-4 py-2 rounded-lg hover:bg-white/5 disabled:opacity-40">🎲 Variation</button><a href={book.cover_image_url} download={`${(book.title||"cover").replace(/[^a-z0-9]/gi,"_")}_cover.jpg`} className="text-sm border border-white/20 text-white/50 px-4 py-2 rounded-lg hover:bg-white/5">⬇️ Download</a></div></>:<div className="w-full max-w-xs aspect-[2/3] bg-white/5 border-2 border-dashed border-white/15 rounded-2xl flex items-center justify-center mx-auto"><div className="text-center text-white/50">{isBuilding?<><Spin/><p className="text-sm mt-2">Generating…</p></>:<><div className="text-5xl mb-2">🎨</div><p className="text-sm">Cover appears here</p></>}</div></div>}</div><div className="space-y-5"><h2 className="text-white text-xl font-bold">Cover Settings</h2><div className="bg-white/5 border border-white/10 rounded-xl p-1 flex gap-1">{[["auto","✨ AI Auto"],["custom","✏️ Custom"]].map(([m,label])=><button key={m} onClick={()=>setCoverMode(m)} className={`flex-1 py-2 rounded-lg text-sm font-medium transition-all ${coverMode===m?"bg-purple-500 text-white":"text-white/40 hover:text-white"}`}>{label}</button>)}</div>{coverMode==="auto"?<div className="bg-white/5 border border-white/10 rounded-xl p-4 text-sm text-white/50">Gemini analyzes your book and writes a detailed character-specific prompt.{lastAiPrompt&&<p className="text-white/50 text-xs mt-3 italic leading-relaxed">{lastAiPrompt}</p>}</div>:<div><label className="text-white/60 text-sm font-medium block mb-2">Describe your cover</label><div className="flex flex-wrap gap-1.5 mb-2">{[["🌅 Painterly","painterly digital art, warm golden light, cinematic depth"],["🎨 Watercolor","loose expressive watercolor illustration, soft edges, artistic"],["📸 Photorealistic","hyperrealistic photography, studio lighting, cinematic"],["🖤 Dark Ink","dark ink graphic novel style, high contrast, moody shadows"],["✨ Fantasy","epic fantasy concept art, magical atmosphere, dramatic lighting, ArtStation"],["💫 Minimalist","clean minimalist design, bold typography space, subtle gradient background, modern"],["🌃 Neon Noir","cyberpunk neon noir, rain-slicked streets, atmospheric fog"],["🌸 Soft Romance","soft romantic illustration, warm pastels, bokeh background, dreamy"]].map(([label,tag])=><button key={label} onClick={()=>setCustomPrompt(p=>(p?p+", ":"")+tag)} className="text-xs bg-white/5 border border-white/10 text-white/50 hover:text-white/80 hover:border-purple-500/40 px-2.5 py-1.5 rounded-lg transition-all">{label}</button>)}</div><textarea rows={6} value={customPrompt} onChange={e=>setCustomPrompt(e.target.value)} placeholder="E.g. Two men in their 20s, dark curly hair and red hair, standing close on a rainy rooftop at dusk, golden light, painterly cinematic style, no text..." className="w-full bg-white/10 border border-white/20 rounded-xl px-4 py-3 text-white placeholder-white/20 focus:outline-none focus:border-purple-500 resize-none text-sm"/><p className="text-white/50 text-xs mt-1.5">💡 Click style chips to append — or type freely. Always generates no-text portrait covers.</p></div>}<button onClick={genCover} disabled={busy||quotaHit||isBuilding||(coverMode==="custom"&&!customPrompt.trim())} className="w-full bg-gradient-to-r from-purple-500 to-pink-500 text-white py-4 rounded-xl font-semibold text-lg hover:opacity-90 disabled:opacity-40 flex items-center justify-center gap-2">{busy?<><Spin/>Generating…</>:book.cover_image_url?"🔄 Regenerate":"🎨 Generate Cover"}</button></div></div></div>}
 
         {/* SEO */}
-        {tab===3&&<div className="max-w-3xl mx-auto"><Card><div className="flex items-center justify-between mb-6"><div><h2 className="text-white text-xl font-bold">SEO Optimization</h2><p className="text-white/40 text-sm mt-1">Amazon KDP & publishing metadata</p></div>{!isBuilding&&<button onClick={genSEO} disabled={busy||quotaHit||isBuilding} className="bg-gradient-to-r from-purple-500 to-pink-500 text-white px-5 py-2.5 rounded-xl font-semibold hover:opacity-90 disabled:opacity-50 flex items-center gap-2">{busy?<><Spin size="h-4 w-4"/>Generating…</>:"🔍 Generate SEO"}</button>}</div><div className="space-y-5">{[{label:"SEO Title",val:book.seo_title},{label:"SEO Description",val:book.seo_description,large:true},{label:"Keywords",val:book.seo_keywords}].map(f=><div key={f.label}><div className="flex items-center justify-between mb-2"><p className="text-white/40 text-xs uppercase tracking-wider">{f.label}</p>{f.val&&<button onClick={()=>{navigator.clipboard.writeText(f.val);flash("Copied! 📋");}} className="text-xs text-white/30 hover:text-white/60 transition-colors">📋 Copy</button>}</div>{f.val?<div className={`bg-white/10 rounded-xl p-4 text-white/80 text-sm ${f.large?"leading-relaxed":""}`}>{f.val}</div>:<div className="bg-white/5 border border-dashed border-white/10 rounded-xl p-4 text-white/20 text-sm italic">{isBuilding?"Generating…":"Auto-populated during build"}</div>}</div>)}{book.notes&&(()=>{try{const n=JSON.parse(book.notes);return(<div className="space-y-5">{n.back_cover_copy&&<div><p className="text-white/40 text-xs uppercase tracking-wider mb-2">Back Cover Copy</p><div className="bg-white/10 rounded-xl p-4 text-white/80 text-sm leading-relaxed">{n.back_cover_copy}</div></div>}{n.bisac_categories?.length>0&&<div><p className="text-white/40 text-xs uppercase tracking-wider mb-2">BISAC Categories (KDP)</p><div className="flex flex-wrap gap-2">{n.bisac_categories.map((c,i)=><span key={i} className="bg-blue-500/20 text-blue-300 border border-blue-500/30 px-3 py-1 rounded-full text-xs">{c}</span>)}</div></div>}{n.backend_keywords&&<div><div className="flex items-center justify-between mb-2"><p className="text-white/40 text-xs uppercase tracking-wider">Amazon Backend Keywords</p><button onClick={()=>{navigator.clipboard.writeText(n.backend_keywords);flash("Copied! 📋");}} className="text-xs text-white/30 hover:text-white/60">📋 Copy</button></div><div className="bg-white/10 rounded-xl p-4 text-white/80 text-sm font-mono">{n.backend_keywords}</div><p className="text-white/20 text-xs mt-1">Paste into KDP "Keywords" field 8 — these are invisible to readers but boost search rank.</p></div>}{n.comp_titles?.length>0&&<div><p className="text-white/40 text-xs uppercase tracking-wider mb-2">Comparable Titles (Comps)</p><div className="bg-white/10 rounded-xl p-4 space-y-1">{n.comp_titles.map((t,i)=><p key={i} className="text-white/70 text-sm">📚 {t}</p>)}</div><p className="text-white/20 text-xs mt-1">Use comps in your KDP description and marketing: "Fans of [Comp] will love this."</p></div>}{n.recommended_price_usd&&<div className="bg-green-500/10 border border-green-500/20 rounded-xl p-4"><div className="flex items-center justify-between"><div><p className="text-white/40 text-xs uppercase tracking-wider mb-1">Recommended Price</p><p className="text-green-300 text-2xl font-bold">${n.recommended_price_usd}</p><p className="text-white/40 text-xs mt-1">{n.price_rationale}</p></div><div className="text-right text-xs text-white/30"><p>Royalty @ 70%</p><p className="text-green-400 font-bold text-base">${(n.recommended_price_usd*0.70-0.15).toFixed(2)}/sale</p><p className="text-white/20">KDP direct (US)</p></div></div></div>}{n.hook_line&&<div><p className="text-white/40 text-xs uppercase tracking-wider mb-2">Marketing Hook Line</p><div className="bg-amber-500/10 border border-amber-500/20 rounded-xl p-4"><p className="text-amber-200 text-sm italic">"{n.hook_line}"</p></div><p className="text-white/20 text-xs mt-1">Use this in social media posts, email subject lines, and Amazon ads.</p></div>}</div>);}catch{return null;}})()}{/* Title A/B Testing */}<div className="mt-6 pt-6 border-t border-white/10"><div className="flex items-center justify-between mb-4"><div><h3 className="text-white font-bold text-sm">Title A/B Testing</h3><p className="text-white/35 text-xs mt-0.5">Generate alternative titles to find your bestseller hook</p></div><button onClick={genAltTitles} disabled={busy||quotaHit||isBuilding} className="text-xs bg-purple-500/20 text-purple-300 border border-purple-500/30 px-3 py-1.5 rounded-lg hover:bg-purple-500/30 disabled:opacity-40 flex items-center gap-1">{busy?<><Spin size="h-3 w-3"/>Generating…</>:"📝 Generate 5 Titles"}</button></div>{altTitles.length>0&&<div className="space-y-3">{altTitles.map((t,i)=><div key={i} className="bg-white/5 border border-white/10 rounded-xl p-4"><div className="flex items-start justify-between gap-3"><div className="flex-1"><p className="text-white font-semibold text-sm">{t.title}</p>{t.subtitle&&<p className="text-white/50 text-xs mt-0.5 italic">{t.subtitle}</p>}<p className="text-white/30 text-xs mt-2">💡 {t.rationale}</p></div><button onClick={()=>upd({title:t.title,subtitle:t.subtitle||book.subtitle})} className="text-xs bg-green-500/20 text-green-300 border border-green-500/30 px-2 py-1 rounded-lg hover:bg-green-500/30 shrink-0">Use This</button></div></div>)}</div>}</div></div></Card></div>}
+        {tab===3&&<div className="max-w-3xl mx-auto"><Card><div className="flex items-center justify-between mb-6"><div><h2 className="text-white text-xl font-bold">SEO Optimization</h2><p className="text-white/40 text-sm mt-1">Amazon KDP & publishing metadata</p></div>{!isBuilding&&<button onClick={genSEO} disabled={busy||quotaHit||isBuilding} className="bg-gradient-to-r from-purple-500 to-pink-500 text-white px-5 py-2.5 rounded-xl font-semibold hover:opacity-90 disabled:opacity-50 flex items-center gap-2">{busy?<><Spin size="h-4 w-4"/>Generating…</>:"🔍 Generate SEO"}</button>}</div><div className="space-y-5">{[{label:"SEO Title",val:book.seo_title},{label:"SEO Description",val:book.seo_description,large:true},{label:"Keywords",val:book.seo_keywords}].map(f=><div key={f.label}><div className="flex items-center justify-between mb-2"><p className="text-white/40 text-xs uppercase tracking-wider">{f.label}</p>{f.val&&<button onClick={()=>{navigator.clipboard.writeText(f.val);flash("Copied! 📋");}} className="text-xs text-white/60 hover:text-white/60 transition-colors">📋 Copy</button>}</div>{f.val?<div className={`bg-white/10 rounded-xl p-4 text-white/80 text-sm ${f.large?"leading-relaxed":""}`}>{f.val}</div>:<div className="bg-white/5 border border-dashed border-white/10 rounded-xl p-4 text-white/50 text-sm italic">{isBuilding?"Generating…":"Auto-populated during build"}</div>}</div>)}{book.notes&&(()=>{try{const n=JSON.parse(book.notes);return(<div className="space-y-5">{n.back_cover_copy&&<div><p className="text-white/40 text-xs uppercase tracking-wider mb-2">Back Cover Copy</p><div className="bg-white/10 rounded-xl p-4 text-white/80 text-sm leading-relaxed">{n.back_cover_copy}</div></div>}{n.bisac_categories?.length>0&&<div><p className="text-white/40 text-xs uppercase tracking-wider mb-2">BISAC Categories (KDP)</p><div className="flex flex-wrap gap-2">{n.bisac_categories.map((c,i)=><span key={i} className="bg-blue-500/20 text-blue-300 border border-blue-500/30 px-3 py-1 rounded-full text-xs">{c}</span>)}</div></div>}{n.backend_keywords&&<div><div className="flex items-center justify-between mb-2"><p className="text-white/40 text-xs uppercase tracking-wider">Amazon Backend Keywords</p><button onClick={()=>{navigator.clipboard.writeText(n.backend_keywords);flash("Copied! 📋");}} className="text-xs text-white/60 hover:text-white/60">📋 Copy</button></div><div className="bg-white/10 rounded-xl p-4 text-white/80 text-sm font-mono">{n.backend_keywords}</div><p className="text-white/50 text-xs mt-1">Paste into KDP "Keywords" field 8 — these are invisible to readers but boost search rank.</p></div>}{n.comp_titles?.length>0&&<div><p className="text-white/40 text-xs uppercase tracking-wider mb-2">Comparable Titles (Comps)</p><div className="bg-white/10 rounded-xl p-4 space-y-1">{n.comp_titles.map((t,i)=><p key={i} className="text-white/70 text-sm">📚 {t}</p>)}</div><p className="text-white/50 text-xs mt-1">Use comps in your KDP description and marketing: "Fans of [Comp] will love this."</p></div>}{n.recommended_price_usd&&<div className="bg-green-500/10 border border-green-500/20 rounded-xl p-4"><div className="flex items-center justify-between"><div><p className="text-white/40 text-xs uppercase tracking-wider mb-1">Recommended Price</p><p className="text-green-300 text-2xl font-bold">${n.recommended_price_usd}</p><p className="text-white/40 text-xs mt-1">{n.price_rationale}</p></div><div className="text-right text-xs text-white/60"><p>Royalty @ 70%</p><p className="text-green-400 font-bold text-base">${(n.recommended_price_usd*0.70-0.15).toFixed(2)}/sale</p><p className="text-white/50">KDP direct (US)</p></div></div></div>}{n.hook_line&&<div><p className="text-white/40 text-xs uppercase tracking-wider mb-2">Marketing Hook Line</p><div className="bg-amber-500/10 border border-amber-500/20 rounded-xl p-4"><p className="text-amber-200 text-sm italic">"{n.hook_line}"</p></div><p className="text-white/50 text-xs mt-1">Use this in social media posts, email subject lines, and Amazon ads.</p></div>}</div>);}catch{return null;}})()}{/* Title A/B Testing */}<div className="mt-6 pt-6 border-t border-white/10"><div className="flex items-center justify-between mb-4"><div><h3 className="text-white font-bold text-sm">Title A/B Testing</h3><p className="text-white/35 text-xs mt-0.5">Generate alternative titles to find your bestseller hook</p></div><button onClick={genAltTitles} disabled={busy||quotaHit||isBuilding} className="text-xs bg-purple-500/20 text-purple-300 border border-purple-500/30 px-3 py-1.5 rounded-lg hover:bg-purple-500/30 disabled:opacity-40 flex items-center gap-1">{busy?<><Spin size="h-3 w-3"/>Generating…</>:"📝 Generate 5 Titles"}</button></div>{altTitles.length>0&&<div className="space-y-3">{altTitles.map((t,i)=><div key={i} className="bg-white/5 border border-white/10 rounded-xl p-4"><div className="flex items-start justify-between gap-3"><div className="flex-1"><p className="text-white font-semibold text-sm">{t.title}</p>{t.subtitle&&<p className="text-white/50 text-xs mt-0.5 italic">{t.subtitle}</p>}<p className="text-white/60 text-xs mt-2">💡 {t.rationale}</p></div><button onClick={()=>upd({title:t.title,subtitle:t.subtitle||book.subtitle})} className="text-xs bg-green-500/20 text-green-300 border border-green-500/30 px-2 py-1 rounded-lg hover:bg-green-500/30 shrink-0">Use This</button></div></div>)}</div>}</div></div></Card></div>}
 
         {/* REVIEW */}
         {tab===4&&<ReviewPanel book={book} onSettings={onSettings} onApply={(updates)=>{const b=upd(updates);flash("Applied! Re-run review to update score.");return b;}}/>}
@@ -6279,18 +6341,18 @@ Respond ONLY valid JSON: {"needs_improvement":false,"score":85,"issues":["short 
             <div className="mt-4 bg-blue-500/10 border border-blue-500/20 rounded-xl p-4 text-xs text-white/50 space-y-2">
               <p className="text-white/70 font-semibold text-sm">📖 Where to publish your .epub</p>
               <div className="grid grid-cols-2 gap-2 mt-2">
-                <div className="bg-white/5 rounded-lg p-2.5"><p className="text-white/60 font-semibold">Amazon KDP</p><p className="text-white/30">Upload .epub directly. Reaches millions. Royalties 35-70%.</p></div>
-                <div className="bg-white/5 rounded-lg p-2.5"><p className="text-white/60 font-semibold">Smashwords</p><p className="text-white/30">Free. Distributes to Apple Books, Barnes &amp; Noble, Kobo, libraries.</p></div>
-                <div className="bg-white/5 rounded-lg p-2.5"><p className="text-white/60 font-semibold">Draft2Digital</p><p className="text-white/30">Free. Uploads to 12+ stores in one click. Best aggregator.</p></div>
-                <div className="bg-white/5 rounded-lg p-2.5"><p className="text-white/60 font-semibold">Payhip / Gumroad</p><p className="text-white/30">Sell directly. Keep ~97% of revenue. No approval needed.</p></div>
-                <div className="bg-white/5 rounded-lg p-2.5"><p className="text-white/60 font-semibold">Leanpub</p><p className="text-white/30">Great for nonfiction &amp; guides. Readers pay what they want.</p></div>
-                <div className="bg-white/5 rounded-lg p-2.5"><p className="text-white/60 font-semibold">Wattpad / Royal Road</p><p className="text-white/30">Upload as chapters for free fiction audiences. Build a following.</p></div>
+                <div className="bg-white/5 rounded-lg p-2.5"><p className="text-white/60 font-semibold">Amazon KDP</p><p className="text-white/60">Upload .epub directly. Reaches millions. Royalties 35-70%.</p></div>
+                <div className="bg-white/5 rounded-lg p-2.5"><p className="text-white/60 font-semibold">Smashwords</p><p className="text-white/60">Free. Distributes to Apple Books, Barnes &amp; Noble, Kobo, libraries.</p></div>
+                <div className="bg-white/5 rounded-lg p-2.5"><p className="text-white/60 font-semibold">Draft2Digital</p><p className="text-white/60">Free. Uploads to 12+ stores in one click. Best aggregator.</p></div>
+                <div className="bg-white/5 rounded-lg p-2.5"><p className="text-white/60 font-semibold">Payhip / Gumroad</p><p className="text-white/60">Sell directly. Keep ~97% of revenue. No approval needed.</p></div>
+                <div className="bg-white/5 rounded-lg p-2.5"><p className="text-white/60 font-semibold">Leanpub</p><p className="text-white/60">Great for nonfiction &amp; guides. Readers pay what they want.</p></div>
+                <div className="bg-white/5 rounded-lg p-2.5"><p className="text-white/60 font-semibold">Wattpad / Royal Road</p><p className="text-white/60">Upload as chapters for free fiction audiences. Build a following.</p></div>
               </div>
-              <p className="text-white/25 mt-2">📋 RTF = best for Word/Docs editing before publish · TXT = plain archive · Audiobook script = hand to narrator or use Audio Studio tab</p>
+              <p className="text-white/50 mt-2">📋 RTF = best for Word/Docs editing before publish · TXT = plain archive · Audiobook script = hand to narrator or use Audio Studio tab</p>
             </div>
           </Card>}
           <div className="grid grid-cols-3 gap-4">
-            {[{name:"Amazon KDP",url:"https://kdp.amazon.com",icon:"📦",color:"border-orange-500/30 bg-orange-500/10"},{name:"Smashwords",url:"https://www.smashwords.com",icon:"📚",color:"border-blue-500/30 bg-blue-500/10"},{name:"Draft2Digital",url:"https://draft2digital.com",icon:"🌐",color:"border-green-500/30 bg-green-500/10"}].map(p=><a key={p.name} href={p.url} target="_blank" rel="noopener noreferrer" className={`border ${p.color} rounded-xl p-4 text-center hover:opacity-80`}><div className="text-2xl mb-2">{p.icon}</div><p className="text-white font-semibold text-sm">{p.name}</p><p className="text-white/30 text-xs mt-1">Open →</p></a>)}
+            {[{name:"Amazon KDP",url:"https://kdp.amazon.com",icon:"📦",color:"border-orange-500/30 bg-orange-500/10"},{name:"Smashwords",url:"https://www.smashwords.com",icon:"📚",color:"border-blue-500/30 bg-blue-500/10"},{name:"Draft2Digital",url:"https://draft2digital.com",icon:"🌐",color:"border-green-500/30 bg-green-500/10"}].map(p=><a key={p.name} href={p.url} target="_blank" rel="noopener noreferrer" className={`border ${p.color} rounded-xl p-4 text-center hover:opacity-80`}><div className="text-2xl mb-2">{p.icon}</div><p className="text-white font-semibold text-sm">{p.name}</p><p className="text-white/60 text-xs mt-1">Open →</p></a>)}
           </div>
         </div>}
         {tab===11&&<TranslatePanel book={book} upd={upd} quotaHit={quotaHit} bump={bump} handleErr={handleErr} flash={flash}/>}
@@ -6316,7 +6378,7 @@ Respond ONLY valid JSON: {"needs_improvement":false,"score":85,"issues":["short 
 function KDPCopyBtn({text,label="📋 Copy"}){
   const [copied,setCopied]=useState(false);
   return(
-    <button onClick={()=>{navigator.clipboard.writeText(text).then(()=>{setCopied(true);setTimeout(()=>setCopied(false),2000);});}} className="text-xs text-white/30 hover:text-white/60 transition-colors px-2 py-0.5 rounded border border-white/10 hover:border-white/30">
+    <button onClick={()=>{navigator.clipboard.writeText(text).then(()=>{setCopied(true);setTimeout(()=>setCopied(false),2000);});}} className="text-xs text-white/60 hover:text-white/60 transition-colors px-2 py-0.5 rounded border border-white/10 hover:border-white/30">
       {copied?"✅ Copied":label}
     </button>
   );
@@ -6416,7 +6478,7 @@ function KDPPackagePanel({book,busy,busyStep,onGenerate,quotaHit,flash,isBuildin
             AI generates every field for your Amazon product page — keyword-rich title, HTML description, 7 backend keywords, BISAC categories, author bio, A+ content, editorial review, thumbnail prompt, and AI-search optimization.
             {isAudio&&" Includes full ACX/Audible package too."}
           </p>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs text-white/30 mb-6">
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs text-white/60 mb-6">
             {[["📝","KDP Title & Subtitle"],["🏷️","7 Backend Keywords"],["📚","BISAC Categories"],["💰","Pricing Strategy"],["📖","HTML Description"],["👤","Author Bio"],["⭐","Editorial Review"],["🔍","A+ Content"],["🤖","AI Search Keywords"],["🖼️","KDP Thumbnail"],isAudio&&["🎧","ACX Package"],["🔎","Look Inside Hook"]].filter(Boolean).map(([icon,label],i)=>(
               <div key={i} className="bg-white/5 rounded-lg p-2.5 text-center">
                 <div className="text-xl mb-1">{icon}</div>
@@ -6435,7 +6497,7 @@ function KDPPackagePanel({book,busy,busyStep,onGenerate,quotaHit,flash,isBuildin
         <div className="bg-white/5 border border-white/10 rounded-2xl p-8 text-center">
           <Spin size="h-8 w-8"/>
           <p className="text-white/60 mt-4 text-sm">{busyStep||"Generating…"}</p>
-          <p className="text-white/20 text-xs mt-2">Takes ~30 seconds — building all KDP fields</p>
+          <p className="text-white/50 text-xs mt-2">Takes ~30 seconds — building all KDP fields</p>
         </div>
       )}
 
@@ -6470,7 +6532,7 @@ function KDPPackagePanel({book,busy,busyStep,onGenerate,quotaHit,flash,isBuildin
             <div className="flex items-center justify-between mb-4">
               <h3 className="text-white font-bold">🖼️ KDP Thumbnail</h3>
               <div className="flex gap-2">
-                <span className="text-xs text-white/30 bg-white/5 px-2 py-1 rounded">1400×2100px (KDP min)</span>
+                <span className="text-xs text-white/60 bg-white/5 px-2 py-1 rounded">1400×2100px (KDP min)</span>
                 {kdp.thumbUrl&&<a href={kdp.thumbUrl} target="_blank" rel="noopener noreferrer" className="text-xs text-white/50 hover:text-white bg-white/5 border border-white/10 px-3 py-1 rounded-lg hover:bg-white/10">⬇️ Download</a>}
               </div>
             </div>
@@ -6484,9 +6546,9 @@ function KDPPackagePanel({book,busy,busyStep,onGenerate,quotaHit,flash,isBuildin
                     onLoad={()=>setThumbLoaded(true)}
                     onError={e=>{e.target.style.display="none";}}
                   />
-                  {!thumbLoaded&&<div className="w-28 h-40 bg-white/5 rounded-xl flex items-center justify-center text-white/20 text-xs">Loading…</div>}
+                  {!thumbLoaded&&<div className="w-28 h-40 bg-white/5 rounded-xl flex items-center justify-center text-white/50 text-xs">Loading…</div>}
                 </div>
-              ):<div className="w-28 h-40 bg-white/5 border border-dashed border-white/10 rounded-xl flex items-center justify-center text-white/20 text-xs text-center p-2">No thumbnail yet</div>}
+              ):<div className="w-28 h-40 bg-white/5 border border-dashed border-white/10 rounded-xl flex items-center justify-center text-white/50 text-xs text-center p-2">No thumbnail yet</div>}
               <div className="flex-1 space-y-3">
                 <div className="bg-blue-500/10 border border-blue-500/20 rounded-xl p-3">
                   <p className="text-blue-300 text-xs font-semibold mb-1">📐 KDP Cover Specs</p>
@@ -6499,7 +6561,7 @@ function KDPPackagePanel({book,busy,busyStep,onGenerate,quotaHit,flash,isBuildin
                 </div>
                 <div>
                   <p className="text-white/40 text-xs font-semibold mb-1">AI Prompt Used:</p>
-                  <p className="text-white/30 text-xs leading-relaxed italic">{(kdp.coverPrompt||"").slice(0,200)}…</p>
+                  <p className="text-white/60 text-xs leading-relaxed italic">{(kdp.coverPrompt||"").slice(0,200)}…</p>
                 </div>
               </div>
             </div>
@@ -6526,7 +6588,7 @@ function KDPPackagePanel({book,busy,busyStep,onGenerate,quotaHit,flash,isBuildin
           {/* Amazon Description HTML */}
           <div className="bg-white/5 border border-white/10 rounded-2xl p-5 space-y-4">
             <h3 className="text-white font-bold">📖 Amazon Description (HTML)</h3>
-            <p className="text-white/30 text-xs">Paste directly into KDP's Book Description field — Amazon renders the HTML tags.</p>
+            <p className="text-white/60 text-xs">Paste directly into KDP's Book Description field — Amazon renders the HTML tags.</p>
             <div>
               <div className="flex items-center justify-between mb-2">
                 <p className="text-white/40 text-xs uppercase tracking-wider">Raw HTML (paste into KDP)</p>
@@ -6542,7 +6604,7 @@ function KDPPackagePanel({book,busy,busyStep,onGenerate,quotaHit,flash,isBuildin
               <p className="text-white/40 text-xs uppercase tracking-wider mb-2">Preview (how it renders)</p>
               <div className="bg-white rounded-xl p-5 text-gray-800 text-sm leading-relaxed amazon-preview" dangerouslySetInnerHTML={{__html:sanitizeHTML(kdp.kdp_description_html||"")}}/>
             </div>
-            <p className="text-white/20 text-xs">Description length: {descChars} chars (KDP allows up to 4000)</p>
+            <p className="text-white/50 text-xs">Description length: {descChars} chars (KDP allows up to 4000)</p>
           </div>
 
           {/* 7 Backend Keywords */}
@@ -6551,13 +6613,13 @@ function KDPPackagePanel({book,busy,busyStep,onGenerate,quotaHit,flash,isBuildin
               <h3 className="text-white font-bold">🏷️ 7 Backend Keywords</h3>
               <KDPCopyBtn text={(kdp.kdp_7_keywords||[]).join("\n")} label="📋 Copy All"/>
             </div>
-            <p className="text-white/30 text-xs">Paste one per line into KDP's Keywords fields. Each must be ≤50 chars. Never repeat words from your title.</p>
+            <p className="text-white/60 text-xs">Paste one per line into KDP's Keywords fields. Each must be ≤50 chars. Never repeat words from your title.</p>
             <div className="space-y-2">
               {(kdp.kdp_7_keywords||[]).map((kw,i)=>(
                 <div key={i} className="flex items-center gap-3">
                   <span className={`text-xs font-bold w-5 h-5 rounded-full flex items-center justify-center shrink-0 ${kw.length<=50?"bg-green-500/20 text-green-400":"bg-red-500/20 text-red-400"}`}>{i+1}</span>
                   <div className="flex-1 bg-white/10 rounded-lg px-3 py-2 text-white/80 text-sm font-mono">{kw}</div>
-                  <span className={`text-xs ${kw.length<=50?"text-white/30":"text-red-400"}`}>{kw.length}/50</span>
+                  <span className={`text-xs ${kw.length<=50?"text-white/60":"text-red-400"}`}>{kw.length}/50</span>
                   <KDPCopyBtn text={kw}/>
                 </div>
               ))}
@@ -6570,7 +6632,7 @@ function KDPPackagePanel({book,busy,busyStep,onGenerate,quotaHit,flash,isBuildin
               <h3 className="text-white font-bold">🤖 AI Search Keywords</h3>
               <KDPCopyBtn text={(kdp.ai_search_keywords||[]).join("\n")} label="📋 Copy All"/>
             </div>
-            <p className="text-white/30 text-xs">Optimized for discovery via AI engines (ChatGPT, Perplexity, Claude). Use in your website meta tags, social bios, and Amazon Author Central.</p>
+            <p className="text-white/60 text-xs">Optimized for discovery via AI engines (ChatGPT, Perplexity, Claude). Use in your website meta tags, social bios, and Amazon Author Central.</p>
             <KDPBadgeList label="" items={kdp.ai_search_keywords}/>
           </div>
 
@@ -6586,7 +6648,7 @@ function KDPPackagePanel({book,busy,busyStep,onGenerate,quotaHit,flash,isBuildin
             <div className="flex items-start justify-between">
               <div>
                 <h3 className="text-white font-bold">⭐ Amazon A+ Content</h3>
-                <p className="text-white/30 text-xs mt-1">Available after first sale. Add in KDP → A+ Content Manager. Boosts conversion by up to 10%.</p>
+                <p className="text-white/60 text-xs mt-1">Available after first sale. Add in KDP → A+ Content Manager. Boosts conversion by up to 10%.</p>
               </div>
             </div>
             <KDPField label="A+ Headline" value={kdp.kdp_a_plus_headline}/>
@@ -6596,7 +6658,7 @@ function KDPPackagePanel({book,busy,busyStep,onGenerate,quotaHit,flash,isBuildin
           {/* Look Inside Hook */}
           <div className="bg-white/5 border border-white/10 rounded-2xl p-5 space-y-4">
             <h3 className="text-white font-bold">🔎 Look Inside Hook</h3>
-            <p className="text-white/30 text-xs">Amazon shows the first 10% of your book free. This optimized excerpt is written to hook readers in the first 200 words and drive purchase.</p>
+            <p className="text-white/60 text-xs">Amazon shows the first 10% of your book free. This optimized excerpt is written to hook readers in the first 200 words and drive purchase.</p>
             <KDPField label="Opening Hook" value={kdp.kdp_look_inside_hook} large/>
           </div>
 
@@ -6611,10 +6673,10 @@ function KDPPackagePanel({book,busy,busyStep,onGenerate,quotaHit,flash,isBuildin
                   <span className="text-xl">🎧</span>
                   <div>
                     <h3 className="text-white font-bold">ACX / Audible Package</h3>
-                    <p className="text-white/30 text-xs">{kdp.acx_title?"Ready":"Click to expand"}</p>
+                    <p className="text-white/60 text-xs">{kdp.acx_title?"Ready":"Click to expand"}</p>
                   </div>
                 </div>
-                <span className="text-white/30">{showACX?"▲":"▼"}</span>
+                <span className="text-white/60">{showACX?"▲":"▼"}</span>
               </button>
               {showACX&&(
                 <div className="px-5 pb-5 space-y-5 border-t border-white/10 pt-5">
@@ -6671,7 +6733,7 @@ function KDPPackagePanel({book,busy,busyStep,onGenerate,quotaHit,flash,isBuildin
           </div>
 
           {/* Regenerated timestamp */}
-          {kdp.generated_at&&<p className="text-white/15 text-xs text-center">Generated {new Date(kdp.generated_at).toLocaleString()}</p>}
+          {kdp.generated_at&&<p className="text-white/50 text-xs text-center">Generated {new Date(kdp.generated_at).toLocaleString()}</p>}
         </div>
       )}
     </div>
@@ -6928,10 +6990,10 @@ function AudioStudioPanel({book,bookId,onSettings,flash}){
               </div>
             </div>
             <button onClick={playBrowserTTS} disabled={chapters.length===0} className="w-full bg-gradient-to-r from-green-500 to-emerald-500 text-white py-3.5 rounded-xl font-semibold hover:opacity-90 disabled:opacity-40 flex items-center justify-center gap-2">{browserPlaying?"⏹ Stop Playback":"▶ Play Preview (first 5000 chars)"}</button>
-            {chapters.length===0&&<p className="text-white/20 text-xs text-center">Write chapters first to preview audio.</p>}
+            {chapters.length===0&&<p className="text-white/50 text-xs text-center">Write chapters first to preview audio.</p>}
           </div>
         ):(
-          <p className="text-white/30 text-sm text-center py-4">Browser TTS not available — try Chrome, Edge, or Safari.</p>
+          <p className="text-white/60 text-sm text-center py-4">Browser TTS not available — try Chrome, Edge, or Safari.</p>
         )}
       </Card>
 
@@ -6943,7 +7005,7 @@ function AudioStudioPanel({book,bookId,onSettings,flash}){
             <h2 className="text-white text-xl font-bold">Premium Neural TTS (Puter.js)</h2>
             <p className="text-white/40 text-sm mt-1">OpenAI TTS, AWS Polly & ElevenLabs — <strong className="text-violet-400/70">natural human-like voices</strong>. Requires Puter.js backend. User-pays model — you pay nothing.</p>
           </div>
-          <div className={`text-xs px-3 py-1 rounded-full border font-semibold shrink-0 ${typeof puter!=="undefined"?"bg-green-500/20 text-green-300 border-green-500/30":"bg-white/10 text-white/30 border-white/10"}`}>{typeof puter!=="undefined"?"Available":"Puter.js Required"}</div>
+          <div className={`text-xs px-3 py-1 rounded-full border font-semibold shrink-0 ${typeof puter!=="undefined"?"bg-green-500/20 text-green-300 border-green-500/30":"bg-white/10 text-white/60 border-white/10"}`}>{typeof puter!=="undefined"?"Available":"Puter.js Required"}</div>
         </div>
         {typeof puter!=="undefined"?(
           <div className="space-y-3">
@@ -6979,7 +7041,7 @@ function AudioStudioPanel({book,bookId,onSettings,flash}){
                 flash("▶ Playing premium TTS preview");
               }catch(e){flash("⚠️ "+errMsg(e));}
             }} disabled={chapters.length===0} className="w-full bg-gradient-to-r from-violet-500 to-indigo-500 text-white py-3.5 rounded-xl font-semibold hover:opacity-90 disabled:opacity-40 flex items-center justify-center gap-2">▶ Play Premium Preview (first 4000 chars)</button>
-            <p className="text-white/30 text-xs">⚠️ Puter.js user-pays model: your listeners cover their own TTS costs. No API keys needed.</p>
+            <p className="text-white/60 text-xs">⚠️ Puter.js user-pays model: your listeners cover their own TTS costs. No API keys needed.</p>
           </div>
         ):(
           <div className="bg-white/5 rounded-xl p-4 text-center">
@@ -7003,7 +7065,7 @@ function AudioStudioPanel({book,bookId,onSettings,flash}){
         {modelState==="loading"&&modelProgress&&(
           <div className="mt-4">
             <div className="bg-white/5 rounded-lg p-3 text-amber-300/70 text-xs">{modelProgress}</div>
-            <p className="text-white/20 text-xs mt-2">After the first download (~82MB), the model is cached in your browser — future loads are instant.</p>
+            <p className="text-white/50 text-xs mt-2">After the first download (~82MB), the model is cached in your browser — future loads are instant.</p>
           </div>
         )}
         {modelState==="error"&&<div className="mt-3 bg-red-500/10 border border-red-500/20 rounded-xl p-3 text-red-300 text-sm">{modelProgress}<br/><span className="text-red-300/50 text-xs">Tip: Try in Chrome/Edge with WebAssembly support.</span></div>}
@@ -7026,7 +7088,7 @@ function AudioStudioPanel({book,bookId,onSettings,flash}){
           <div>
             <label className="text-white/50 text-xs uppercase tracking-wider block mb-2">Speed: {speed.toFixed(2)}×</label>
             <input type="range" min="0.7" max="1.3" step="0.05" value={speed} onChange={e=>setSpeed(Number(e.target.value))} className="w-full accent-purple-500 mt-2"/>
-            <div className="flex justify-between text-white/20 text-xs mt-1"><span>0.7× slow</span><span>1.0× natural</span><span>1.3× fast</span></div>
+            <div className="flex justify-between text-white/50 text-xs mt-1"><span>0.7× slow</span><span>1.0× natural</span><span>1.3× fast</span></div>
           </div>
         </div>
         <div className="bg-purple-500/10 border border-purple-500/20 rounded-xl p-3 text-xs text-purple-300/70">
@@ -7043,7 +7105,7 @@ function AudioStudioPanel({book,bookId,onSettings,flash}){
           </div>
         </div>
         {chapters.length===0?(
-          <div className="text-center py-8 text-white/20 text-sm">No chapters written yet — write chapters first.</div>
+          <div className="text-center py-8 text-white/50 text-sm">No chapters written yet — write chapters first.</div>
         ):(
           <div className="space-y-2 max-h-[400px] overflow-y-auto pr-1">
             {chapters.map((ch,i)=>{
@@ -7055,7 +7117,7 @@ function AudioStudioPanel({book,bookId,onSettings,flash}){
                   <input type="checkbox" checked={isSelected} onChange={e=>{e.stopPropagation();setSelectedChapters(prev=>isSelected?prev.filter(x=>x!==i):[...prev,i]);}} className="accent-purple-500 w-4 h-4 shrink-0" onClick={e=>e.stopPropagation()}/>
                   <div className="flex-1 min-w-0" onClick={()=>setSelectedChapters(prev=>isSelected?prev.filter(x=>x!==i):[...prev,i])}>
                     <p className="text-white text-sm font-medium truncate">Ch.{ch.number}: {ch.title}</p>
-                    <p className="text-white/30 text-xs">{(ch.content||"").split(/\s+/).length} words · ~{Math.round((ch.content||"").split(/\s+/).length/150)} min audio</p>
+                    <p className="text-white/60 text-xs">{(ch.content||"").split(/\s+/).length} words · ~{Math.round((ch.content||"").split(/\s+/).length/150)} min audio</p>
                   </div>
                   <div className="flex items-center gap-2 shrink-0">
                     {hasAudio&&(
@@ -7097,7 +7159,7 @@ function AudioStudioPanel({book,bookId,onSettings,flash}){
           <div className="bg-black/30 rounded-xl p-4 max-h-48 overflow-y-auto space-y-1">
             {genLog.map((entry,i)=>(
               <div key={i} className="flex gap-2 text-xs">
-                <span className="text-white/20 shrink-0">{entry.time}</span>
+                <span className="text-white/50 shrink-0">{entry.time}</span>
                 <span className="text-white/60">{entry.msg}</span>
               </div>
             ))}
@@ -7105,14 +7167,14 @@ function AudioStudioPanel({book,bookId,onSettings,flash}){
         )}
 
         <div className="mt-4 grid grid-cols-2 sm:grid-cols-3 gap-3 text-center">
-          <div className="bg-white/5 rounded-xl p-3"><p className="text-white text-lg font-bold">{Object.keys(audioBlobs).length}</p><p className="text-white/30 text-xs">Chapters ready</p></div>
-          <div className="bg-white/5 rounded-xl p-3"><p className="text-white text-lg font-bold">{chapters.reduce((a,c)=>a+Math.round((c.content||"").split(/\s+/).length/150),0)}</p><p className="text-white/30 text-xs">Est. total minutes</p></div>
-          <div className="bg-white/5 rounded-xl p-3"><p className="text-white text-lg font-bold">FREE</p><p className="text-white/30 text-xs">No API cost</p></div>
+          <div className="bg-white/5 rounded-xl p-3"><p className="text-white text-lg font-bold">{Object.keys(audioBlobs).length}</p><p className="text-white/60 text-xs">Chapters ready</p></div>
+          <div className="bg-white/5 rounded-xl p-3"><p className="text-white text-lg font-bold">{chapters.reduce((a,c)=>a+Math.round((c.content||"").split(/\s+/).length/150),0)}</p><p className="text-white/60 text-xs">Est. total minutes</p></div>
+          <div className="bg-white/5 rounded-xl p-3"><p className="text-white text-lg font-bold">FREE</p><p className="text-white/60 text-xs">No API cost</p></div>
         </div>
       </Card>
 
       {/* Info box */}
-      <div className="bg-white/3 border border-white/8 rounded-xl p-4 text-xs text-white/30 leading-relaxed">
+      <div className="bg-white/3 border border-white/8 rounded-xl p-4 text-xs text-white/60 leading-relaxed">
         <strong className="text-white/50">How it works:</strong> Kokoro-82M runs entirely in your browser via WebAssembly. The model (~82MB) downloads once and is cached permanently. Audio is WAV format (24kHz, 16-bit PCM) — import into Audacity, Adobe Premiere, or ACX-compatible software for final mastering. Each chapter generates independently so you can regenerate just the chapters that need it.
       </div>
     </div>
@@ -7160,7 +7222,7 @@ function TranslatePanel({book,upd,quotaHit,bump,handleErr,flash}){
           `CHAPTER:\n${ch.content}`;
         const translated=await callAI(transPrompt,0.4,{model:_useTransModel?transModel:undefined});
         bump();
-        chapters[chIdx]={...chapters[chIdx],content:translated};
+        chapters[chIdx]={...withVersionSnapshot(chapters[chIdx],"translation ("+targetLang+")"),content:translated};
       }
       // Update title & subtitle
       setProgress("Translating title…");setTransPct(95);
@@ -7216,7 +7278,7 @@ function TranslatePanel({book,upd,quotaHit,bump,handleErr,flash}){
             <p className="text-amber-200/60 text-xs">Export a backup copy first if you want to keep the original language. Translation uses one API call per chapter.</p>
           </div>
           <div className="flex items-center justify-between p-4 bg-white/5 rounded-xl">
-            <div><p className="text-white/70 text-sm">Chapters to translate</p><p className="text-white/30 text-xs">API calls: {(book.chapters||[]).filter(c=>c.content).length + 1}</p></div>
+            <div><p className="text-white/70 text-sm">Chapters to translate</p><p className="text-white/60 text-xs">API calls: {(book.chapters||[]).filter(c=>c.content).length + 1}</p></div>
             <span className="text-white text-2xl font-bold">{(book.chapters||[]).filter(c=>c.content).length}</span>
           </div>
           {translating&&<div className="py-4"><div className="flex items-center gap-2 mb-3"><Spin size="h-4 w-4"/><p className="text-purple-300 text-sm">{progress}</p></div>{transPct>0&&<div className="h-2 bg-white/10 rounded-full overflow-hidden"><div className="h-full bg-gradient-to-r from-blue-500 to-cyan-500 rounded-full transition-all" style={{width:transPct+"%"}}/></div>}</div>}
@@ -7443,7 +7505,7 @@ function FindReplaceModal({book,onClose,onUpdateBook,flash}){
           chaptersModified++;
           chapterCounts.push(`Ch. ${ch.number||idx+1}: ${matches}`);
           const newContent=ch.content.replace(regex,()=>replaceText);
-          return{...ch,content:newContent};
+          return{...withVersionSnapshot(ch,"find & replace"),content:newContent};
         }
         return ch;
       });
@@ -7463,7 +7525,7 @@ function FindReplaceModal({book,onClose,onUpdateBook,flash}){
   };
 
   return(
-    <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+    <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center p-4 bf-modal" role="dialog" aria-modal="true" aria-label="Find and replace">
       <div className="bg-slate-800 border border-white/10 rounded-2xl max-w-lg w-full shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
         {/* Header */}
         <div className="sticky top-0 bg-slate-800 border-b border-white/10 px-6 py-4 flex items-center justify-between z-10">
@@ -7557,7 +7619,7 @@ function FindReplaceModal({book,onClose,onUpdateBook,flash}){
                       className={`font-mono font-medium px-2 py-0.5 rounded ${
                         ch.count>0
                           ?"bg-purple-500/30 text-purple-200"
-                          :"text-white/30"
+                          :"text-white/60"
                       }`}
                     >
                       {ch.count} {ch.count===1?"match":"matches"}
@@ -7629,11 +7691,11 @@ function BookReader({book,onClose}){
   if(chapters.length===0)return <div className="fixed inset-0 bg-slate-900 z-[9990] flex items-center justify-center"><div className="text-center"><p className="text-white/40 text-lg mb-4">No chapters written yet.</p><button onClick={onClose} className="bg-purple-500 text-white px-6 py-2 rounded-xl">Go Back</button></div></div>;
 
   return(
-    <div className="fixed inset-0 bg-slate-900 z-[9990] flex flex-col">
+    <div className="fixed inset-0 bg-slate-900 z-[9990] flex flex-col bf-modal" role="dialog" aria-modal="true" aria-label="Book reader">
       {/* Reader header */}
       <div className="flex items-center justify-between px-4 py-3 border-b border-white/10 bg-slate-800/80 backdrop-blur">
-        <button onClick={onClose} className="text-white/40 hover:text-white text-sm flex items-center gap-2">✕ Close Reader</button>
-        <div className="text-white/30 text-sm hidden sm:block">{book.title}</div>
+        <button onClick={onClose} aria-label="Close reader" data-close-btn="true" className="text-white/40 hover:text-white text-sm flex items-center gap-2">✕ Close Reader</button>
+        <div className="text-white/60 text-sm hidden sm:block">{book.title}</div>
         <div className="flex gap-2">
           <button onClick={()=>setShowTOC(!showTOC)} className="text-white/40 hover:text-white text-sm px-3 py-1 rounded-lg bg-white/5">📑 TOC</button>
           <button onClick={printBook} className="text-white/40 hover:text-white text-sm px-3 py-1 rounded-lg bg-white/5">🖨️ Print</button>
@@ -7641,26 +7703,26 @@ function BookReader({book,onClose}){
       </div>
       {/* TOC sidebar */}
       {showTOC&&<div className="absolute left-0 top-12 bottom-0 w-64 bg-slate-800 border-r border-white/10 overflow-y-auto z-10 p-3">
-        <p className="text-white/30 text-xs uppercase tracking-wider mb-2">Chapters ({chapters.length})</p>
+        <p className="text-white/60 text-xs uppercase tracking-wider mb-2">Chapters ({chapters.length})</p>
         {chapters.map((c,i)=><button key={i} onClick={()=>{setChIdx(i);setShowTOC(false);}} className={`w-full text-left px-3 py-2 rounded-lg text-sm mb-1 ${i===chIdx?"bg-purple-500/20 text-white border border-purple-500/30":"text-white/50 hover:bg-white/5"}`}>{c.number}. {c.title}</button>)}
       </div>}
       {/* Reading area */}
       <div className="flex-1 overflow-y-auto" onClick={()=>showTOC&&setShowTOC(false)}>
         <div className="max-w-2xl mx-auto px-6 py-12">
           <h2 className="text-white text-2xl font-bold mb-1">Chapter {ch.number}: {ch.title}</h2>
-          <p className="text-white/20 text-xs mb-8">{ch.content.split(/\s+/).filter(Boolean).length.toLocaleString()} words · ~{Math.ceil(ch.content.split(/\s+/).filter(Boolean).length/200)} min read</p>
+          <p className="text-white/50 text-xs mb-8">{ch.content.split(/\s+/).filter(Boolean).length.toLocaleString()} words · ~{Math.ceil(ch.content.split(/\s+/).filter(Boolean).length/200)} min read</p>
           <div className="text-white/75 text-base leading-relaxed whitespace-pre-wrap font-serif">{ch.content}</div>
           {/* Prev/Next nav */}
           <div className="flex justify-between mt-12 pt-6 border-t border-white/10">
             <button onClick={()=>setChIdx(Math.max(0,chIdx-1))} disabled={chIdx===0} className="text-white/50 hover:text-white text-sm disabled:opacity-30">← Previous</button>
-            <span className="text-white/20 text-xs">{chIdx+1} / {chapters.length}</span>
+            <span className="text-white/50 text-xs">{chIdx+1} / {chapters.length}</span>
             <button onClick={()=>setChIdx(Math.min(chapters.length-1,chIdx+1))} disabled={chIdx===chapters.length-1} className="text-white/50 hover:text-white text-sm disabled:opacity-30">Next →</button>
           </div>
         </div>
       </div>
       {/* Progress bar */}
       <div className="h-1 bg-white/5"><div className="h-full bg-gradient-to-r from-purple-500 to-pink-500 transition-all" style={{width:`${((chIdx+1)/chapters.length)*100}%`}}/></div>
-      <div className="text-center py-2 text-white/20 text-xs">{readMin>0?`${Math.floor(readMin/60)>0?Math.floor(readMin/60)+"h ":""}${readMin%60}m total read time`:""}</div>
+      <div className="text-center py-2 text-white/50 text-xs">{readMin>0?`${Math.floor(readMin/60)>0?Math.floor(readMin/60)+"h ":""}${readMin%60}m total read time`:""}</div>
     </div>
   );
 }
@@ -7697,7 +7759,7 @@ function InBookSearch({book,onJump}){
     <div className="mb-4">
       <input type="text" value={q} onChange={e=>setQ(e.target.value)} placeholder="🔍 Search within book…" className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-2 text-white text-sm placeholder-white/30 focus:outline-none focus:border-purple-500/50"/>
       {results&&results.length>0&&<div className="mt-2 space-y-2 max-h-60 overflow-y-auto">{results.map((r,i)=><button key={i} onClick={()=>onJump(r.chIdx)} className="w-full text-left bg-white/5 border border-white/10 rounded-lg p-3 hover:bg-white/10 transition-colors"><p className="text-white/40 text-xs mb-1">Ch. {book.chapters[r.chIdx].number}: {book.chapters[r.chIdx].title}</p><p className="text-white/60 text-sm">…{r.before}<mark className="bg-amber-500/30 text-amber-200 rounded px-0.5">{r.highlight}</mark>{r.after}…</p></button>)}</div>}
-      {results&&results.length===0&&q.trim()&&<p className="text-white/30 text-sm mt-2">No matches found.</p>}
+      {results&&results.length===0&&q.trim()&&<p className="text-white/60 text-sm mt-2">No matches found.</p>}
     </div>
   );
 }
@@ -7730,7 +7792,7 @@ function WordGoalBar({current,target,label}){
     <div className="flex items-center gap-3">
       <div className="flex-1">
         <div className="flex justify-between text-xs mb-1">
-          <span className="text-white/30">{label||"Word progress"}</span>
+          <span className="text-white/60">{label||"Word progress"}</span>
           <span className={isShort?"text-amber-400":isGood?"text-green-400":"text-white/40"}>{current.toLocaleString()} / {target>0?target.toLocaleString():"?"} words</span>
         </div>
         <div className="h-2 bg-white/10 rounded-full overflow-hidden">
@@ -8029,7 +8091,7 @@ function App(){
           </div>
         </div>
       )}
-      <div className="fixed top-4 right-4 z-[9999] flex flex-col gap-2 pointer-events-none">
+      <div role="status" aria-live="polite" className="fixed top-4 right-4 z-[9999] flex flex-col gap-2 pointer-events-none">
         {retryToasts.map(t=>(
           <div key={t.id} className="bg-cyan-500/95 text-white text-xs font-semibold px-4 py-2.5 rounded-lg shadow-lg backdrop-blur-sm animate-pulse">{t.msg}</div>
         ))}
@@ -8363,9 +8425,9 @@ function MangaHomePage({navigate, onSettings}){
       {/* Stats */}
       {projects.length > 0 && (
         <div className="grid grid-cols-3 gap-3 mb-6">
-          <div className="bg-white/5 border border-white/10 rounded-xl p-3 text-center"><p className="text-white text-xl font-bold">{projects.length}</p><p className="text-white/30 text-xs">Projects</p></div>
-          <div className="bg-white/5 border border-white/10 rounded-xl p-3 text-center"><p className="text-white text-xl font-bold">{projects.reduce((a,p)=>(a+(p.chapters?.length||0)),0)}</p><p className="text-white/30 text-xs">Chapters</p></div>
-          <div className="bg-white/5 border border-white/10 rounded-xl p-3 text-center"><p className="text-white text-xl font-bold">{projects.reduce((a,p)=>(a+(p.chapters?.reduce((b,c)=>b+(c.scenes?.length||0),0)||0)),0)}</p><p className="text-white/30 text-xs">Scenes</p></div>
+          <div className="bg-white/5 border border-white/10 rounded-xl p-3 text-center"><p className="text-white text-xl font-bold">{projects.length}</p><p className="text-white/60 text-xs">Projects</p></div>
+          <div className="bg-white/5 border border-white/10 rounded-xl p-3 text-center"><p className="text-white text-xl font-bold">{projects.reduce((a,p)=>(a+(p.chapters?.length||0)),0)}</p><p className="text-white/60 text-xs">Chapters</p></div>
+          <div className="bg-white/5 border border-white/10 rounded-xl p-3 text-center"><p className="text-white text-xl font-bold">{projects.reduce((a,p)=>(a+(p.chapters?.reduce((b,c)=>b+(c.scenes?.length||0),0)||0)),0)}</p><p className="text-white/60 text-xs">Scenes</p></div>
         </div>
       )}
 
@@ -8409,10 +8471,10 @@ function MangaHomePage({navigate, onSettings}){
                 <div className="p-4">
                   <h3 className="text-white font-bold text-sm leading-tight mb-1 line-clamp-2">{p.title}</h3>
                   <p className="text-white/40 text-xs mb-1">{genre?.label}</p>
-                  <p className="text-white/30 text-xs line-clamp-2 mb-3">{p.concept?.logline||p.concept?.synopsis?.slice(0,80)||""}</p>
+                  <p className="text-white/60 text-xs line-clamp-2 mb-3">{p.concept?.logline||p.concept?.synopsis?.slice(0,80)||""}</p>
                   <div className="flex items-center justify-between">
                     <span className="text-purple-300/70 text-xs">{chCount} chapter{chCount!==1?"s":""}</span>
-                    {lastCh && <span className="text-white/20 text-xs">Last: Ch.{lastCh.number}</span>}
+                    {lastCh && <span className="text-white/50 text-xs">Last: Ch.{lastCh.number}</span>}
                   </div>
                   <div className="flex gap-2 mt-3">
                     <button onClick={() => navigate("manga-editor", p.id)} className="flex-1 bg-gradient-to-r from-pink-500 to-purple-500 text-white py-2 rounded-lg text-xs font-semibold hover:opacity-90">Open Studio →</button>
@@ -8525,7 +8587,7 @@ function MangaCreateWizard({navigate, onSettings, onBack, onCreated}){
       <div className="flex items-center gap-2 mb-8">
         {[1,2,3].map(s => (
           <div key={s} className="flex items-center gap-2">
-            <div className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold border-2 transition-all ${step>=s?"bg-purple-500 border-purple-500 text-white":"border-white/20 text-white/30"}`}>{s}</div>
+            <div className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold border-2 transition-all ${step>=s?"bg-purple-500 border-purple-500 text-white":"border-white/20 text-white/60"}`}>{s}</div>
             {s<3&&<div className={`h-0.5 w-12 sm:w-24 rounded ${step>s?"bg-purple-500":"bg-white/10"}`}/>}
           </div>
         ))}
@@ -8823,7 +8885,7 @@ function MangaEditorPage({projectId, navigate, onSettings}){
 
       <div className="max-w-6xl mx-auto px-4 sm:px-6 py-6">
         {error&&<div className="bg-red-500/20 border border-red-500/30 text-red-300 rounded-xl p-3 mb-4 text-sm">{error}</div>}
-        {success&&<div className="bg-green-500/20 border border-green-500/30 text-green-300 rounded-xl p-3 mb-4 text-sm">{success}</div>}
+        {success&&<div role="status" aria-live="polite" className="bg-green-500/20 border border-green-500/30 text-green-300 rounded-xl p-3 mb-4 text-sm">{success}</div>}
 
         {/* ── TAB 0: Series Bible ── */}
         {tab===0&&(
@@ -8872,7 +8934,7 @@ function MangaEditorPage({projectId, navigate, onSettings}){
                 {concept.supporting_cast.map((c,i)=>(
                   <div key={i} className="flex gap-3 items-start">
                     <div className="w-6 h-6 bg-white/10 rounded-full flex items-center justify-center text-xs text-white/40 shrink-0">{i+1}</div>
-                    <div><p className="text-white text-sm font-medium">{c.name} <span className="text-white/30 font-normal">({c.role})</span></p><p className="text-white/40 text-xs">{c.brief}</p></div>
+                    <div><p className="text-white text-sm font-medium">{c.name} <span className="text-white/60 font-normal">({c.role})</span></p><p className="text-white/40 text-xs">{c.brief}</p></div>
                   </div>
                 ))}
               </div>
@@ -8920,11 +8982,11 @@ function MangaEditorPage({projectId, navigate, onSettings}){
                         <h3 className="text-white font-semibold text-sm">{ch.title||`Chapter ${ch.number}`}</h3>
                         <p className="text-white/40 text-xs mt-1 line-clamp-2">{ch.summary}</p>
                         <div className="flex items-center gap-3 mt-2">
-                          <span className="text-white/25 text-xs">{ch.scenes?.length||0} scenes</span>
-                          <span className="text-white/25 text-xs">·</span>
+                          <span className="text-white/50 text-xs">{ch.scenes?.length||0} scenes</span>
+                          <span className="text-white/50 text-xs">·</span>
                           <span className={`text-xs px-2 py-0.5 rounded-full ${ch.mood==="action"?"bg-orange-500/20 text-orange-300":ch.mood==="romance"?"bg-pink-500/20 text-pink-300":ch.mood==="tense"?"bg-red-500/20 text-red-300":"bg-white/10 text-white/40"}`}>{ch.mood}</span>
-                          <span className="text-white/25 text-xs">·</span>
-                          <span className="text-white/30 text-xs">{ch.chapter_end_type}</span>
+                          <span className="text-white/50 text-xs">·</span>
+                          <span className="text-white/60 text-xs">{ch.chapter_end_type}</span>
                         </div>
                       </div>
                       <div className="flex gap-2 shrink-0">
@@ -8949,10 +9011,10 @@ function MangaEditorPage({projectId, navigate, onSettings}){
               <div className="bg-white/5 border border-white/10 rounded-xl p-4 mb-5">
                 <div className="flex items-center justify-between mb-2">
                   <p className="text-white/60 text-sm">Next chapter: <span className="text-white font-bold">Ch.{lastChNum+1}</span></p>
-                  <span className="text-white/30 text-xs">{chapters.length} written so far</span>
+                  <span className="text-white/60 text-xs">{chapters.length} written so far</span>
                 </div>
                 {chapters.length > 0 && (
-                  <p className="text-white/30 text-xs">Last chapter: "{chapters.slice(-1)[0]?.title}" — {chapters.slice(-1)[0]?.chapter_end_type}</p>
+                  <p className="text-white/60 text-xs">Last chapter: "{chapters.slice(-1)[0]?.title}" — {chapters.slice(-1)[0]?.chapter_end_type}</p>
                 )}
               </div>
 
@@ -8966,7 +9028,7 @@ function MangaEditorPage({projectId, navigate, onSettings}){
                     </button>
                   ))}
                 </div>
-                <p className="text-white/25 text-xs mt-2 text-center">Writing {chapterCount} chapter{chapterCount!==1?"s":""} = ~{chapterCount} Gemini requests</p>
+                <p className="text-white/50 text-xs mt-2 text-center">Writing {chapterCount} chapter{chapterCount!==1?"s":""} = ~{chapterCount} Gemini requests</p>
               </div>
 
               {/* Story context badge */}
@@ -8996,7 +9058,7 @@ function MangaEditorPage({projectId, navigate, onSettings}){
                 <div className="space-y-1 max-h-48 overflow-y-auto">
                   {writeLog.map((e,i) => (
                     <div key={i} className="flex gap-2 text-xs">
-                      <span className="text-white/20 shrink-0">{e.time}</span>
+                      <span className="text-white/50 shrink-0">{e.time}</span>
                       <span className="text-white/60">{e.msg}</span>
                     </div>
                   ))}
@@ -9038,7 +9100,7 @@ function MangaEditorPage({projectId, navigate, onSettings}){
                     <div key={si} className="bg-white/5 border border-white/10 rounded-2xl p-5">
                       <div className="flex items-center justify-between mb-4">
                         <h3 className="text-white font-semibold text-sm">Scene {scene.scene_number} — {scene.location}</h3>
-                        <span className="text-white/30 text-xs">{scene.time_of_day} · {scene.panel_count} panels</span>
+                        <span className="text-white/60 text-xs">{scene.time_of_day} · {scene.panel_count} panels</span>
                       </div>
 
                       {/* Panel Art */}
@@ -9046,13 +9108,13 @@ function MangaEditorPage({projectId, navigate, onSettings}){
                         {panelArtUrl ? (
                           <div className="relative">
                             <img src={panelArtUrl} alt="" className="w-full max-w-sm mx-auto rounded-xl border border-white/10"/>
-                            <button onClick={() => generatePanelArt(chIdx, si, scene.panel_descriptions?.[0]||scene.location)} disabled={isGenning} className="mt-2 text-xs border border-white/20 text-white/30 px-3 py-1 rounded-lg hover:bg-white/5 block mx-auto">
+                            <button onClick={() => generatePanelArt(chIdx, si, scene.panel_descriptions?.[0]||scene.location)} disabled={isGenning} className="mt-2 text-xs border border-white/20 text-white/60 px-3 py-1 rounded-lg hover:bg-white/5 block mx-auto">
                               {isGenning ? <><Spin/> Regenerating…</> : "🔄 Regenerate Art"}
                             </button>
                           </div>
                         ) : (
                           <button onClick={() => generatePanelArt(chIdx, si, scene.panel_descriptions?.[0]||scene.location)} disabled={isGenning} className="w-full border-2 border-dashed border-white/10 rounded-xl py-8 text-center hover:border-white/25 transition-all">
-                            {isGenning ? <><Spin className="mx-auto"/> <p className="text-white/30 text-xs mt-2">Generating panel art…</p></> : <><p className="text-2xl mb-2">🎨</p><p className="text-white/40 text-sm">Generate Panel Art</p><p className="text-white/20 text-xs mt-1">Uses Pollinations.ai · Free</p></>}
+                            {isGenning ? <><Spin className="mx-auto"/> <p className="text-white/60 text-xs mt-2">Generating panel art…</p></> : <><p className="text-2xl mb-2">🎨</p><p className="text-white/40 text-sm">Generate Panel Art</p><p className="text-white/50 text-xs mt-1">Uses Pollinations.ai · Free</p></>}
                           </button>
                         )}
                       </div>
@@ -9076,7 +9138,7 @@ function MangaEditorPage({projectId, navigate, onSettings}){
                           <p className="text-white/40 text-xs uppercase tracking-wider">Dialogue</p>
                           {scene.dialogue.map((d,di) => (
                             <div key={di} className="bg-white/5 rounded-lg p-3">
-                              <p className="text-purple-300 text-xs font-semibold mb-0.5">{d.character} <span className="text-white/20 font-normal">[{d.tone}]</span></p>
+                              <p className="text-purple-300 text-xs font-semibold mb-0.5">{d.character} <span className="text-white/50 font-normal">[{d.tone}]</span></p>
                               <p className="text-white/70 text-sm">"{d.line}"</p>
                             </div>
                           ))}
@@ -9084,7 +9146,7 @@ function MangaEditorPage({projectId, navigate, onSettings}){
                       )}
 
                       {/* Monologue + SFX */}
-                      {scene.internal_monologue && <div className="bg-indigo-500/10 border border-indigo-500/20 rounded-lg p-3 mb-3"><p className="text-white/30 text-xs mb-1">Inner Monologue</p><p className="text-indigo-200/70 text-sm italic">{scene.internal_monologue}</p></div>}
+                      {scene.internal_monologue && <div className="bg-indigo-500/10 border border-indigo-500/20 rounded-lg p-3 mb-3"><p className="text-white/60 text-xs mb-1">Inner Monologue</p><p className="text-indigo-200/70 text-sm italic">{scene.internal_monologue}</p></div>}
                       {scene.sfx?.length > 0 && <div className="flex gap-2 flex-wrap">{scene.sfx.map((fx,fi)=><span key={fi} className="bg-amber-500/20 text-amber-300 text-xs px-2 py-0.5 rounded font-bold font-mono">{fx}</span>)}</div>}
                     </div>
                   );
@@ -9092,7 +9154,7 @@ function MangaEditorPage({projectId, navigate, onSettings}){
 
                 {viewingChapter.next_chapter_setup && (
                   <div className="bg-gradient-to-r from-purple-900/40 to-pink-900/30 border border-purple-500/20 rounded-xl p-4">
-                    <p className="text-white/30 text-xs uppercase tracking-wider mb-1">Seeds for Next Chapter</p>
+                    <p className="text-white/60 text-xs uppercase tracking-wider mb-1">Seeds for Next Chapter</p>
                     <p className="text-white/60 text-sm">{viewingChapter.next_chapter_setup}</p>
                   </div>
                 )}
@@ -9134,7 +9196,7 @@ function MangaGalleryTab({chapters, project, onGenerate, generatingPanels}){
           <p className="text-white/40 text-sm">{withArt.length} of {allPanels.length} scenes have art</p>
         </div>
         {withoutArt.length > 0 && (
-          <p className="text-white/30 text-xs">{withoutArt.length} scenes need art — open a chapter to generate</p>
+          <p className="text-white/60 text-xs">{withoutArt.length} scenes need art — open a chapter to generate</p>
         )}
       </div>
 
@@ -9153,7 +9215,7 @@ function MangaGalleryTab({chapters, project, onGenerate, generatingPanels}){
               <img src={item.artUrl} alt="" className="w-full"/>
               <div className="p-2">
                 <p className="text-white/50 text-xs font-medium">Ch.{item.ch.number} · Sc.{item.scene.scene_number}</p>
-                <p className="text-white/25 text-xs truncate">{item.scene.location}</p>
+                <p className="text-white/50 text-xs truncate">{item.scene.location}</p>
               </div>
             </div>
           ))}
@@ -9474,15 +9536,15 @@ function MangaExportTab({project, flash}){
       <div className="grid grid-cols-3 gap-3">
         <div className="bg-white/5 border border-white/10 rounded-xl p-3 text-center">
           <p className="text-white text-xl font-bold">{chapters.length}</p>
-          <p className="text-white/30 text-xs">Chapters</p>
+          <p className="text-white/60 text-xs">Chapters</p>
         </div>
         <div className="bg-white/5 border border-white/10 rounded-xl p-3 text-center">
           <p className="text-white text-xl font-bold">{totalScenes}</p>
-          <p className="text-white/30 text-xs">Scenes</p>
+          <p className="text-white/60 text-xs">Scenes</p>
         </div>
         <div className={`border rounded-xl p-3 text-center ${totalWithArt > 0 ? "bg-green-500/10 border-green-500/20" : "bg-white/5 border-white/10"}`}>
           <p className={`text-xl font-bold ${totalWithArt > 0 ? "text-green-300" : "text-white"}`}>{totalWithArt}/{totalScenes}</p>
-          <p className="text-white/30 text-xs">Have Panel Art</p>
+          <p className="text-white/60 text-xs">Have Panel Art</p>
         </div>
       </div>
 
@@ -9507,7 +9569,7 @@ function MangaExportTab({project, flash}){
               </div>
               {platform===p.id && (
                 <div className="mt-3 pt-3 border-t border-white/10 space-y-1">
-                  {p.notes.map((n,i) => <p key={i} className="text-white/30 text-xs">• {n}</p>)}
+                  {p.notes.map((n,i) => <p key={i} className="text-white/60 text-xs">• {n}</p>)}
                   <div className="bg-cyan-500/10 border border-cyan-500/20 rounded-lg p-2.5 mt-2">
                     <p className="text-cyan-300/70 text-xs leading-relaxed">💡 {p.tip}</p>
                   </div>
@@ -9543,7 +9605,7 @@ function MangaExportTab({project, flash}){
           <div className="mt-4 bg-black/30 rounded-xl p-4 max-h-48 overflow-y-auto space-y-1">
             {exportLog.map((e,i) => (
               <div key={i} className="flex gap-2 text-xs">
-                <span className="text-white/20 shrink-0">{e.t}</span>
+                <span className="text-white/50 shrink-0">{e.t}</span>
                 <span className="text-white/60">{e.msg}</span>
               </div>
             ))}
@@ -9553,7 +9615,7 @@ function MangaExportTab({project, flash}){
 
       {/* Upload guide */}
       {platform !== "script" && (
-        <div className="bg-white/3 border border-white/8 rounded-xl p-4 text-xs text-white/30 leading-relaxed space-y-2">
+        <div className="bg-white/3 border border-white/8 rounded-xl p-4 text-xs text-white/60 leading-relaxed space-y-2">
           <p className="text-white/50 font-semibold">How to upload to {sel?.label}:</p>
           {platform === "webtoon" && <>
             <p>1. Go to <span className="text-purple-400">canvas.webtoons.com</span> → My Canvas → + New Episode</p>
