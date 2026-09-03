@@ -193,6 +193,27 @@ const TASK_MODELS={
     short:"gemini-2.5-flash",
     reasoning:"gemini-2.5-flash",
     multilingual:"gemini-2.5-flash",
+  },
+  cerebras:{
+    creative:"llama-4-scout-17b-16e-instruct", // Best prose on Cerebras
+    structured:"qwen-3.6-32b",           // Strong JSON + reasoning
+    short:"llama-4-scout-17b-16e-instruct", // Only 2 models — Scout is fast enough
+    reasoning:"qwen-3.6-32b",
+    multilingual:"qwen-3.6-32b",
+  },
+  kilo:{
+    creative:"nvidia/nemotron-3-ultra-550b-a55b:free", // Best quality free model
+    structured:"nvidia/nemotron-3-super-120b-a12b:free", // Fast + strong reasoning
+    short:"liquid/lfm-2.5-2.6b:free",   // Tiny & fast — metadata/short tasks
+    reasoning:"nvidia/nemotron-3-super-120b-a12b:free",
+    multilingual:"tencent/hy3:free",     // Strong multilingual
+  },
+  cloudflare:{
+    creative:"@cf/meta/llama-4-scout-17b-16e-instruct", // Best for prose
+    structured:"@cf/openai/gpt-oss-120b", // Strong JSON
+    short:"@cf/openai/gpt-oss-20b",      // Smaller, faster
+    reasoning:"@cf/deepseek-ai/deepseek-r1-distill-qwen-32b", // Outlines/reasoning
+    multilingual:"@cf/zai-org/glm-4.7-flash", // Strong multilingual
   }
 };
 
@@ -1926,7 +1947,9 @@ function exportLibraryBackup(){
         voice_fingerprint:localStorage.getItem("voice_fingerprint"),
         backend:localStorage.getItem("bfai_backend"),
         model:localStorage.getItem("bfai_model"),
-        cerebras_key:localStorage.getItem("cerebras_key"),
+        gemini_api_key:localStorage.getItem("gemini_api_key"),
+        groq_api_key:localStorage.getItem("groq_api_key"),
+        cerebras_api_key:localStorage.getItem("cerebras_api_key"),
         cloudflare_account:localStorage.getItem("cf_account_id"),
         cloudflare_token:localStorage.getItem("cf_api_token"),
         language:localStorage.getItem("bfai_language"),
