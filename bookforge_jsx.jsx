@@ -109,6 +109,27 @@ const getPuterTextModel=()=>localStorage.getItem("bfai_puter_text_model")||"goog
 const setPuterTextModel=m=>safeLS("bfai_puter_text_model",m);
 
 // Puter image model options
+// ── Premium Neural TTS via Puter.js (provider + voice pickers in Audio Studio) ──
+const PUTER_TTS_PROVIDERS=[
+  {id:"openai",label:"OpenAI TTS (tts-1-hd)",voices:["alloy","echo","fable","onyx","nova","shimmer","coral","sage"]},
+  {id:"polly",label:"AWS Polly (neural)",voices:["Joanna","Matthew","Amy","Ivy","Kendra","Salli","Joey","Kevin"]},
+  {id:"elevenlabs",label:"ElevenLabs",voices:["Rachel","Adam","Bella","Antoni","Domi","Elli"]},
+];
+const getPuterTTSProvider=()=>localStorage.getItem("bfai_puter_tts_provider")||PUTER_TTS_PROVIDERS[0].id;
+const setPuterTTSProvider=v=>safeLS("bfai_puter_tts_provider",v);
+const getPuterTTSVoice=()=>localStorage.getItem("bfai_puter_tts_voice")||PUTER_TTS_PROVIDERS.find(p=>p.id===getPuterTTSProvider())?.voices?.[0]||"alloy";
+const setPuterTTSVoice=v=>safeLS("bfai_puter_tts_voice",v);
+// Generate speech via Puter.js — accepts both the options-object and legacy positional signatures
+async function puterTTS(text){
+  const provider=getPuterTTSProvider(),voice=getPuterTTSVoice();
+  try{
+    return await puter.ai.txt2speech(text,{engine:provider,voice});
+  }catch(e){
+    // Older SDK signature: txt2speech(text, voice)
+    return await puter.ai.txt2speech(text,voice);
+  }
+}
+
 const PUTER_IMAGE_MODELS=[
   {id:"black-forest-labs/flux-2-pro",label:"FLUX.2 Pro",desc:"Best overall quality for book covers"},
   {id:"openai/gpt-image-2",label:"GPT Image 2",desc:"OpenAI — great text rendering"},
@@ -1286,6 +1307,11 @@ function importBookJSON(file){
         book.created_date=new Date().toISOString();
         resolve(book);
       }catch(e){reject(e);}
+    };
+    reader.onerror=()=>reject(new Error("Failed to read file"));
+    reader.readAsText(file);
+  });
+}
 
 // ══════════════════════════════════════════════════════════════════════════════
 // 📄 PDF EXPORT — Print-optimized PDF via browser print
@@ -1399,12 +1425,6 @@ function analyzeOverusedWords(book){
   }
   const repeatedPhrases=Object.entries(phrases).filter(([p,c])=>c>=3).sort((a,b)=>b[1]-a[1]).slice(0,10);
   return {overused,adverbs,repeatedPhrases,totalWords:words.length};
-}
-
-    };
-    reader.onerror=()=>reject(new Error("Failed to read file"));
-    reader.readAsText(file);
-  });
 }
 
 function buildEPUB(book){
@@ -1952,11 +1972,17 @@ function exportLibraryBackup(){
         cerebras_api_key:localStorage.getItem("cerebras_api_key"),
         cloudflare_account:localStorage.getItem("cf_account_id"),
         cloudflare_token:localStorage.getItem("cf_api_token"),
-        language:localStorage.getItem("bfai_language"),
-        characters:localStorage.getItem("bfai_characters"),
+        author_profile:localStorage.getItem("bfai_author"),
+        voice_fingerprint:localStorage.getItem("bfai_voice"),
+        auto_model:localStorage.getItem("bfai_auto_model"),
         usage:localStorage.getItem("bfai_usage"),
-        manga_projects:localStorage.getItem("bfai_manga")
-      }
+        manga_projects:localStorage.getItem("bf_manga_projects")
+      },
+      characters_map:getBooks().reduce((m,b)=>{
+        const c=localStorage.getItem("bfai_chars_"+b.id);
+        if(c)m[b.id]=c;
+        return m;
+      },{})
     };
     const blob=new Blob([JSON.stringify(backup,null,2)],{type:"application/json"});
     const url=URL.createObjectURL(blob);
@@ -1990,6 +2016,11 @@ function importLibraryBackup(file){
         if(backup.settings){
           Object.entries(backup.settings).forEach(([key,val])=>{
             if(val&&!localStorage.getItem(key))localStorage.setItem(key,val);
+          });
+        }
+        if(backup.characters_map){
+          Object.entries(backup.characters_map).forEach(([bookId,val])=>{
+            if(val&&!localStorage.getItem("bfai_chars_"+bookId))localStorage.setItem("bfai_chars_"+bookId,val);
           });
         }
         if(backup.series&&Array.isArray(backup.series)&&!backup.settings?.series){
