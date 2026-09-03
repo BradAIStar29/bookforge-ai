@@ -4003,10 +4003,10 @@ function QueuePage({navigate,onSettings}){
       try{
         const outline=book.outline?JSON.parse(book.outline):{};
         const chapters=[...(book.chapters||[])];
-        // Write un-generated chapters
-        for(let i=0;i<chapters.length;i++){
-          if(quotaBlocked())break;
-          if(chapters[i].generated)continue;
+        // Write un-generated chapters — ⚡ per-chapter recovery: one bad chapter never kills the book
+        const writeQChapter=async(i)=>{
+          if(quotaBlocked())return{stopped:true};
+          if(chapters[i].generated)return{};
           addLog(`  ✍️ Ch.${i+1}/${chapters.length}: "${chapters[i].title}"`);
           const series=book.series_id?getSeriesById(book.series_id):null;
           const seriesCtx=series?`\n\n${buildSeriesContext(series)}\nMaintain full consistency.`:"";
@@ -4030,31 +4030,46 @@ function QueuePage({navigate,onSettings}){
           const wc=chapters.reduce((a,c)=>a+(c.content?c.content.split(/\s+/).length:0),0);
           updateBook(id,{chapters:[...chapters],word_count:wc});
           reload();
+          return{};
+        };
+        // ⚡ up to 3 passes — chapters that error are retried automatically
+        for(let qpass=0;qpass<3;qpass++){
+          const qTargets=[];for(let qti=0;qti<chapters.length;qti++){if(!chapters[qti].generated)qTargets.push(qti);}
+          if(!qTargets.length)break;
+          if(qpass>0){addLog(`  🔁 Retry pass ${qpass+1}: ${qTargets.length} chapter(s) left in "${book.title}"`);await sleep(3000);}
+          for(const i of qTargets){
+            try{const r=await writeQChapter(i);if(r?.stopped)break;}
+            catch(chE){
+              if(chE?.code==="QUOTA"){addLog("  ⏳ Quota hit — pausing this book.");break;}
+              addLog(`  ⚠️ Ch.${i+1} failed: ${errMsg(chE)} — will retry on next pass`);
+            }
+          }
+          if(quotaBlocked())break;
         }
-        if(getUsage()<DAILY_LIMIT){
+        if(getUsage()<DAILY_LIMIT){try{
           // SEO
           addLog(`  🔍 Generating SEO…`);
           const seoRaw=await callAI(`Amazon KDP SEO. Title: ${book.title}\nGenre: ${book.genre}\nDesc: ${book.description}\nRespond ONLY JSON: {"seo_title":"","seo_description":"","primary_keywords":[""]}`);
           trackUsage();
           const sm=seoRaw.match(/\{[\s\S]*\}/);
-          if(sm){try{const seo=JSON.parse(sm[0]);updateBook(id,{seo_title:seo.seo_title||"",seo_description:seo.seo_description||"",seo_keywords:(seo.primary_keywords||[]).join(", "),seo_done:true});}catch(pe){addLog("⚠️ SEO parse failed — skipping SEO update");}}
+          if(sm){try{const seo=JSON.parse(sm[0]);updateBook(id,{seo_title:seo.seo_title||"",seo_description:seo.seo_description||"",seo_keywords:(seo.primary_keywords||[]).join(", "),seo_done:true});}catch(pe){addLog("⚠️ SEO parse failed — skipping SEO update");}}}catch(seE){addLog("  ⚠️ SEO step failed: "+errMsg(seE)+" — continuing");}
         }
-        if(getUsage()<DAILY_LIMIT){
+        if(getUsage()<DAILY_LIMIT){try{
           // Cover
           addLog(`  🎨 Generating cover…`);
           const cp=await callAI(`Professional book cover image prompt for "${book.title}" (${book.genre}). Describe characters, setting, mood, lighting, art style. NO text. Return only the prompt.`);
           trackUsage();
           const _artResult=await genCoverImage(cp.trim()+". No text.");const artUrl=_artResult.url;
           const finalUrl=await finalizeCoverImage(artUrl,outline.title||book.title,getAuthorProfile().name,book.subtitle);
-          updateBook(id,{cover_art_url:artUrl,cover_image_url:finalUrl,cover_done:true});
+          updateBook(id,{cover_art_url:artUrl,cover_image_url:finalUrl,cover_done:true});}catch(cvE){addLog("  ⚠️ Cover step failed: "+errMsg(cvE)+" — continuing");}
         }
-        if(getUsage()<DAILY_LIMIT){
+        if(getUsage()<DAILY_LIMIT){try{
           // Review
           addLog(`  🤖 Running review agent…`);
           const freshBook=getBook(id);
           const review=await runReviewAgent(freshBook);
           updateBook(id,{review,status:review.verdict==="PASS"?"ready":"writing",auto_build:false,build_step:"",review_done:true,build_complete:true,build_complete_date:new Date().toISOString(),gates_passed:review.verdict==="PASS"});
-          addLog(`  ${review.verdict==="PASS"?"✅":"⚠️"} Review: ${review.overall_score}/100 — ${review.verdict}`);
+          addLog(`  ${review.verdict==="PASS"?"✅":"⚠️"} Review: ${review.overall_score}/100 — ${review.verdict}`);}catch(rvE){addLog("  ⚠️ Review step failed: "+errMsg(rvE)+" — continuing");}
         }
         // Done — remove from queue
         removeFromQueue(id);
@@ -5200,7 +5215,8 @@ function EditorPage({bookId,navigate,onSettings}){
     return{outline,chapters};
   };
 
-  const runAutoBuild=async(b)=>{
+  const runAutoBuild=async(b,retryDepth=0)=>{
+    if(!b){upd({auto_build:false});setIsBuilding(false);return;}
     if(quotaBlocked()){setQuotaHit(true);upd({auto_build:false});return;}
     // Guard: if build is already fully complete and all chapters are written, don't re-run
     const allChaptersDone=(b.chapters||[]).length>0&&(b.chapters||[]).every(c=>c.generated);
@@ -5216,11 +5232,23 @@ function EditorPage({bookId,navigate,onSettings}){
     setIsBuilding(true);setTab(0);
     try{
       let chapters=b.chapters||[];let outline=b.outline?JSON.parse(b.outline):{};
-      if(b.needs_outline&&b.book_plan){const result=await generateSeriesOutline(b);if(result){outline=result.outline;chapters=result.chapters;}else{upd({auto_build:false,build_step:""});setIsBuilding(false);return;}}
+      if(b.needs_outline&&b.book_plan){
+        // ⚡ outline gets 3 attempts — a transient API error never kills the whole build
+        let result=null;let outlineTries=0;
+        while(!result&&outlineTries<3&&buildRef.current&&!quotaBlocked()){
+          try{result=await generateSeriesOutline(b);}
+          catch(oe){if(oe?.code==="QUOTA"){setQuotaHit(true);break;}outlineTries++;log(`⚠️ Outline attempt ${outlineTries}/3 failed — ${outlineTries<3?"retrying in 4s…":"giving up"}`);if(outlineTries<3)await sleep(4000);}
+        }
+        if(result){outline=result.outline;chapters=result.chapters;}else{upd({auto_build:false,build_step:""});setIsBuilding(false);return;}
+      }
       const total=chapters.length;
-      for(let i=0;i<total;i++){
+      // ⚡ MULTI-PASS — a failed chapter is auto-retried so the build never stalls (max 3 passes)
+      for(let pass=0;pass<3;pass++){
+        const targets=[];for(let ti=0;ti<total;ti++){if(!chapters[ti].generated)targets.push(ti);}
+        if(!targets.length)break;
+        if(pass>0){log(`🔁 Retry pass ${pass+1}: ${targets.length} chapter(s) still to write…`);await sleep(3000);}
+      for(const i of targets){
         if(!buildRef.current)break;if(quotaBlocked()){setQuotaHit(true);break;}
-        if(chapters[i].generated){continue;} // resume-safe: skip chapters already written
         log(`✍️ Writing chapter ${i+1}/${total}: "${chapters[i].title}"…`);setTab(1);setSelCh(i);
         try{
           const prev=chapters.slice(0,i).filter(c=>c.generated).map(c=>c.title).join(", ")||"None";
@@ -5243,7 +5271,9 @@ function EditorPage({bookId,navigate,onSettings}){
             if(em){let evD;try{evD=JSON.parse(em[0]);}catch(pe){evD={};}const sa=getSeries();const si=sa.findIndex(s=>s.id===b.series_id);
             if(si>-1){sa[si].plot_events=[...(sa[si].plot_events||[]),...(evD.events||[]).map(ev=>({book:`Book ${b.series_number||"?"}`,event:ev}))];setSeries(sa);}}
           }catch(evE){/* silent */}}
-        }catch(e){if(e?.code==="QUOTA"){setQuotaHit(true);break;}log(`⚠️ Ch.${i+1} error — skipped`);}
+        }catch(e){if(e?.code==="QUOTA"){setQuotaHit(true);break;}log(`⚠️ Ch.${i+1} error — will retry on next pass`);}
+      }
+      if(quotaBlocked()||!buildRef.current)break;
       }
       if(quotaBlocked()){upd({auto_build:false,build_step:""});setIsBuilding(false);return;}
       // SEO
@@ -5377,11 +5407,20 @@ function EditorPage({bookId,navigate,onSettings}){
 
       // ── FINAL STATUS ──────────────────────────────────────────────
       const finalBook=getBook(bookId);
+      // ⚡ COMPLETION SWEEP — if any pipeline step or chapter failed, auto-retry instead of leaving the build half-done
+      const stepsIncomplete=!finalBook?.seo_done||!finalBook?.cover_done||!finalBook?.review_done||!finalBook?.competitor_done||!finalBook?.hooks_done||!finalBook?.wq_done;
+      const chaptersIncomplete=(finalBook?.chapters||[]).length===0||!(finalBook.chapters||[]).every(c=>c.generated);
+      if((stepsIncomplete||chaptersIncomplete)&&retryDepth<2&&buildRef.current&&!quotaBlocked()){
+        log(`🔁 ${chaptersIncomplete?"Chapters":"Pipeline steps"} unfinished — auto-retrying (no action needed)…`);
+        await sleep(4000);
+        return runAutoBuild(getBook(bookId),retryDepth+1);
+      }
       const passed=finalBook?.review?.verdict==="PASS";
       const wPassed=finalBook?.manuscript_quality?.manuscript_verdict==="PASS";
       flash(passed&&wPassed?"🎉 Both quality checks passed — ready to publish!":!passed?"📋 Review tab has improvements needed.":"✍️ Writing Quality tab has suggestions to humanize your manuscript.");
-      upd({auto_build:false,build_step:"",status:passed&&wPassed?"ready":"writing",build_complete:true,gates_passed:passed&&wPassed,build_complete_date:new Date().toISOString()});
+      upd({auto_build:false,build_step:"",status:passed&&wPassed?"ready":"writing",build_complete:!stepsIncomplete&&!chaptersIncomplete,gates_passed:passed&&wPassed,build_complete_date:new Date().toISOString()});
       setTab(passed&&wPassed?10:!passed?4:8);
+      if(chaptersIncomplete||stepsIncomplete)log("⚠️ A few items couldn't finish after auto-retries — click ▶ Resume Build anytime to try again.");
     }catch(e){handleErr(e);upd({auto_build:false,build_step:""});}
     finally{setIsBuilding(false);buildRef.current=false;}
   };
@@ -5841,11 +5880,18 @@ const genCover=async()=>{if(quotaHit||isBuilding)return;setBusy(true);setError("
 
         {/* CHAPTERS */}
         {tab===1&&<div className="grid grid-cols-1 lg:grid-cols-3 gap-5"><div className="lg:col-span-1"><div className="bg-white/5 border border-white/10 rounded-2xl p-4 sticky top-24"><div className="flex items-center justify-between mb-3"><h3 className="text-white font-semibold text-sm">Chapters</h3><div className="flex gap-1.5"><button onClick={()=>setReadingMode(true)} disabled={!book.chapters?.some(c=>c.generated)} className="text-xs text-purple-300 hover:text-purple-200 disabled:opacity-30 px-2 py-1 rounded bg-purple-500/10">📖 Read</button><button onClick={()=>setShowFindReplace(true)} className="text-xs text-purple-300 hover:text-purple-200 disabled:opacity-30 px-2 py-1 rounded bg-purple-500/10 flex items-center gap-1">🔍 Find & Replace</button>{!isBuilding&&<button onClick={async()=>{
-    // Write all unwritten chapters, then trigger remaining pipeline steps
-    for(let i=0;i<(book.chapters||[]).length;i++){
+    // ⚡ Write all unwritten chapters — multi-pass, failed chapters auto-retry until done (max 3 passes)
+    for(let pass=0;pass<3;pass++){
       if(quotaBlocked()){setQuotaHit(true);break;}
       const fb=getBook(bookId);
-      if(!fb?.chapters?.[i]?.generated){await genChapter(i);}
+      const remaining=(fb?.chapters||[]).map((c,i)=>({c,i})).filter(x=>!x.c.generated).map(x=>x.i);
+      if(!remaining.length)break;
+      if(pass>0){flash(`🔁 Pass ${pass+1}: retrying ${remaining.length} chapter(s)…`);await sleep(3000);}
+      for(const i of remaining){
+        if(quotaBlocked()){setQuotaHit(true);break;}
+        const fb2=getBook(bookId);
+        if(!fb2?.chapters?.[i]?.generated){await genChapter(i);}
+      }
     }
     // Check if all chapters are now done — if so, trigger remaining pipeline
     const fb2=getBook(bookId);
