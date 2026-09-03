@@ -4358,6 +4358,18 @@ function HelpPage({onSettings}){
     }finally{setLoading(false);}
   };
 
+  // ⚡ Instant AI fallback — if the Axel relay backend is unreachable (e.g. private-app rejection),
+  // answer in-app via the configured AI backend so the user is never dead-ended.
+  const fallbackAIAnswer=async(q,ctx)=>{
+    try{
+      const ans=await callAI(`You are the in-app help assistant for BookForge AI, a browser-based book writing & publishing tool. Answer the user's help question clearly and concisely (under 150 words). App features: outline generation, chapter writing with streaming, cover art (Pollinations/FLUX via Puter.js), SEO tools, dual publish gate (75+ marketability, 78+ writing quality), EPUB/PDF/Markdown/DOCX/TXT export, audiobook scripts + browser TTS, voice training, character manager, series manager + continuity checker, queue batch builder, translate tool, manga studio, help chat. Data is stored locally (IndexedDB/localStorage) — no cloud account. Settings: 6 AI backends (Puter.js no-key default, Groq, Gemini, Cerebras, Kilo, Cloudflare).\n\nUser context: ${ctx}\nQuestion: ${q}\n\nAnswer:`,0.3);
+      const newReq={id:"local_"+Date.now(),question:q,context:ctx,answered:true,answer:ans||"I couldn't find an answer — please try rephrasing.",created_date:new Date().toISOString(),instant:true};
+      setRequests(prev=>[newReq,...prev]);
+      setQuestion("");
+    }catch(e2){
+      setError("Couldn't send question or answer it in-app: "+(e2?.msg||e2?.message||"unknown error"));
+    }
+  };
   const askQuestion=async()=>{
     if(!question.trim()){setError("Please type a question.");return;}
     setError("");
@@ -4372,11 +4384,11 @@ function HelpPage({onSettings}){
         setChecking({...checking,[data.requestId]:true});
         startPolling(data.requestId);
       }else{
-        setError(data.message||"Failed to send question.");
+        await fallbackAIAnswer(question.trim(),context);
       }
     }catch(e){
-      setError("Network error: "+(e?.msg||e?.message||"unknown error"));
-      console.error(e);
+      // Relay unreachable — answer in-app instead of dead-ending
+      await fallbackAIAnswer(question.trim(),context);
     }finally{setLoading(false);}
   };
 
@@ -4434,7 +4446,7 @@ function HelpPage({onSettings}){
                 <p className="text-white font-medium mb-2">{req.question}</p>
                 {req.answered?(
                   <div className="bg-green-500/10 border border-green-500/30 rounded-lg p-3 mt-2">
-                    <p className="text-green-400 text-xs font-semibold mb-1">✅ Answered by Axel</p>
+                    <p className="text-green-400 text-xs font-semibold mb-1">{req.instant?"⚡ Instant AI answer (direct-to-Axel relay offline)":"✅ Answered by Axel"}</p>
                     <p className="text-white/80 text-sm">{req.answer}</p>
                   </div>
                 ):(
@@ -7778,11 +7790,22 @@ function HelpBot(){
         setPendingId(d.requestId);
         setMessages(prev=>[...prev,{role:"bot",text:"✅ Question sent! Axel will respond shortly. I'll show his answer here when it's ready."}]);
       }else{
-        setMessages(prev=>[...prev,{role:"bot",text:"❌ Couldn't send to Axel. Please try again later or email brad directly."}]);
+        // Relay offline (private-app rejection etc.) — answer in-app via AI so the user isn't dead-ended
+        try{
+          const ans=await callAI(`You are the in-app help assistant for BookForge AI, a browser-based book writing & publishing tool. Answer the user's question clearly and concisely (under 150 words). Features: outline generation, chapter writing with streaming, cover art, SEO tools, dual publish gate, EPUB/PDF/Markdown/DOCX export, audiobook scripts + browser TTS, voice training, character manager, series manager + continuity checker, queue batch builder, translate, manga studio. Data stored locally (IndexedDB). Settings: 6 AI backends (Puter.js no-key default, Groq, Gemini, Cerebras, Kilo, Cloudflare).\n\nQuestion: ${lastUser.text}\n\nAnswer:`,0.3);
+          setMessages(prev=>[...prev,{role:"bot",text:"⚡ The direct-to-Axel relay is offline right now, so here's an instant AI answer:\n\n"+(ans||"")+"\n\nIf this didn't help, try the Help tab or rephrase your question."}]);
+        }catch(e2){
+          setMessages(prev=>[...prev,{role:"bot",text:"❌ Couldn't send to Axel or answer in-app. Please try again later."}]);
+        }
         setEscalating(false);
       }
     }catch(e){
-      setMessages(prev=>[...prev,{role:"bot",text:"❌ Connection error. Make sure you're online and try again."}]);
+      try{
+        const ans=await callAI(`You are the in-app help assistant for BookForge AI, a browser-based book writing & publishing tool. Answer the user's question clearly and concisely (under 150 words). Features: outline generation, chapter writing with streaming, cover art, SEO tools, dual publish gate, EPUB/PDF/Markdown/DOCX export, audiobook scripts + browser TTS, voice training, character manager, series manager + continuity checker, queue batch builder, translate, manga studio. Data stored locally (IndexedDB). Settings: 6 AI backends (Puter.js no-key default, Groq, Gemini, Cerebras, Kilo, Cloudflare).\n\nQuestion: ${lastUser.text}\n\nAnswer:`,0.3);
+        setMessages(prev=>[...prev,{role:"bot",text:"⚡ The direct-to-Axel relay is unreachable, so here's an instant AI answer:\n\n"+(ans||"")+"\n\nIf this didn't help, try the Help tab or rephrase your question."}]);
+      }catch(e2){
+        setMessages(prev=>[...prev,{role:"bot",text:"❌ Connection error. Make sure you're online and try again."}]);
+      }
       setEscalating(false);
     }
   };
