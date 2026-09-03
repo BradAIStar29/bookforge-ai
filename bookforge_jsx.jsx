@@ -6300,6 +6300,8 @@ Respond ONLY valid JSON: {"needs_improvement":false,"score":85,"issues":["short 
         {/* AMAZON KDP PACKAGE */}
         {tab===13&&<KDPPackagePanel book={book} busy={busy} busyStep={busyStep} onGenerate={genKDPPackage} quotaHit={quotaHit} flash={flash} isBuilding={isBuilding}/>}
         </div>
+      {readingMode&&<BookReader book={book} onClose={()=>setReadingMode(false)}/>}
+      {showFindReplace&&<FindReplaceModal book={book} onClose={()=>setShowFindReplace(false)} onUpdateBook={upd} flash={flash}/>}
     </div>
   );
 }
@@ -7113,8 +7115,6 @@ function AudioStudioPanel({book,bookId,onSettings,flash}){
       <div className="bg-white/3 border border-white/8 rounded-xl p-4 text-xs text-white/30 leading-relaxed">
         <strong className="text-white/50">How it works:</strong> Kokoro-82M runs entirely in your browser via WebAssembly. The model (~82MB) downloads once and is cached permanently. Audio is WAV format (24kHz, 16-bit PCM) — import into Audacity, Adobe Premiere, or ACX-compatible software for final mastering. Each chapter generates independently so you can regenerate just the chapters that need it.
       </div>
-      {readingMode&&<BookReader book={book} onClose={()=>setReadingMode(false)}/>}
-      {showFindReplace&&<FindReplaceModal book={book} onClose={()=>setShowFindReplace(false)} onUpdateBook={upd} flash={flash}/>}
     </div>
   );
 }
