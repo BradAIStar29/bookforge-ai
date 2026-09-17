@@ -44,6 +44,8 @@ const BACKENDS=[
   {id:"groq",label:"Groq Turbo (⚡ Fastest)",desc:"500+ tokens/sec with GPT-OSS 120B. Free API key, 14,400 req/day."},
   {id:"gemini",label:"Gemini API Key",desc:"Bring your own free Google AI Studio key. 1,500 req/day."},
   {id:"cloudflare",label:"Cloudflare Workers AI (10K/day)",desc:"75+ models incl. Llama 4 Scout, gpt-oss-120B, Mistral, DeepSeek. 10K Neurons/day free, no credit card."},
+  {id:"openrouter",label:"OpenRouter (25+ Free Models)",desc:"One free key unlocks 25+ free open-weight models — GPT-OSS 120B, Llama 4 Maverick, DeepSeek, Qwen3. 20 req/min, ~50-200 req/day free per model."},
+  {id:"huggingface",label:"HuggingFace Router (1K/day)",desc:"Your free HF token unlocks thousands of open models incl. DeepSeek V3 + Llama 4. ~1,000 requests/day free."},
   {id:"puter",label:"Puter.js (Free — No Key)",desc:"400+ models incl. GPT-5.5, Claude Opus 5, Gemini 3.6. User-pays model — you pay nothing."}
 ];
 // ── Kilo Code (no API key needed, auto-routes to free models) ──
@@ -90,6 +92,83 @@ const getCerebrasModel=()=>{
     return m;
   };
 const setCerebrasModel=m=>safeLS("bfai_cerebras_model",m);
+// ── OpenRouter + HuggingFace Router (OpenAI-compatible, CORS-verified 2026-09-17) ──
+const OPENROUTER_URL="https://openrouter.ai/api/v1/chat/completions";
+const getOpenRouterKey=()=>localStorage.getItem("openrouter_api_key")||"";
+const setOpenRouterKey=v=>safeLS("openrouter_api_key",v.trim());
+const getOpenRouterModel=()=>localStorage.getItem("bfai_or_model")||"openai/gpt-oss-120b:free";
+const setOpenRouterModel=m=>safeLS("bfai_or_model",m);
+const OPENROUTER_MODELS=[
+  {id:"openai/gpt-oss-120b:free",label:"GPT-OSS 120B",desc:"120B open weights — best free prose"},
+  {id:"meta-llama/llama-4-maverick:free",label:"Llama 4 Maverick",desc:"400B MoE — strong creative writing"},
+  {id:"deepseek/deepseek-chat-v3.2:free",label:"DeepSeek V3.2",desc:"Excellent structured + JSON output"},
+  {id:"qwen/qwen3-235b-a22b:free",label:"Qwen3 235B",desc:"Top open multilingual model"},
+  {id:"google/gemma-3-27b-it:free",label:"Gemma 3 27B",desc:"Fast, good short-form"},
+  {id:"mistralai/mistral-small-3.2-24b-instruct:free",label:"Mistral Small 3.2",desc:"Quick and reliable"}
+];
+const HUGGINGFACE_URL="https://router.huggingface.co/v1/chat/completions";
+const getHfToken=()=>localStorage.getItem("hf_api_token")||"";
+const setHfToken=v=>safeLS("hf_api_token",v.trim());
+const getHfModel=()=>localStorage.getItem("bfai_hf_model")||"meta-llama/Llama-4-Scout-17B-16E-Instruct";
+const setHfModel=m=>safeLS("bfai_hf_model",m);
+const HUGGINGFACE_MODELS=[
+  {id:"meta-llama/Llama-4-Scout-17B-16E-Instruct",label:"Llama 4 Scout 17B",desc:"Fast, strong all-rounder"},
+  {id:"deepseek-ai/DeepSeek-V3",label:"DeepSeek V3",desc:"671B MoE — excellent quality"},
+  {id:"Qwen/Qwen3-32B",label:"Qwen3 32B",desc:"Solid multilingual"},
+  {id:"mistralai/Mistral-Small-24B-Instruct-2501",label:"Mistral Small 24B",desc:"Efficient creative writer"}
+];
+async function callOpenAICompat(url,key,defModel,prompt,temperature=0.85,opts={}){
+  if(!key)throw{code:"NO_KEY",msg:"API key required — add one in Settings."};
+  const model=resolveModel(prompt,opts)||defModel;
+  let retries=0;
+  while(retries<=2){
+    const controller=new AbortController();
+    const timeout=setTimeout(()=>controller.abort(),90000);
+    try{
+      const resp=await fetch(url,{method:"POST",headers:{"Content-Type":"application/json","Authorization":"Bearer "+key},signal:controller.signal,body:JSON.stringify({model,messages:[{role:"user",content:prompt}],temperature:Math.min(temperature,1),max_tokens:opts.max_tokens||32768,stream:!!opts.onStream})});
+      clearTimeout(timeout);
+      if(opts.onStream&&resp.ok){
+        const reader=resp.body.getReader();
+        const decoder=new TextDecoder();
+        let fullText="",buffer="";
+        while(true){
+          const{done,value}=await reader.read();
+          if(done)break;
+          buffer+=decoder.decode(value,{stream:true});
+          const lines=buffer.split("\n");
+          buffer=lines.pop()||"";
+          for(const line of lines){
+            if(line.startsWith("data: ")){
+              const payload=line.slice(6).trim();
+              if(payload==="[DONE]")continue;
+              try{const j=JSON.parse(payload);const delta=j.choices?.[0]?.delta?.content||j.choices?.[0]?.text||"";if(delta){fullText+=delta;opts.onStream(fullText);}}catch(e){}
+            }
+          }
+        }
+        if(fullText)return fullText;
+        throw{code:"EMPTY",msg:"Empty response."};
+      }
+      const body=await resp.text();
+      let j=null;try{j=JSON.parse(body);}catch(e){}
+      if(resp.ok){
+        const txt=j?.choices?.[0]?.message?.content||j?.choices?.[0]?.text||"";
+        if(txt)return txt;
+        throw{code:"EMPTY",msg:"Empty response."};
+      }
+      if(resp.status===429){retries++;if(retries>2)throw{code:"QUOTA",msg:"Rate limit hit."};await new Promise(r=>setTimeout(r,2000));continue;}
+      if(resp.status>=500){retries++;if(retries>2)throw{code:"SERVER",msg:"Server error "+resp.status};await new Promise(r=>setTimeout(r,3000));continue;}
+      if(resp.status===401||resp.status===403)throw{code:"BAD_KEY",msg:"Invalid API key — check Settings."};
+      throw{code:"API_ERROR",msg:"API error ("+resp.status+"): "+cleanErrBody(body)};
+    }catch(e){
+      clearTimeout(timeout);
+      if(e?.name==="AbortError"){retries++;if(retries>2)throw{code:"TIMEOUT",msg:"Request timed out (90s)."};continue;}
+      throw e;
+    }
+  }
+  throw{code:"TIMEOUT",msg:"Request timed out (90s)."};
+}
+const callOpenRouter=(p,t,o)=>callOpenAICompat(OPENROUTER_URL,getOpenRouterKey(),getOpenRouterModel(),p,t,o);
+const callHuggingFace=(p,t,o)=>callOpenAICompat(HUGGINGFACE_URL,getHfToken(),getHfModel(),p,t,o);
 const getBackend=()=>localStorage.getItem("bfai_backend")||"puter"; // kilo default removed 2026-09-02: gateway dropped browser CORS
 const setBackend=b=>safeLS("bfai_backend",b);
 
@@ -219,6 +298,20 @@ const TASK_MODELS={
     short:"gemini-2.5-flash",
     reasoning:"gemini-2.5-flash",
     multilingual:"gemini-2.5-flash",
+  },
+  openrouter:{
+    creative:"openai/gpt-oss-120b:free",
+    structured:"deepseek/deepseek-chat-v3.2:free",
+    short:"openai/gpt-oss-120b:free",
+    reasoning:"deepseek/deepseek-chat-v3.2:free",
+    multilingual:"qwen/qwen3-235b-a22b:free",
+  },
+  huggingface:{
+    creative:"meta-llama/Llama-4-Scout-17B-16E-Instruct",
+    structured:"deepseek-ai/DeepSeek-V3",
+    short:"meta-llama/Llama-4-Scout-17B-16E-Instruct",
+    reasoning:"deepseek-ai/DeepSeek-V3",
+    multilingual:"Qwen/Qwen3-32B",
   },
   cerebras:{ // catalog refresh 2026-09-17: Scout/Qwen3.6 retired, gpt-oss-120b + qwen-3.8-27b remain
     creative:"gpt-oss-120b",
@@ -389,6 +482,8 @@ const hasCredentials=()=>{
   if(b==="cerebras")return!!getCerebrasKey();
   if(b==="kilo")return true; // no key needed!
   if(b==="cloudflare")return!!getCloudflareAccountId()&&!!getCloudflareToken();
+  if(b==="openrouter")return!!getOpenRouterKey();
+  if(b==="huggingface")return!!getHfToken();
   if(b==="puter")return typeof puter!=="undefined";
   return false;
 };
@@ -1122,7 +1217,7 @@ function initPuterLowBalanceWatcher(){
 // and known capacity. Each backend can only be tried once per call chain
 // (exhaustion marks + depth cap), so this can never loop forever.
 const BACKEND_EXHAUSTED=new Map(); // backend → expiry timestamp (ms)
-const FAILOVER_ORDER=["groq","cloudflare","gemini","kilo","puter","cerebras"]; // cerebras demoted 2026-09-17: free tier ended
+const FAILOVER_ORDER=["groq","cloudflare","openrouter","huggingface","gemini","kilo","puter","cerebras"]; // cerebras demoted (free tier ended), OR+HF added 2026-09-17
 function markBackendExhausted(b,ms){
   if(!ms)ms=b==="cloudflare"?12*3600e3:b==="gemini"?3600e3:10*60e3; // transient 429s ~10min; Cloudflare daily neurons 12h; Gemini 1h (usage pre-check is authoritative)
   BACKEND_EXHAUSTED.set(b,Date.now()+ms);
@@ -1141,6 +1236,8 @@ function backendAvailable(b){
   if(b==="groq")return!!getGroqKey();
   if(b==="cerebras")return!!getCerebrasKey();
   if(b==="cloudflare")return!!(getCloudflareAccountId()&&getCloudflareToken());
+  if(b==="openrouter")return!!getOpenRouterKey();
+  if(b==="huggingface")return!!getHfToken();
   if(b==="gemini")return!!getKey()&&getUsage()<DAILY_LIMIT;
   return false;
 }
@@ -1173,6 +1270,8 @@ function dispatchAICall(backend,prompt,temperature,opts){
   if(backend==="cerebras")return callCerebras(prompt,temperature,opts);
   if(backend==="kilo")return callKilo(prompt,temperature,opts);
   if(backend==="cloudflare")return callCloudflare(prompt,temperature,opts);
+  if(backend==="openrouter")return callOpenRouter(prompt,temperature,opts);
+  if(backend==="huggingface")return callHuggingFace(prompt,temperature,opts);
   return callGemini(prompt,temperature,opts);
 }
 async function callAI(prompt,temperature=0.85,opts={},_depth=0){
@@ -1264,6 +1363,16 @@ async function testConnection(){
       if(!getGroqKey())return{ok:false,msg:"No Groq API key set — add one in Settings."};
       const r=await callGroq("Say OK",0.1,{max_tokens:5});
       return{ok:true,msg:"✅ Groq API key works! Model: "+getGroqModel()+" — Response: "+(r||"OK").slice(0,50)};
+    }
+    if(backend==="openrouter"){
+      if(!getOpenRouterKey())return{ok:false,msg:"No OpenRouter API key set — add one in Settings."};
+      const r=await callOpenRouter("Say OK",0.1,{max_tokens:5});
+      return{ok:true,msg:"\u2705 OpenRouter works! Model: "+getOpenRouterModel()+" — Response: "+(r||"OK").slice(0,50)};
+    }
+    if(backend==="huggingface"){
+      if(!getHfToken())return{ok:false,msg:"No HuggingFace token set — add one in Settings."};
+      const r=await callHuggingFace("Say OK",0.1,{max_tokens:5});
+      return{ok:true,msg:"\u2705 HuggingFace works! Model: "+getHfModel()+" — Response: "+(r||"OK").slice(0,50)};
     }
     if(backend==="cerebras"){
       if(!getCerebrasKey())return{ok:false,msg:"No Cerebras API key set — add one in Settings."};
@@ -3047,7 +3156,13 @@ function SettingsModal({onClose}){
   const [cfAccountIdDraft,setCfAccountIdDraft]=useState(getCloudflareAccountId());
   const [cfTokenDraft,setCfTokenDraft]=useState(getCloudflareToken());
   const [cfSaved,setCfSaved]=useState(false);
-  const saveCf=()=>{setCloudflareAccountId(cfAccountIdDraft);setCloudflareToken(cfTokenDraft);setCfSaved(true);setTimeout(()=>setCfSaved(false),2000);}; // null | "testing" | "ok" | "fail"
+  const saveCf=()=>{setCloudflareAccountId(cfAccountIdDraft);setCloudflareToken(cfTokenDraft);setCfSaved(true);setTimeout(()=>setCfSaved(false),2000);};
+  const [orKeyDraft,setOrKeyDraft]=useState(getOpenRouterKey());
+  const [orKeySaved,setOrKeySaved]=useState(false);
+  const saveOrKey=()=>{setOpenRouterKey(orKeyDraft);setOrKeySaved(true);setTimeout(()=>setOrKeySaved(false),2000);};
+  const [hfTokenDraft,setHfTokenDraft]=useState(getHfToken());
+  const [hfSaved,setHfSaved]=useState(false);
+  const saveHf=()=>{setHfToken(hfTokenDraft);setHfSaved(true);setTimeout(()=>setHfSaved(false),2000);}; // null | "testing" | "ok" | "fail"
   const testKey=async()=>{
     if(!draft.trim())return;
     setTestStatus("testing");
@@ -3154,6 +3269,85 @@ function SettingsModal({onClose}){
                 </div>
               )}
 
+              {/* Cerebras (only show if cerebras backend) */}
+              {getBackend()==="cerebras"&&(
+                <div>
+                  <div className="bg-cyan-500/10 border border-cyan-500/20 rounded-xl p-4 mb-4">
+                    <p className="text-cyan-300 text-sm font-medium mb-1">🧠 Cerebras — wafer-scale speed</p>
+                    <p className="text-white/40 text-xs leading-relaxed">⚠️ No longer free (Aug 2026): $5 trial credits, expire in 30 days, card required. Catalog: GPT-OSS 120B, Qwen 3.8 27B. <a href="https://cloud.cerebras.ai" target="_blank" rel="noopener noreferrer" className="text-cyan-400 underline">Get a key →</a></p>
+                  </div>
+                  <label className="text-white/60 text-sm font-medium block mb-2">Cerebras API Key</label>
+                  <input type="password" placeholder="csk-..." value={cerebrasKeyDraft} onChange={e=>setCerebrasKeyDraft(e.target.value)} onKeyDown={e=>e.key==="Enter"&&saveCerebrasKey()} className="w-full bg-white/10 border border-white/20 rounded-xl px-4 py-3 text-white placeholder-white/30 focus:outline-none focus:border-cyan-500 mb-4 font-mono text-sm"/>
+                  <button onClick={saveCerebrasKey} disabled={!cerebrasKeyDraft.trim()} className={`w-full py-3 rounded-xl font-semibold transition-all mb-4 ${cerebrasKeySaved?"bg-green-500 text-white":"bg-gradient-to-r from-cyan-500 to-pink-500 text-white hover:opacity-90 disabled:opacity-50"}`}>{cerebrasKeySaved?"✅ Saved!":"Save Cerebras Key"}</button>
+                  <label className="text-white/60 text-sm font-medium block mb-2">Text Generation Model</label>
+                  <select value={getCerebrasModel()} onChange={e=>setCerebrasModel(e.target.value)} className="w-full bg-white/10 border border-white/20 rounded-xl px-4 py-3 text-white text-sm mb-2 focus:outline-none focus:border-cyan-500">
+                    {CEREBRAS_MODELS.map(m=><option key={m.id} value={m.id} className="bg-gray-800">{m.label} — {m.desc}</option>)}
+                  </select>
+                </div>
+              )}
+              {/* Cloudflare (only show if cloudflare backend) */}
+              {getBackend()==="cloudflare"&&(
+                <div>
+                  <div className="bg-orange-500/10 border border-orange-500/20 rounded-xl p-4 mb-4">
+                    <p className="text-orange-300 text-sm font-medium mb-1">☁️ Cloudflare Workers AI — 10K free neurons/day</p>
+                    <p className="text-white/40 text-xs leading-relaxed">75+ models, no credit card. <a href="https://dash.cloudflare.com" target="_blank" rel="noopener noreferrer" className="text-orange-400 underline">Get your Account ID + create an API token →</a></p>
+                  </div>
+                  <label className="text-white/60 text-sm font-medium block mb-2">Cloudflare Account ID</label>
+                  <input type="text" placeholder="32-character account ID" value={cfAccountIdDraft} onChange={e=>setCfAccountIdDraft(e.target.value)} className="w-full bg-white/10 border border-white/20 rounded-xl px-4 py-3 text-white placeholder-white/30 focus:outline-none focus:border-orange-500 mb-4 font-mono text-sm"/>
+                  <label className="text-white/60 text-sm font-medium block mb-2">Cloudflare API Token</label>
+                  <input type="password" placeholder="Workers AI permission token" value={cfTokenDraft} onChange={e=>setCfTokenDraft(e.target.value)} onKeyDown={e=>e.key==="Enter"&&saveCf()} className="w-full bg-white/10 border border-white/20 rounded-xl px-4 py-3 text-white placeholder-white/30 focus:outline-none focus:border-orange-500 mb-4 font-mono text-sm"/>
+                  <button onClick={saveCf} disabled={!cfAccountIdDraft.trim()||!cfTokenDraft.trim()} className={`w-full py-3 rounded-xl font-semibold transition-all mb-4 ${cfSaved?"bg-green-500 text-white":"bg-gradient-to-r from-orange-500 to-pink-500 text-white hover:opacity-90 disabled:opacity-50"}`}>{cfSaved?"✅ Saved!":"Save Cloudflare Credentials"}</button>
+                  <label className="text-white/60 text-sm font-medium block mb-2">Text Generation Model</label>
+                  <select value={getCloudflareModel()} onChange={e=>setCloudflareModel(e.target.value)} className="w-full bg-white/10 border border-white/20 rounded-xl px-4 py-3 text-white text-sm mb-2 focus:outline-none focus:border-orange-500">
+                    {CLOUDFLARE_MODELS.map(m=><option key={m.id} value={m.id} className="bg-gray-800">{m.label} — {m.desc}</option>)}
+                  </select>
+                </div>
+              )}
+              {/* Kilo (only show if kilo backend) */}
+              {getBackend()==="kilo"&&(
+                <div>
+                  <div className="bg-amber-500/10 border border-amber-500/20 rounded-xl p-4 mb-4">
+                    <p className="text-amber-300 text-sm font-medium mb-1">⚠️ Kilo is currently CORS-blocked in browsers</p>
+                    <p className="text-white/40 text-xs leading-relaxed">Kilo's gateway stopped sending CORS headers, so browser calls fail. BookForge auto-routes to Puter.js when Kilo fails — or pick a different backend above.</p>
+                  </div>
+                  <label className="text-white/60 text-sm font-medium block mb-2">Text Generation Model</label>
+                  <select value={getKiloModel()} onChange={e=>setKiloModel(e.target.value)} className="w-full bg-white/10 border border-white/20 rounded-xl px-4 py-3 text-white text-sm mb-2 focus:outline-none focus:border-green-500">
+                    {KILO_MODELS.map(m=><option key={m.id} value={m.id} className="bg-gray-800">{m.label} — {m.desc}</option>)}
+                  </select>
+                </div>
+              )}
+              {/* OpenRouter (only show if openrouter backend) */}
+              {getBackend()==="openrouter"&&(
+                <div>
+                  <div className="bg-violet-500/10 border border-violet-500/20 rounded-xl p-4 mb-4">
+                    <p className="text-violet-300 text-sm font-medium mb-1">📦 OpenRouter — 25+ free models, one key</p>
+                    <p className="text-white/40 text-xs leading-relaxed">Free API key unlocks GPT-OSS 120B, Llama 4 Maverick, DeepSeek, Qwen3 and more at :free pricing — 20 req/min, ~50-200 req/day per model. <a href="https://openrouter.ai/settings/keys" target="_blank" rel="noopener noreferrer" className="text-violet-400 underline">Get a free OpenRouter key →</a></p>
+                  </div>
+                  <label className="text-white/60 text-sm font-medium block mb-2">OpenRouter API Key</label>
+                  <input type="password" placeholder="sk-or-v1-..." value={orKeyDraft} onChange={e=>setOrKeyDraft(e.target.value)} onKeyDown={e=>e.key==="Enter"&&saveOrKey()} className="w-full bg-white/10 border border-white/20 rounded-xl px-4 py-3 text-white placeholder-white/30 focus:outline-none focus:border-violet-500 mb-4 font-mono text-sm"/>
+                  <button onClick={saveOrKey} disabled={!orKeyDraft.trim()} className={`w-full py-3 rounded-xl font-semibold transition-all mb-4 ${orKeySaved?"bg-green-500 text-white":"bg-gradient-to-r from-violet-500 to-pink-500 text-white hover:opacity-90 disabled:opacity-50"}`}>{orKeySaved?"✅ Saved!":"Save OpenRouter Key"}</button>
+                  <label className="text-white/60 text-sm font-medium block mb-2">Free Model</label>
+                  <select value={getOpenRouterModel()} onChange={e=>setOpenRouterModel(e.target.value)} className="w-full bg-white/10 border border-white/20 rounded-xl px-4 py-3 text-white text-sm mb-2 focus:outline-none focus:border-violet-500">
+                    {OPENROUTER_MODELS.map(m=><option key={m.id} value={m.id} className="bg-gray-800">{m.label} — {m.desc}</option>)}
+                  </select>
+                </div>
+              )}
+              {/* HuggingFace (only show if huggingface backend) */}
+              {getBackend()==="huggingface"&&(
+                <div>
+                  <div className="bg-yellow-500/10 border border-yellow-500/20 rounded-xl p-4 mb-4">
+                    <p className="text-yellow-300 text-sm font-medium mb-1">🤗 HuggingFace Router — ~1,000 requests/day free</p>
+                    <p className="text-white/40 text-xs leading-relaxed">A free HF access token unlocks thousands of open-source models. <a href="https://huggingface.co/settings/tokens" target="_blank" rel="noopener noreferrer" className="text-yellow-400 underline">Get a free token →</a></p>
+                  </div>
+                  <label className="text-white/60 text-sm font-medium block mb-2">HuggingFace Access Token</label>
+                  <input type="password" placeholder="hf_..." value={hfTokenDraft} onChange={e=>setHfTokenDraft(e.target.value)} onKeyDown={e=>e.key==="Enter"&&saveHf()} className="w-full bg-white/10 border border-white/20 rounded-xl px-4 py-3 text-white placeholder-white/30 focus:outline-none focus:border-yellow-500 mb-4 font-mono text-sm"/>
+                  <button onClick={saveHf} disabled={!hfTokenDraft.trim()} className={`w-full py-3 rounded-xl font-semibold transition-all mb-4 ${hfSaved?"bg-green-500 text-white":"bg-gradient-to-r from-yellow-500 to-pink-500 text-white hover:opacity-90 disabled:opacity-50"}`}>{hfSaved?"✅ Saved!":"Save HuggingFace Token"}</button>
+                  <label className="text-white/60 text-sm font-medium block mb-2">Model</label>
+                  <select value={getHfModel()} onChange={e=>setHfModel(e.target.value)} className="w-full bg-white/10 border border-white/20 rounded-xl px-4 py-3 text-white text-sm mb-2 focus:outline-none focus:border-yellow-500">
+                    {HUGGINGFACE_MODELS.map(m=><option key={m.id} value={m.id} className="bg-gray-800">{m.label} — {m.desc}</option>)}
+                  </select>
+                </div>
+              )}
               {/* 🔌 Test Connection — available for EVERY backend */}
               <div className="mt-6 pt-5 border-t border-white/10">
                 <label className="text-white/60 text-sm font-medium block mb-2">Verify Your Setup</label>
@@ -3253,6 +3447,8 @@ function Header({onBack,title,subtitle,onSettings,onTour,activeTab,setActiveTab}
           {getBackend()==="cerebras"&&<span className="text-xs text-cyan-400 font-medium px-2 py-1 bg-cyan-500/10 rounded-lg border border-cyan-500/20">🧠 Cerebras 1M/day</span>}
           {getBackend()==="kilo"&&<span className="text-xs text-green-400 font-medium px-2 py-1 bg-green-500/10 rounded-lg border border-green-500/20">🎁 Kilo Free</span>}
           {getBackend()==="cloudflare"&&<span className="text-xs text-orange-400 font-medium px-2 py-1 bg-orange-500/10 rounded-lg border border-orange-500/20">☁️ CF Workers AI</span>}
+          {getBackend()==="openrouter"&&<span className="text-xs text-violet-400 font-medium px-2 py-1 bg-violet-500/10 rounded-lg border border-violet-500/20">📦 OpenRouter Free</span>}
+          {getBackend()==="huggingface"&&<span className="text-xs text-yellow-400 font-medium px-2 py-1 bg-yellow-500/10 rounded-lg border border-yellow-500/20">🤗 HuggingFace</span>}
           {getBackend()==="groq"&&(
             <div className="flex items-center gap-2">
               <span className="text-xs text-orange-400 font-medium px-2 py-1 bg-orange-500/10 rounded-lg border border-orange-500/20">⚡ Groq Turbo</span>
@@ -4518,7 +4714,7 @@ function HelpPage({onSettings}){
   // answer in-app via the configured AI backend so the user is never dead-ended.
   const fallbackAIAnswer=async(q,ctx)=>{
     try{
-      const ans=await callAI(`You are the in-app help assistant for BookForge AI, a browser-based book writing & publishing tool. Answer the user's help question clearly and concisely (under 150 words). App features: outline generation, chapter writing with streaming, cover art (Pollinations/FLUX via Puter.js), SEO tools, dual publish gate (75+ marketability, 78+ writing quality), EPUB/PDF/Markdown/DOCX/TXT export, audiobook scripts + browser TTS, voice training, character manager, series manager + continuity checker, queue batch builder, translate tool, manga studio, help chat. Data is stored locally (IndexedDB/localStorage) — no cloud account. Settings: 6 AI backends (Puter.js no-key default, Groq, Gemini, Cerebras, Kilo, Cloudflare).\n\nUser context: ${ctx}\nQuestion: ${q}\n\nAnswer:`,0.3);
+      const ans=await callAI(`You are the in-app help assistant for BookForge AI, a browser-based book writing & publishing tool. Answer the user's help question clearly and concisely (under 150 words). App features: outline generation, chapter writing with streaming, cover art (Pollinations/FLUX via Puter.js), SEO tools, dual publish gate (75+ marketability, 78+ writing quality), EPUB/PDF/Markdown/DOCX/TXT export, audiobook scripts + browser TTS, voice training, character manager, series manager + continuity checker, queue batch builder, translate tool, manga studio, help chat. Data is stored locally (IndexedDB/localStorage) — no cloud account. Settings: 8 AI backends (Puter.js no-key default, Groq, Gemini, Cloudflare, OpenRouter, HuggingFace, Kilo, Cerebras).\n\nUser context: ${ctx}\nQuestion: ${q}\n\nAnswer:`,0.3);
       const newReq={id:"local_"+Date.now(),question:q,context:ctx,answered:true,answer:ans||"I couldn't find an answer — please try rephrasing.",created_date:new Date().toISOString(),instant:true};
       setRequests(prev=>[newReq,...prev]);
       setQuestion("");
@@ -5398,7 +5594,7 @@ async function genCoverImage(prompt,opts={}){
   
   // Smart routing: if user hasn't explicitly chosen a model, auto-pick based on backend
   const effectiveModel=imgModel==="pollinations"&&getBackend()==="puter"?"black-forest-labs/flux-2-pro":imgModel;
-  if(effectiveModel==="pollinations"||getBackend()==="gemini"||getBackend()==="groq"||getBackend()==="kilo"||getBackend()==="cerebras"||getBackend()==="cloudflare"){
+  if(effectiveModel==="pollinations"||getBackend()==="gemini"||getBackend()==="groq"||getBackend()==="kilo"||getBackend()==="cerebras"||getBackend()==="cloudflare"||getBackend()==="openrouter"||getBackend()==="huggingface"){
     // Pollinations URL-based approach — no Puter account needed, zero friction
     try{
       const url=`https://image.pollinations.ai/prompt/${encodeURIComponent(prompt.trim())}?width=${w}&height=${h}&model=flux&nologo=true&seed=${Date.now()}`;
@@ -8189,7 +8385,7 @@ function HelpBot(){
       }else{
         // Relay offline (private-app rejection etc.) — answer in-app via AI so the user isn't dead-ended
         try{
-          const ans=await callAI(`You are the in-app help assistant for BookForge AI, a browser-based book writing & publishing tool. Answer the user's question clearly and concisely (under 150 words). Features: outline generation, chapter writing with streaming, cover art, SEO tools, dual publish gate, EPUB/PDF/Markdown/DOCX export, audiobook scripts + browser TTS, voice training, character manager, series manager + continuity checker, queue batch builder, translate, manga studio. Data stored locally (IndexedDB). Settings: 6 AI backends (Puter.js no-key default, Groq, Gemini, Cerebras, Kilo, Cloudflare).\n\nQuestion: ${lastUser.text}\n\nAnswer:`,0.3);
+          const ans=await callAI(`You are the in-app help assistant for BookForge AI, a browser-based book writing & publishing tool. Answer the user's question clearly and concisely (under 150 words). Features: outline generation, chapter writing with streaming, cover art, SEO tools, dual publish gate, EPUB/PDF/Markdown/DOCX export, audiobook scripts + browser TTS, voice training, character manager, series manager + continuity checker, queue batch builder, translate, manga studio. Data stored locally (IndexedDB). Settings: 8 AI backends (Puter.js no-key default, Groq, Gemini, Cloudflare, OpenRouter, HuggingFace, Kilo, Cerebras).\n\nQuestion: ${lastUser.text}\n\nAnswer:`,0.3);
           setMessages(prev=>[...prev,{role:"bot",text:"⚡ The direct-to-Axel relay is offline right now, so here's an instant AI answer:\n\n"+(ans||"")+"\n\nIf this didn't help, try the Help tab or rephrase your question."}]);
         }catch(e2){
           setMessages(prev=>[...prev,{role:"bot",text:"❌ Couldn't send to Axel or answer in-app. Please try again later."}]);
@@ -8198,7 +8394,7 @@ function HelpBot(){
       }
     }catch(e){
       try{
-        const ans=await callAI(`You are the in-app help assistant for BookForge AI, a browser-based book writing & publishing tool. Answer the user's question clearly and concisely (under 150 words). Features: outline generation, chapter writing with streaming, cover art, SEO tools, dual publish gate, EPUB/PDF/Markdown/DOCX export, audiobook scripts + browser TTS, voice training, character manager, series manager + continuity checker, queue batch builder, translate, manga studio. Data stored locally (IndexedDB). Settings: 6 AI backends (Puter.js no-key default, Groq, Gemini, Cerebras, Kilo, Cloudflare).\n\nQuestion: ${lastUser.text}\n\nAnswer:`,0.3);
+        const ans=await callAI(`You are the in-app help assistant for BookForge AI, a browser-based book writing & publishing tool. Answer the user's question clearly and concisely (under 150 words). Features: outline generation, chapter writing with streaming, cover art, SEO tools, dual publish gate, EPUB/PDF/Markdown/DOCX export, audiobook scripts + browser TTS, voice training, character manager, series manager + continuity checker, queue batch builder, translate, manga studio. Data stored locally (IndexedDB). Settings: 8 AI backends (Puter.js no-key default, Groq, Gemini, Cloudflare, OpenRouter, HuggingFace, Kilo, Cerebras).\n\nQuestion: ${lastUser.text}\n\nAnswer:`,0.3);
         setMessages(prev=>[...prev,{role:"bot",text:"⚡ The direct-to-Axel relay is unreachable, so here's an instant AI answer:\n\n"+(ans||"")+"\n\nIf this didn't help, try the Help tab or rephrase your question."}]);
       }catch(e2){
         setMessages(prev=>[...prev,{role:"bot",text:"❌ Connection error. Make sure you're online and try again."}]);
@@ -8335,7 +8531,7 @@ function App(){
             <span className="text-2xl">🎉</span>
             <div>
               <p className="text-green-300 text-sm font-semibold">You're ready to go! No setup needed.</p>
-              <p className="text-white/40 text-xs mt-0.5">BookForge is using <strong className="text-green-400/70">Puter.js</strong> — a free AI engine with no API key required. Just start creating! Want more power? Switch to Cerebras (1M tok/day) or Groq in Settings.</p>
+              <p className="text-white/40 text-xs mt-0.5">BookForge is using <strong className="text-green-400/70">Puter.js</strong> — a free AI engine with no API key required. Just start creating! Want more power? Switch to OpenRouter (25+ free models) or Groq in Settings.</p>
             </div>
           </div>
           <div className="flex gap-2 shrink-0">

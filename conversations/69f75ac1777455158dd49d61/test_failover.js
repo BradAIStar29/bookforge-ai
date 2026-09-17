@@ -13,12 +13,13 @@ const NOTICES=[];global.window={dispatchEvent:e=>NOTICES.push(e.detail?.msg||e.d
 const getBackend=()=>CONFIG.backend;
 const getGroqKey=()=>CONFIG.groqKey, getCerebrasKey=()=>CONFIG.cerebrasKey;
 const getCloudflareAccountId=()=>CONFIG.cfId, getCloudflareToken=()=>CONFIG.cfTok;
+const getOpenRouterKey=()=>CONFIG.orKey||"", getHfToken=()=>CONFIG.hfToken||"";
 const getKey=()=>CONFIG.gemKey, getUsage=()=>CONFIG.usage;
 const kiloFailureShouldFailover=e=>e?.code==="KILO_ERROR"||e?.code==="TIMEOUT";
 const notifyBackendSwitch=()=>{}, notifyPuterLowBalance=()=>{};
 const mk=b=>(prompt,temp,opts)=>{CALLS.push(b);if(FAILMAP[b])throw FAILMAP[b];const res=b+"-result";if(opts&&opts.onStream)opts.onStream(res);return res;};
 const callGroq=mk("groq"),callCerebras=mk("cerebras"),callCloudflare=mk("cloudflare");
-const callGemini=mk("gemini"),callPuter=mk("puter"),callKilo=mk("kilo");
+const callGemini=mk("gemini"),callPuter=mk("puter"),callKilo=mk("kilo"),callOpenRouter=mk("openrouter"),callHuggingFace=mk("huggingface");
 
 eval(block); // defines BACKEND_EXHAUSTED, callAI, callAIStream, etc.
 
