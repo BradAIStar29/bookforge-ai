@@ -5187,6 +5187,7 @@ function HomePage({navigate,onSettings}){
                   {book.subtitle&&<p className="text-white/40 text-sm mb-2 line-clamp-1">{book.subtitle}</p>}
                   <div className="flex items-center justify-between mt-2"><span className="text-white/50 text-xs">{book.genre}</span><span className="text-white/50 text-xs">{book.word_count?`${Number(book.word_count).toLocaleString()} words · ~${Math.ceil(book.word_count/200)}min`:"0 words"}</span></div>
                   {book.auto_build&&!book.build_complete&&<p className="text-cyan-400 text-xs mt-2 truncate animate-pulse">🔄 {book.build_step||"Building…"}</p>}
+                  {!book.auto_build&&!book.build_complete&&(()=>{const j=getBookJourney(book);return j.allDone?null:<p className="text-white/40 text-xs mt-2 truncate">📍 Stage {j.next.num}/5 · {j.next.label}</p>;})()}
                   {book.build_complete&&<p className={`text-xs mt-2 ${book.gates_passed?"text-green-400":"text-amber-400"}`}>{book.gates_passed?"✅ Ready to publish":"⚠️ Review needed"}</p>}
                   {book.chapters?.length>0&&<div className="mt-3"><div className="h-1 bg-white/10 rounded-full overflow-hidden"><div className="h-full bg-gradient-to-r from-purple-500 to-pink-500 rounded-full" style={{width:`${pct(book)}%`}}/></div><p className="text-white/50 text-xs mt-1">{book.chapters.filter(c=>c.generated).length}/{book.chapters.length} chapters</p></div>}
                 </div>
@@ -5723,6 +5724,29 @@ installFocusTrap();
 
 // ── Publish Kit: everything needed for KDP upload, assembled into one ZIP ───
 function dataUrlToPng(dataUrl){return new Promise(res=>{try{const img=new Image();img.onload=()=>{const c=document.createElement("canvas");c.width=img.width;c.height=img.height;c.getContext("2d").drawImage(img,0,0);res(c.toDataURL("image/png"));};img.onerror=()=>res(null);img.src=dataUrl;}catch(e){res(null);}});}
+// ── Linear Book Journey: Plan → Write → Polish → Improve → Publish ──────────────
+function getBookJourney(book){
+  const chs=book.chapters||[];
+  const chaptersDone=chs.length>0&&chs.every(c=>c.generated);
+  const planDone=!book.needs_outline;
+  const reviewPassed=book.review?.verdict==="PASS";
+  const writingPassed=book.manuscript_quality?.manuscript_verdict==="PASS";
+  const polishDone=!!(book.seo_done&&book.cover_done&&book.review_done&&book.wq_done);
+  const gatesDone=reviewPassed&&writingPassed;
+  const publishDone=!!(gatesDone&&book.kit_downloaded);
+  const polishTab=!book.cover_done?2:!book.seo_done?3:!book.review_done?4:8;
+  const polishAction=!book.cover_done?"Create your cover art":!book.seo_done?"Generate your SEO metadata":!book.review_done?"Run the Review Agent":!book.wq_done?"Run the Writing Quality Agent":"";
+  const stages=[
+    {num:1,label:"Plan",icon:"📋",done:planDone,tab:0,hint:book.needs_outline?"Generate your outline, then click Approve to lock it in":"Outline approved"},
+    {num:2,label:"Write",icon:"✍️",done:chaptersDone,tab:1,hint:chs.length===0?"Generate chapters — or use ✍️ Write All for one-click drafting":chs.every(c=>c.generated)?"All chapters written":`${chs.filter(c=>c.generated).length} of ${chs.length} chapters written — finish the rest with ✍️ Write All`},
+    {num:3,label:"Polish",icon:"✨",done:polishDone,tab:polishTab,hint:polishAction||"Cover, SEO, Review and Writing Quality all done"},
+    {num:4,label:"Improve",icon:"🔧",done:gatesDone,tab:reviewPassed?8:4,hint:reviewPassed&&writingPassed?"Both quality gates passed":"Apply the one-click suggestions (🚀 Improve My Odds / 🚀 Improve My Writing) until both quality gates pass"},
+    {num:5,label:"Publish",icon:"📤",done:publishDone,tab:10,hint:publishDone?"Publish Kit downloaded — your book is ready for KDP":gatesDone?"Download your Publish Kit (ZIP) — the complete KDP upload bundle":"Unlocks when both quality gates pass"},
+  ];
+  const allDone=publishDone;
+  const next=allDone?null:stages.find(s=>!s.done);
+  return {stages,next,allDone};
+}
 async function downloadPublishKit(book){
   try{
     if(!book?.gates_passed)throw new Error("Quality gates haven\u2019t passed yet \u2014 finish the Review + Writing Quality gates first");
@@ -6533,6 +6557,28 @@ const genCover=async()=>{if(quotaHit||isBuilding)return;setBusy(true);setError("
   return(
     <div>
       {showTrailer&&<TrailerStudio book={book} onClose={()=>setShowTrailer(false)}/>}
+      {(()=>{const j=getBookJourney(book);return(
+        <div className="border-b border-white/10 bg-gradient-to-r from-purple-950/40 via-slate-950/60 to-pink-950/30">
+          <div className="max-w-7xl mx-auto px-4 sm:px-6 py-3">
+            <div className="flex items-center gap-1.5 sm:gap-2 flex-wrap" aria-label="Book journey: Plan, Write, Polish, Improve, Publish">
+              {j.stages.map((s,i)=>(
+                <React.Fragment key={s.num}>
+                  {i>0&&<span className="text-white/20 text-xs" aria-hidden="true">→</span>}
+                  <button disabled={!s.done&&j.next?.num!==s.num} onClick={()=>setTab(s.tab)} title={s.hint} aria-label={`Stage ${s.num}: ${s.label} — ${s.hint}`} className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-full text-xs font-semibold border transition-all ${s.done?"bg-green-500/15 border-green-500/40 text-green-300 hover:bg-green-500/25":j.next?.num===s.num?"bg-purple-500/25 border-purple-400 text-white shadow-lg shadow-purple-500/20":"bg-white/5 border-white/10 text-white/35 cursor-not-allowed"}`}>
+                    <span>{s.done?"✅":s.icon}</span>{s.num}. {s.label}
+                    {!s.done&&j.next?.num===s.num&&<span className="hidden md:inline text-purple-200/70 font-normal">· you are here</span>}
+                  </button>
+                </React.Fragment>
+              ))}
+            </div>
+            <div className="mt-2 flex items-center gap-2 flex-wrap">
+              <span className="text-[10px] uppercase tracking-wider text-purple-300/70 font-bold shrink-0">{j.allDone?"Complete":"Next step"}</span>
+              <span className="text-white/70 text-xs">{j.allDone?"🎉 Book complete — Publish Kit downloaded. You're ready for KDP!":j.next.hint}</span>
+              {!j.allDone&&<button onClick={()=>setTab(j.next.tab)} className="text-xs font-semibold bg-gradient-to-r from-purple-500 to-pink-500 text-white px-3 py-1 rounded-full hover:opacity-90 shrink-0">Go to {j.next.label} →</button>}
+            </div>
+          </div>
+        </div>
+      );})()}
       <div className="border-b border-white/10 bg-black/10">
         <div role="tablist" aria-label="Book sections" onKeyDown={onTabBarKey} className="max-w-7xl mx-auto px-4 sm:px-6 flex gap-1 overflow-x-auto">
           {TABS.map((t,i)=>(
