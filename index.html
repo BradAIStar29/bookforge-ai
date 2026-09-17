@@ -3145,6 +3145,9 @@ Respond ONLY with valid JSON:
   if (mr && mr.unique_angle && book.id && !String(book.id).startsWith("__")) updateBook(book.id, { market_research: mr, research_done: true });
   return mr;
 }
+const journeyCtx = (stage, tip) => `
+
+PRODUCTION JOURNEY (BookForge 5-stage pipeline): 1.Plan the outline \u2192 2.Write the chapters \u2192 3.Polish (cover, SEO, Review Agent) \u2192 4.Improve (apply fixes until both quality gates pass) \u2192 5.Publish (KDP Publish Kit). You are executing STAGE ${stage}. ${tip}`;
 const researchCtxFor = (book) => {
   const mr = book?.market_research;
   if (!mr || !mr.unique_angle) return "";
@@ -3171,7 +3174,7 @@ async function runReviewAgent(book) {
 
 Review this book for market-readiness and discoverability. Be critical, specific, and commercially minded.
 
-Book Details:
+` + journeyCtx(3, "Your verdict directly gates this book's path to publish \u2014 a PASS unlocks the Improve and Publish stages.") + `Book Details:
 Title: ${book.title}
 Subtitle: ${book.subtitle || "(none)"}
 Genre: ${book.genre}
@@ -3791,7 +3794,7 @@ async function runManuscriptHumanCheck(book) {
   const raw = await callAI(
     `You are a senior literary editor at a major publishing house. You have 20 years of experience and you are STRICT about AI-generated writing. You know every pattern. Your reputation depends on catching AI prose before it reaches readers.
 
-Book: "${book.title}" (${book.genre})
+` + journeyCtx(4, "Your verdict decides whether this book proceeds to the Publish stage \u2014 catch AI patterns ruthlessly.") + `Book: "${book.title}" (${book.genre})
 
 MANUSCRIPT SAMPLES (${sample.length} chapters sampled):
 ${samples}
@@ -4318,7 +4321,7 @@ WRITE IN: ${book.writing_language}` : "";
             const prevChaps = chapters.slice(0, i).filter((c) => c.generated);
             const prev = prevChaps.length === 0 ? "None" : prevChaps.length <= 2 ? prevChaps.map((c) => c.title).join(", ") : prevChaps.slice(-3).map((c) => `Ch.${c.number} "${c.title}": ${(c.content || "").slice(0, 200).replace(/\n/g, " ")}\u2026`).join("\n");
             const content = await callAIStream(
-              `Write Chapter ${chapters[i].number}: "${chapters[i].title}" for a ${book.genre} book titled "${outline.title || book.title}".${seriesCtx}${qVoiceCtx}${qCharCtx}${qLangNote}${qNfNote}${researchCtxFor(book)}
+              `Write Chapter ${chapters[i].number}: "${chapters[i].title}" for a ${book.genre} book titled "${outline.title || book.title}".${seriesCtx}${qVoiceCtx}${qCharCtx}${qLangNote}${qNfNote}${researchCtxFor(book)}${journeyCtx(2, "Write like a human novelist \u2014 your prose will face a strict human-voice quality gate in Stage 4 that rejects AI-sounding patterns.")}
 Chapter description: ${chapters[i].description}
 Previous: ${prev}
 Audience: ${book.target_audience}
@@ -4387,7 +4390,7 @@ WRITING RULES \u2014 violating these will get this chapter rejected:
           if (getUsage() < DAILY_LIMIT) {
             try {
               addLog(`  \u{1F50D} Generating SEO\u2026`);
-              const seoRaw = await callAI(`Amazon KDP SEO. Title: ${book.title}
+              const seoRaw = await callAI(`Amazon KDP SEO.${journeyCtx(3, "Your metadata directly gates this book's path to publish.")}Title: ${book.title}
 Genre: ${book.genre}
 Desc: ${book.description}
 Respond ONLY JSON: {"seo_title":"","seo_description":"","primary_keywords":[""]}`);
@@ -4408,7 +4411,7 @@ Respond ONLY JSON: {"seo_title":"","seo_description":"","primary_keywords":[""]}
           if (getUsage() < DAILY_LIMIT) {
             try {
               addLog(`  \u{1F3A8} Generating cover\u2026`);
-              const cp = await callAI(`Professional book cover image prompt for "${book.title}" (${book.genre}). Describe characters, setting, mood, lighting, art style. NO text. Return only the prompt.`);
+              const cp = await callAI(`Professional book cover image prompt for "${book.title}" (${book.genre}).${journeyCtx(3, "This cover is part of the polish stage before publishing \u2014 make it commercially competitive.")}Describe characters, setting, mood, lighting, art style. NO text. Return only the prompt.`);
               trackUsage();
               const _artResult = await genCoverImage(cp.trim() + ". No text.");
               const artUrl = _artResult.url;
@@ -4661,7 +4664,7 @@ Book: "${b.title}" ${bp.subtitle ? "- " + bp.subtitle : ""}
 Description: ${bp.description || b.description || ""}
 Series premise: ${s.plan?.series_description || ""}
 ${s.plan?.tone_style ? "Tone/style: " + s.plan.tone_style : ""}
-This book must fit the full ${s.plan?.books?.length || "?"}-book series arc.
+This book must fit the full ${s.plan?.books?.length || "?"}-book series arc.${journeyCtx(1, "Build an outline strong enough to carry the whole pipeline \u2014 every chapter needs a clear conflict and a hook that forces the next chapter.")}
 Return ONLY JSON: {"chapters":[{"number":1,"title":"","description":"","target_words":3000}]}`, 0.5);
           trackUsage();
           const m = raw.match(/\{[\s\S]*\}/);
@@ -5117,7 +5120,7 @@ DRAFT/NOTES:
 ${importText.slice(0, 6e3)}
 
 Genre: ${form.genre || "Fiction"}
-Audience: ${form.audience || "General Adults"}${styleCtx}${langNote}
+Audience: ${form.audience || "General Adults"}${styleCtx}${langNote}${journeyCtx(1, "Build an outline strong enough to carry the whole pipeline \u2014 every chapter needs a clear conflict and a hook that forces the next chapter.")}
 
 ${form.nonfiction_mode ? "Include exercises/reflections/action-steps fields per chapter." : ""}
 
@@ -5127,7 +5130,7 @@ Respond ONLY with valid JSON:
         prompt2 = `You are a bestselling author. Create a detailed, commercially compelling book outline.
 Topic: ${f.topic}
 Genre: ${f.genre || "Fiction"}
-Audience: ${f.audience || "General Adults"}${styleCtx}${langNote}${premiseCtx}${mrCtx}
+Audience: ${f.audience || "General Adults"}${styleCtx}${langNote}${premiseCtx}${mrCtx}${journeyCtx(1, "Build an outline strong enough to carry the whole pipeline \u2014 every chapter needs a clear conflict and a hook that forces the next chapter.")}
 ${form.nonfiction_mode ? "Nonfiction mode: include exercises, reflections, and action steps per chapter." : ""}
 
 RULES:
@@ -5807,7 +5810,7 @@ function EditorPage({ bookId, navigate, onSettings }) {
     const raw = await callAI(
       `You are a master series author. Generate a detailed chapter outline for Book ${bp.number} of the "${b.series_name}" series.
 
-BOOK: "${bp.title}" \u2014 ${bp.subtitle || ""}
+` + journeyCtx(1, "Build an outline strong enough to carry the whole pipeline \u2014 every chapter needs a clear conflict and a hook that forces the next chapter.") + `BOOK: "${bp.title}" \u2014 ${bp.subtitle || ""}
 Description: ${bp.description}
 Conflict: ${bp.main_conflict || ""}
 Hook: ${bp.hook || ""}
@@ -5944,7 +5947,7 @@ ${chars.map((c) => `${c.name} [${c.role || ""}]: ${c.appearance || ""} \u2014 ${
 
 WRITE IN: ${b.writing_language}` : "";
             const nonfictionNote = b.nonfiction_mode ? "\n\nNONFICTION MODE: End the chapter with a clearly marked Exercise, Reflection question, and Action Step." : "";
-            const content = await callAIStream(`Write Chapter ${chapters[i].number}: "${chapters[i].title}" for a ${b.genre} book titled "${outline.title}".${seriesCtx}${voiceCtx}${charCtx}${langNote}${nonfictionNote}${researchCtxFor(b)}
+            const content = await callAIStream(`Write Chapter ${chapters[i].number}: "${chapters[i].title}" for a ${b.genre} book titled "${outline.title}".${seriesCtx}${voiceCtx}${charCtx}${langNote}${nonfictionNote}${researchCtxFor(b)}${journeyCtx(2, "Write like a human novelist \u2014 your prose will face a strict human-voice quality gate in Stage 4 that rejects AI-sounding patterns.")}
 
 Chapter: ${chapters[i].description}
 Previous: ${prev}
@@ -6370,7 +6373,7 @@ ${chars.map((c) => `${c.name}: ${c.appearance || ""} \u2014 ${c.personality || "
 
 WRITE IN: ${fb.writing_language}` : "";
       const nfNote = fb.nonfiction_mode ? "\n\nEnd with: Exercise, Reflection, Action Step." : "";
-      const content = await callAIStream(`Write Chapter ${ch.number}: "${ch.title}" for a ${fb.genre} book titled "${outline.title}".${seriesCtx}${voiceCtx}${charCtx}${langNote}${nfNote}${researchCtxFor(fb)}
+      const content = await callAIStream(`Write Chapter ${ch.number}: "${ch.title}" for a ${fb.genre} book titled "${outline.title}".${seriesCtx}${voiceCtx}${charCtx}${langNote}${nfNote}${researchCtxFor(fb)}${journeyCtx(2, "Write like a human novelist \u2014 your prose will face a strict human-voice quality gate in Stage 4 that rejects AI-sounding patterns.")}
 
 Desc: ${ch.description}
 Previous: ${prev}
