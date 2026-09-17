@@ -28,18 +28,18 @@ const test=`let pass=0,fail=0;const t=(l,c)=>{c?pass++:fail++;console.log((c?'�
   FAILMAP={groq:{code:"QUOTA",msg:"rate limit"}};
   CALLS.length=0;
   const r1=await callAI("hi");
-  t('groq QUOTA → routed to cerebras',r1==="cerebras-result"&&CALLS.join(",")==="groq,cerebras");
+  t('groq QUOTA → routed to cloudflare (cerebras demoted 2026-09-17: free tier ended)',r1==="cloudflare-result"&&CALLS.join(",")=="groq,cloudflare");
   t('groq marked exhausted',backendExhausted("groq")===true);
 
   // 2. groq still exhausted — next call skips it entirely (no wasted 429)
   CALLS.length=0;
   const r2=await callAI("hi again");
-  t('exhausted backend skipped on next call',CALLS[0]==="cerebras"&&CALLS.length===1);
+  t('exhausted backend skipped on next call',CALLS[0]==="cloudflare"&&CALLS.length===1);
 
   // 3. Chain: cerebras also QUOTA → cloudflare (creds configured)
   CONFIG={backend:"groq",groqKey:"gk",cerebrasKey:"ck",cfId:"cfid",cfTok:"cftok",gemKey:"",usage:0};
   BACKEND_EXHAUSTED.clear();
-  FAILMAP={groq:{code:"QUOTA"},cerebras:{code:"QUOTA"}};
+  FAILMAP={groq:{code:"QUOTA"},cloudflare:{code:"QUOTA"}};
   CALLS.length=0;
   const r3=await callAI("hi");
   t('2-hop chain groq→cerebras→cloudflare',r3==="cloudflare-result"&&CALLS.join(",")==="groq,cerebras,cloudflare");
@@ -53,12 +53,12 @@ const test=`let pass=0,fail=0;const t=(l,c)=>{c?pass++:fail++;console.log((c?'�
 
   // 5. Streaming path failover with onStream
   BACKEND_EXHAUSTED.clear();
-  CONFIG={backend:"groq",groqKey:"gk",cerebrasKey:"ck",cfId:"",cfTok:"",gemKey:"",usage:0};
+  CONFIG={backend:"groq",groqKey:"gk",cerebrasKey:"ck",cfId:"cfid",cfTok:"cftok",gemKey:"",usage:0};
   FAILMAP={groq:{code:"QUOTA"}};
   CALLS.length=0;
   let streamed=[];
   const r5=await callAIStream("hi",0.8,{onStream:txt=>streamed.push(txt)});
-  t('stream: groq QUOTA → cerebras delivers stream',r5==="cerebras-result"&&streamed[0]==="cerebras-result"&&CALLS[0]==="groq"&&CALLS[1]==="cerebras");
+  t('stream: groq QUOTA → cloudflare delivers stream',r5==="cloudflare-result"&&streamed[0]==="cloudflare-result"&&CALLS[0]==="groq"&&CALLS[1]==="cloudflare");
 
   // 6. Gemini daily limit mid-chain → puter
   BACKEND_EXHAUSTED.clear();

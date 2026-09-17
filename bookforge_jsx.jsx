@@ -40,7 +40,7 @@ const setKey=k=>localStorage.setItem("gemini_api_key",k.trim());
 // ── AI Backend selector (Gemini API key OR Puter.js free) ──
 const BACKENDS=[
   {id:"kilo",label:"Kilo Code (No Key! 200/hr)",desc:"Zero config — no API key, no account. Auto-routes to Nemotron 550B, Tencent Hy3, and more. 200 req/hr free."},
-  {id:"cerebras",label:"Cerebras (1M tok/day FREE)",desc:"Wafer-scale inference — ultra-fast. 1M tokens/day free, no credit card."},
+  {id:"cerebras",label:"Cerebras (trial credits)",desc:"Wafer-scale ultra-fast inference. \u26a0\ufe0f No longer free (Aug 2026): $5 trial credits, expire in 30 days, card required. Catalog: GPT-OSS 120B, Qwen 3.8 27B."},
   {id:"groq",label:"Groq Turbo (⚡ Fastest)",desc:"500+ tokens/sec with GPT-OSS 120B. Free API key, 14,400 req/day."},
   {id:"gemini",label:"Gemini API Key",desc:"Bring your own free Google AI Studio key. 1,500 req/day."},
   {id:"cloudflare",label:"Cloudflare Workers AI (10K/day)",desc:"75+ models incl. Llama 4 Scout, gpt-oss-120B, Mistral, DeepSeek. 10K Neurons/day free, no credit card."},
@@ -78,12 +78,17 @@ const setCloudflareModel=m=>safeLS("bfai_cf_model",m);
 // ── Cerebras Models ────────────────────────────────────────────────────────────
 const CEREBRAS_URL="https://api.cerebras.ai/v1/chat/completions";
 const CEREBRAS_MODELS=[
-  {id:"llama-4-scout-17b-16e-instruct",label:"Llama 4 Scout 17B",desc:"Meta — 131K context, multimodal, best for creative writing"},
-  {id:"qwen-3.6-32b",label:"Qwen 3.6 32B",desc:"Alibaba — strong multilingual + reasoning, 128K context"}
+  {id:"gpt-oss-120b",label:"GPT-OSS 120B",desc:"OpenAI open-weight flagship — best for creative writing"},
+  {id:"qwen-3.8-27b",label:"Qwen 3.8 27B",desc:"Alibaba — strong multilingual + reasoning"}
 ];
+const DEPRECATED_CEREBRAS_MODELS={"llama-4-scout-17b-16e-instruct":"gpt-oss-120b","qwen-3.6-32b":"qwen-3.8-27b"};
 const getCerebrasKey=()=>localStorage.getItem("cerebras_api_key")||"";
 const setCerebrasKey=k=>safeLS("cerebras_api_key",k.trim());
-const getCerebrasModel=()=>localStorage.getItem("bfai_cerebras_model")||"llama-4-scout-17b-16e-instruct";
+const getCerebrasModel=()=>{
+    let m=localStorage.getItem("bfai_cerebras_model")||"gpt-oss-120b";
+    if(DEPRECATED_CEREBRAS_MODELS[m]){safeLS("bfai_cerebras_model",DEPRECATED_CEREBRAS_MODELS[m]);return DEPRECATED_CEREBRAS_MODELS[m];}
+    return m;
+  };
 const setCerebrasModel=m=>safeLS("bfai_cerebras_model",m);
 const getBackend=()=>localStorage.getItem("bfai_backend")||"puter"; // kilo default removed 2026-09-02: gateway dropped browser CORS
 const setBackend=b=>safeLS("bfai_backend",b);
@@ -215,12 +220,12 @@ const TASK_MODELS={
     reasoning:"gemini-2.5-flash",
     multilingual:"gemini-2.5-flash",
   },
-  cerebras:{
-    creative:"llama-4-scout-17b-16e-instruct", // Best prose on Cerebras
-    structured:"qwen-3.6-32b",           // Strong JSON + reasoning
-    short:"llama-4-scout-17b-16e-instruct", // Only 2 models — Scout is fast enough
-    reasoning:"qwen-3.6-32b",
-    multilingual:"qwen-3.6-32b",
+  cerebras:{ // catalog refresh 2026-09-17: Scout/Qwen3.6 retired, gpt-oss-120b + qwen-3.8-27b remain
+    creative:"gpt-oss-120b",
+    structured:"qwen-3.8-27b",
+    short:"gpt-oss-120b",
+    reasoning:"qwen-3.8-27b",
+    multilingual:"qwen-3.8-27b",
   },
   kilo:{
     creative:"nvidia/nemotron-3-ultra-550b-a55b:free", // Best quality free model
@@ -399,6 +404,13 @@ const cleanErrBody=b=>{
 };
 const RETRY_DELAYS_MS=[2000,5000]; // backoff for transient failures
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+
+// ── Completion notifications (Fully Auto production) ────────────────────────
+function ensureNotifyPermission(){try{if("Notification" in window&&Notification.permission==="default")Notification.requestPermission();}catch(e){}}
+function notifyDone(title,body){
+  try{playRetryChime();}catch(e){}
+  try{if("Notification" in window&&Notification.permission==="granted")new Notification(title,{body,silent:true});}catch(e){}
+}
 
 function playRetryChime(){
   try{
@@ -1110,7 +1122,7 @@ function initPuterLowBalanceWatcher(){
 // and known capacity. Each backend can only be tried once per call chain
 // (exhaustion marks + depth cap), so this can never loop forever.
 const BACKEND_EXHAUSTED=new Map(); // backend → expiry timestamp (ms)
-const FAILOVER_ORDER=["groq","cerebras","cloudflare","gemini","kilo","puter"];
+const FAILOVER_ORDER=["groq","cloudflare","gemini","kilo","puter","cerebras"]; // cerebras demoted 2026-09-17: free tier ended
 function markBackendExhausted(b,ms){
   if(!ms)ms=b==="cloudflare"?12*3600e3:b==="gemini"?3600e3:10*60e3; // transient 429s ~10min; Cloudflare daily neurons 12h; Gemini 1h (usage pre-check is authoritative)
   BACKEND_EXHAUSTED.set(b,Date.now()+ms);
@@ -4208,6 +4220,7 @@ function QueuePage({navigate,onSettings}){
   const [builtSoFar,setBuiltSoFar]=useState(0);
   const [totalToBuild,setTotalToBuild]=useState(0);
   const [log,setLog]=useState([]);
+  const [quotaPaused,setQuotaPaused]=useState(false);
   const runRef=useRef(false);
 
   const reload=()=>{setQueueState(getQueue());setQBooks(getBooks());};
@@ -4218,13 +4231,13 @@ function QueuePage({navigate,onSettings}){
 
   const runQueue=async()=>{
     if(runRef.current)return;
-    runRef.current=true;setRunning(true);setQueueStart(Date.now());setChDone(0);setChTotal(queue.reduce((a,b)=>a+(b.chapters||[]).filter(c=>!c.generated).length,0));setLog([]);
+    runRef.current=true;setRunning(true);setQueueStart(Date.now());setQuotaPaused(false);ensureNotifyPermission();setChDone(0);setChTotal(queue.reduce((a,b)=>a+(b.chapters||[]).filter(c=>!c.generated).length,0));setLog([]);
     const addLog=msg=>setLog(prev=>[...prev,{msg,time:new Date().toLocaleTimeString()}]);
     try{
     while(true){
       const q=getQueue();
-      if(q.length===0){addLog("✅ Queue complete!");break;}
-      if(quotaBlocked()){addLog("⏳ Daily quota reached. Queue paused — will continue tomorrow.");break;}
+      if(q.length===0){addLog("✅ Queue complete!");notifyDone("🏁 Queue complete!","All queued books are built.");break;}
+      if(quotaBlocked()){addLog("⏳ Daily quota reached. Queue paused — auto-resumes when the quota resets.");setQuotaPaused(true);break;}
       const id=q[0];
       const book=getBook(id);
       if(!book){removeFromQueue(id);continue;}
@@ -4302,7 +4315,7 @@ function QueuePage({navigate,onSettings}){
           const freshBook=getBook(id);
           const review=await runReviewAgent(freshBook);
           updateBook(id,{review,status:review.verdict==="PASS"?"ready":"writing",auto_build:false,build_step:"",review_done:true,build_complete:true,build_complete_date:new Date().toISOString(),gates_passed:review.verdict==="PASS"});
-          addLog(`  ${review.verdict==="PASS"?"✅":"⚠️"} Review: ${review.overall_score}/100 — ${review.verdict}`);}catch(rvE){addLog("  ⚠️ Review step failed: "+errMsg(rvE)+" — continuing");}
+          addLog(`  ${review.verdict==="PASS"?"✅":"⚠️"} Review: ${review.overall_score}/100 — ${review.verdict}`);notifyDone(review.verdict==="PASS"?"✅ Queue book done":"⚠️ Queue book done",`"${book.title}" — review ${review.overall_score}/100`);}catch(rvE){addLog("  ⚠️ Review step failed: "+errMsg(rvE)+" — continuing");}
         }
         // Done — remove from queue
         removeFromQueue(id);
@@ -4312,7 +4325,7 @@ function QueuePage({navigate,onSettings}){
       }catch(e){
         const msg=errMsg(e);
         addLog(`❌ Error on "${book.title}": ${msg}`);
-        if(e?.code==="QUOTA"){addLog("⏳ Quota hit — queue paused.");break;}
+        if(e?.code==="QUOTA"){addLog("⏳ Quota hit — queue paused — auto-resumes when the quota resets.");setQuotaPaused(true);break;}
         removeFromQueue(id);// skip broken book
       }finally{
         // ensure current ID resets even on unexpected throw
@@ -4323,6 +4336,24 @@ function QueuePage({navigate,onSettings}){
     }catch(e){console.error("Queue outer error:",e);}
     finally{setRunning(false);runRef.current=false;setCurrentId(null);reload();}
   };
+  // Auto-resume: while this page is open, poll every minute and resume when quota resets
+  useEffect(()=>{
+    if(!quotaPaused)return;
+    const iv=setInterval(()=>{
+      if(quotaBlocked())return;
+      clearInterval(iv);
+      setQuotaPaused(false);
+      setLog(prev=>[...prev,{msg:"🌅 Quota reset — auto-resuming queue…",time:new Date().toLocaleTimeString()}]);
+      runQueue();
+    },60000);
+    return()=>clearInterval(iv);
+  },[quotaPaused]);
+  // Autostart: another page (Write Series) queued books and flagged us to start
+  useEffect(()=>{
+    if(localStorage.getItem("bfai_queue_autostart")!=="1")return;
+    localStorage.removeItem("bfai_queue_autostart");
+    if(getQueue().length>0&&!runRef.current)runQueue();
+  },[]);
 
   const eligibleBooks=qBooks.filter(b=>!["published"].includes(b.status)&&!b.chapters?.every(c=>c.generated));
   const queuedIds=getQueue();
@@ -4331,6 +4362,7 @@ function QueuePage({navigate,onSettings}){
     <div className="max-w-4xl mx-auto px-4 sm:px-6 py-8">
       <div className="flex items-start justify-between mb-6 gap-4 flex-wrap">
         <div><h2 className="text-white text-xl font-bold">⏳ Build Queue</h2><p className="text-white/40 text-sm mt-1">Line up multiple books — they build one by one automatically, respecting your daily quota.</p></div>
+        {quotaPaused&&<div className="bg-amber-500/15 border border-amber-500/40 rounded-xl p-3 mb-4 text-amber-300 text-sm" role="status">⏳ Queue paused on quota — auto-resumes the moment the daily quota resets (checks every minute while this page is open).</div>}
         {queuedIds.length>0&&<button onClick={runQueue} disabled={running} className="bg-gradient-to-r from-purple-500 to-pink-500 text-white px-5 py-2.5 rounded-xl font-semibold hover:opacity-90 disabled:opacity-50 flex items-center gap-2">{running?<><Spin/>Running queue…</>:"▶ Start Queue"}</button>}
       </div>
 
@@ -4554,6 +4586,67 @@ function SeriesPage({navigate,onSettings}){
   const [seriesTitles,setSeriesTitles]=useState(null);
   const [suggestingSeriesTitles,setSuggestingSeriesTitles]=useState(false);
   const [seriesTitleError,setSeriesTitleError]=useState("");
+  const [writingSeries,setWritingSeries]=useState(null);
+  // 🚀 Write Series — fully auto production: create any missing planned books,
+  // outline them, enqueue every unfinished book in series order, auto-start the queue
+  const writeSeries=async(sid)=>{
+    const s=getSeries().find(x=>x.id===sid);
+    if(!s)return;
+    if(!hasCredentials()){onSettings();return;}
+    const unfinished=(s.book_ids||[]).map(id=>getBook(id)).filter(b=>b&&!b.build_complete).length;
+    const missing=(s.plan?.books||[]).filter(bp=>!((s.book_ids||[]).some(id=>{const b=getBook(id);return b&&String(b.series_number)===String(bp.number);})||getBooks().some(b=>b.series_id===sid&&String(b.series_number)===String(bp.number)))).length;
+    if(!unfinished&&!missing){alert("Every book in this series is already built. ✅");return;}
+    if(!confirm(`🚀 Start fully auto production for "${s.name}"?\n\n${missing} missing book(s) will be created + outlined, and every unfinished book (chapters → SEO → cover → review) will build automatically in series order.`))return;
+    try{
+      setWritingSeries({id:sid,note:"Preparing…"});
+      // 1. Create shells for planned books that don't exist yet
+      let books=getBooks();
+      const createdIds=[];
+      (s.plan?.books||[]).forEach(bp=>{
+        const exists=(s.book_ids||[]).some(id2=>{const b=books.find(x=>x.id===id2);return b&&String(b.series_number)===String(bp.number);})||books.some(b=>b.series_id===sid&&String(b.series_number)===String(bp.number));
+        if(!exists){
+          const nb={id:"book_"+Date.now()+"_"+Math.random().toString(36).slice(2,7),title:bp.title,subtitle:bp.subtitle||"",genre:s.genre,target_audience:s.audience,description:bp.description,series_id:s.id,series_name:s.name,series_number:bp.number,chapters:[],outline:"",status:"writing",word_count:0,cover_image_url:"",seo_title:"",seo_description:"",seo_keywords:"",notes:"",review:null,book_plan:bp,created_date:new Date().toISOString()};
+          books.unshift(nb);createdIds.push(nb.id);
+        }
+      });
+      if(createdIds.length){
+        setBooks(books);
+        const cur=getSeries();const si=cur.findIndex(x=>x.id===sid);
+        if(si>=0){cur[si]={...cur[si],book_ids:[...new Set([...(cur[si].book_ids||[]),...createdIds])]};setSeries(cur);}
+      }
+      // 2. Ordered list of all series books
+      const freshSeries=getSeries().find(x=>x.id===sid);
+      const allIds=[...new Set([...(freshSeries?.book_ids||[]),...createdIds])];
+      const listOf=b=>allIds.map(id2=>getBook(id2)).filter(Boolean).sort((a,b2)=>(a.series_number||0)-(b2.series_number||0));
+      // 3. Generate outlines for books without chapters
+      for(const b of listOf()){
+        if((b.chapters||[]).length)continue;
+        setWritingSeries({id:sid,note:`Outlining book ${b.series_number}: "${b.title}"…`});
+        const fallback=[...Array(10)].map((_,i)=>({number:i+1,title:"Chapter "+(i+1),description:"",target_words:3000,content:"",generated:false}));
+        try{
+          const bp=b.book_plan||{};
+          const raw=await callAI(`You are a bestselling ${s.genre} author. Create a detailed chapter-by-chapter outline for book ${b.series_number||"?"} of the series "${s.name}".\nBook: "${b.title}" ${bp.subtitle?("- "+bp.subtitle):("")}\nDescription: ${bp.description||b.description||""}\nSeries premise: ${s.plan?.series_description||""}\n${s.plan?.tone_style?("Tone/style: "+s.plan.tone_style):("")}\nThis book must fit the full ${s.plan?.books?.length||"?"}-book series arc.\nReturn ONLY JSON: {"chapters":[{"number":1,"title":"","description":"","target_words":3000}]}`,0.5);
+          trackUsage();
+          const m=raw.match(/\{[\s\S]*\}/);
+          let olc=[];
+          if(m){try{olc=(JSON.parse(m[0]).chapters||[]).map(c=>({...c,content:"",generated:false}));}catch(pe){}}
+          updateBook(b.id,{chapters:olc.length?olc:fallback,outline:m?m[0]:"",status:"writing"});
+        }catch(olE){
+          if(olE?.code==="QUOTA"){updateBook(b.id,{chapters:fallback,status:"writing"});setWritingSeries({id:sid,note:"⏳ Quota hit — created shells, will outline on next run."});break;}
+          updateBook(b.id,{chapters:fallback,status:"writing"});
+        }
+      }
+      // 4. Enqueue every unfinished book in series order + auto-start
+      const q=getQueue();
+      for(const b of listOf()){if(!b.build_complete&&!q.includes(b.id))q.push(b.id);}
+      setQueue(q);
+      setWritingSeries(null);
+      if(!q.length){alert("Nothing left to build in this series. ✅");return;}
+      localStorage.setItem("bfai_queue_autostart","1");
+      ensureNotifyPermission();
+      navigate("queue");
+    }catch(e){setWritingSeries(null);alert("Write Series: "+(e?.message||e));}
+  };
   const [loading,setLoading]=useState(false);
   const [loadStep,setLoadStep]=useState("");
   const [error,setError]=useState("");
@@ -4732,7 +4825,8 @@ function SeriesPage({navigate,onSettings}){
                   </div>
                   <div className="flex items-center gap-2 shrink-0">
                     <button onClick={()=>setViewBible(series.id)} className="text-xs border border-cyan-500/40 text-cyan-300 px-3 py-2 rounded-lg hover:bg-cyan-500/10">📖 View Bible</button>
-                    <button onClick={()=>setContinuity(series.id)} className="text-xs border border-emerald-500/40 text-emerald-300 px-3 py-2 rounded-lg hover:bg-emerald-500/10">🔍 Continuity</button>
+                    <button disabled={writingSeries?.id===series.id} onClick={()=>writeSeries(series.id)} className="text-xs border border-amber-500/40 text-amber-300 px-3 py-2 rounded-lg hover:bg-amber-500/10 disabled:opacity-60">{writingSeries?.id===series.id?(writingSeries.note||"…"):"🚀 Write Series"}</button>
+            <button onClick={()=>setContinuity(series.id)} className="text-xs border border-emerald-500/40 text-emerald-300 px-3 py-2 rounded-lg hover:bg-emerald-500/10">🔍 Continuity</button>
                     <button onClick={e=>deleteSeries(series.id,e)} className="text-white/50 hover:text-red-400 text-sm px-2">🗑</button>
                   </div>
                 </div>
@@ -4911,6 +5005,8 @@ function CreatePage({navigate,onSettings}){
   const [suggestingTitles,setSuggestingTitles]=useState(false);
   const [generatingPremise,setGeneratingPremise]=useState(false);
   const [titleError,setTitleError]=useState("");
+  const [fullyAuto,setFullyAuto]=useState(localStorage.getItem("bfai_fully_auto")==="1");
+  const [autoNote,setAutoNote]=useState("");
 
   const voiceProfile=getVoiceProfile();
 
@@ -4953,10 +5049,22 @@ function CreatePage({navigate,onSettings}){
 
   const generate=async()=>{
     if(!hasCredentials()){onSettings();return;}
-    if(mode==="idea"&&(!form.topic||!form.genre||!form.audience)){setError("Fill in topic, genre and audience.");return;}
+    if(mode==="idea"&&(!form.topic||(!fullyAuto&&(!form.genre||!form.audience)))){setError(fullyAuto?"Enter your topic/idea first.":"Fill in topic, genre and audience.");return;}
     if(mode==="import"&&!importText.trim()){setError("Paste your draft or notes first.");return;}
-    setLoading(true);setError("");
+    setLoading(true);setError("");setAutoNote("");
     try{
+      // Fully Auto: AI infers genre + audience from the idea
+      let f=form;
+      if(mode==="idea"&&fullyAuto&&(!form.genre||!form.audience)){
+        setAutoNote("🤖 Fully Auto: inferring genre & audience from your idea…");
+        try{
+          const infRaw=await callAI(`Suggest the best genre and target audience for this book idea: "${form.topic}".\nPick the genre from this list: Romance, Fantasy, Sci-Fi, Mystery/Thriller, Horror, Young Adult, Literary Fiction, Historical Fiction, Nonfiction/Self-Help, Business, Memoir, Children's.\nReturn ONLY JSON: {"genre":"","audience":""}`,0.3);
+          trackUsage();
+          const infM=infRaw.match(/\{[\s\S]*\}/);
+          if(infM){const inf=JSON.parse(infM[0]);f={...form,genre:form.genre||inf.genre,audience:form.audience||inf.audience};setForm(f);}
+        }catch(e){/* keep user-entered fields */}
+        setAutoNote("");
+      }
       const styleCtx=buildStyleCtx();
       // If we have a pending premise from AI title generator, inject it into the prompt
       const premiseCtx=pendingPremise?`\n\nAI-GENERATED PREMISE (use this as the foundation):\nTitle: ${pendingPremise.title}\nSubtitle: ${pendingPremise.subtitle||""}\nDescription: ${pendingPremise.description||""}\nThemes: ${(pendingPremise.themes||[]).join(", ")}\nUse this title and description as the foundation for the outline. Expand it into a full chapter-by-chapter plan.`:"";
@@ -4973,7 +5081,7 @@ function CreatePage({navigate,onSettings}){
       if(mode==="import"){
         prompt=`You are a professional book editor. Analyze this draft/notes and build a polished book outline from it.\n\nDRAFT/NOTES:\n${importText.slice(0,6000)}\n\nGenre: ${form.genre||"Fiction"}\nAudience: ${form.audience||"General Adults"}${styleCtx}${langNote}\n\n${form.nonfiction_mode?"Include exercises/reflections/action-steps fields per chapter.":""}\n\nRespond ONLY with valid JSON:\n{"title":"","subtitle":"","description":"","themes":[""],"tone_notes":"describe the intended emotional register and prose style","estimated_word_count":50000,"writing_language":"${form.language}","chapters":[{"number":1,"title":"","description":"","opening_hook":"how this chapter should open — first line or image","${form.nonfiction_mode?"exercise":"notes"}":""}]}`;
       } else {
-        prompt=`You are a bestselling author. Create a detailed, commercially compelling book outline.\nTopic: ${form.topic}\nGenre: ${form.genre}\nAudience: ${form.audience}${styleCtx}${langNote}${premiseCtx}\n${form.nonfiction_mode?"Nonfiction mode: include exercises, reflections, and action steps per chapter.":""}\n\nRULES:\n${lengthNote.slice(2)}${wordsNote}\n• Chapter titles must be SPECIFIC and evocative — never generic (e.g. not "Chapter 1: The Beginning")\n• Subtitle must be a compelling, keyword-rich phrase (not just a restatement of the title)\n• Themes must be 3-5 specific thematic elements (e.g. "loss and redemption", "the cost of ambition")\n• Each chapter description must be 2-3 sentences with a clear narrative purpose — never generic (e.g. not "Chapter 1: The Beginning")\n• Each chapter description must be 2-3 sentences with clear conflict or stakes\n• Subtitle must be sharp, benefit-driven, or intriguing\n• Target ~${Math.round(50000/13)} words per chapter\n• No filler chapters — every chapter must earn its place\n\nRespond ONLY with valid JSON:\n{"title":"","subtitle":"","description":"","themes":[""],"tone_notes":"describe the intended emotional register and prose style","estimated_word_count":50000,"writing_language":"${form.language}","chapters":[{"number":1,"title":"","description":"","opening_hook":"how this chapter should open — first line or image","target_words":${_twTarget},"${form.nonfiction_mode?"exercise":"notes"}":""}]}`;
+        prompt=`You are a bestselling author. Create a detailed, commercially compelling book outline.\nTopic: ${f.topic}\nGenre: ${f.genre||"Fiction"}\nAudience: ${f.audience||"General Adults"}${styleCtx}${langNote}${premiseCtx}\n${form.nonfiction_mode?"Nonfiction mode: include exercises, reflections, and action steps per chapter.":""}\n\nRULES:\n${lengthNote.slice(2)}${wordsNote}\n• Chapter titles must be SPECIFIC and evocative — never generic (e.g. not "Chapter 1: The Beginning")\n• Subtitle must be a compelling, keyword-rich phrase (not just a restatement of the title)\n• Themes must be 3-5 specific thematic elements (e.g. "loss and redemption", "the cost of ambition")\n• Each chapter description must be 2-3 sentences with a clear narrative purpose — never generic (e.g. not "Chapter 1: The Beginning")\n• Each chapter description must be 2-3 sentences with clear conflict or stakes\n• Subtitle must be sharp, benefit-driven, or intriguing\n• Target ~${Math.round(50000/13)} words per chapter\n• No filler chapters — every chapter must earn its place\n\nRespond ONLY with valid JSON:\n{"title":"","subtitle":"","description":"","themes":[""],"tone_notes":"describe the intended emotional register and prose style","estimated_word_count":50000,"writing_language":"${form.language}","chapters":[{"number":1,"title":"","description":"","opening_hook":"how this chapter should open — first line or image","target_words":${_twTarget},"${form.nonfiction_mode?"exercise":"notes"}":""}]}`;
       }
       const raw=await callAI(prompt);
       trackUsage();
@@ -4983,7 +5091,10 @@ setOutline(_ol);setPendingPremise(null);setStep(2);
     }catch(e){setError(errMsg(e));}finally{setLoading(false);}
   };
 
+  // Fully Auto: auto-approve the outline ~1.5s after it appears
+  useEffect(()=>{if(!fullyAuto||step!==2||!outline)return;const t=setTimeout(()=>{approve();},1500);return()=>clearTimeout(t);},[fullyAuto,step,outline]);
   const approve=()=>{
+    if(fullyAuto)ensureNotifyPermission();
     const books=getBooks();
     const book={
       id:"book_"+Date.now()+"_"+Math.random().toString(36).slice(2,7),
@@ -4998,7 +5109,7 @@ setOutline(_ol);setPendingPremise(null);setStep(2);
       chapters:(outline.chapters||[]).map(c=>({...c,content:"",generated:false})),
       outline:JSON.stringify(outline),status:"writing",word_count:0,
       cover_image_url:"",seo_title:"",seo_description:"",seo_keywords:"",notes:"",review:null,
-      auto_build:true,build_step:"Starting…",created_date:new Date().toISOString(),book_length:form.book_length,length_words_min:_wMin,length_words_max:_wMax
+      auto_build:true,fully_auto:fullyAuto,build_step:"Starting…",created_date:new Date().toISOString(),book_length:form.book_length,length_words_min:_wMin,length_words_max:_wMax
     };
     books.unshift(book);setBooks(books);navigate("editor",book.id);
   };
@@ -5017,6 +5128,14 @@ setOutline(_ol);setPendingPremise(null);setStep(2);
               <button key={m} onClick={()=>setMode(m)} className={`flex-1 py-2.5 rounded-lg text-sm font-medium transition-all ${mode===m?"bg-purple-500 text-white":"text-white/40 hover:text-white"}`}>{label}</button>
             ))}
           </div>
+          <label className="flex items-start gap-3 bg-amber-500/10 border border-amber-500/30 rounded-xl p-4 cursor-pointer">
+            <input type="checkbox" checked={fullyAuto} onChange={e=>{setFullyAuto(e.target.checked);safeLS("bfai_fully_auto",e.target.checked?"1":"0");if(e.target.checked)ensureNotifyPermission();}} className="mt-1 w-4 h-4 accent-amber-400"/>
+            <div>
+              <span className="text-amber-300 font-semibold text-sm">🚀 Fully Auto Production</span>
+              <p className="text-white/50 text-xs mt-1 leading-relaxed">AI picks the genre & audience from your idea, auto-approves the outline, builds the entire book (chapters → SEO → cover → quality gates → self-correction), then auto-downloads the finished Publish Kit. You get a notification + chime when it's done. <span className="text-amber-300/80">Only the topic is required.</span> Turn off anytime to review outlines yourself.</p>
+            </div>
+          </label>
+          {autoNote&&<div className="bg-purple-500/15 border border-purple-500/30 rounded-xl p-3 text-purple-200 text-sm">{autoNote}</div>}
           <div className="space-y-5">
             {mode==="idea"?(
               <div><label className="text-white/70 text-sm font-medium block mb-2">Topic / Story Idea *</label>
@@ -5135,6 +5254,7 @@ setOutline(_ol);setPendingPremise(null);setStep(2);
       )}
       {step===2&&outline&&(
         <div className="space-y-5">
+          {fullyAuto&&<div className="bg-amber-500/15 border border-amber-500/40 rounded-xl p-3 text-amber-300 text-sm font-medium animate-pulse">🚀 Fully Auto ON — auto-approving this outline in a moment…</div>}
           <Card>
             <div className="flex items-start justify-between mb-5 gap-4"><div><h2 className="text-white text-xl font-bold">{outline.title}</h2>{outline.subtitle&&<p className="text-purple-300 mt-1 text-sm">{outline.subtitle}</p>}</div><span className="bg-green-500/20 text-green-400 text-xs px-3 py-1 rounded-full border border-green-500/30">AI Generated</span></div>
             <div className="bg-white/5 rounded-xl p-4 mb-5"><p className="text-white/40 text-xs uppercase tracking-wider mb-2">Description</p><p className="text-white/80 text-sm leading-relaxed">{outline.description}</p></div>
@@ -5337,6 +5457,72 @@ function installFocusTrap(){
   },true);
 }
 installFocusTrap();
+
+// ── Publish Kit: everything needed for KDP upload, assembled into one ZIP ───
+function dataUrlToPng(dataUrl){return new Promise(res=>{try{const img=new Image();img.onload=()=>{const c=document.createElement("canvas");c.width=img.width;c.height=img.height;c.getContext("2d").drawImage(img,0,0);res(c.toDataURL("image/png"));};img.onerror=()=>res(null);img.src=dataUrl;}catch(e){res(null);}});}
+async function downloadPublishKit(book){
+  try{
+    if(!book?.gates_passed)throw new Error("Quality gates haven\u2019t passed yet \u2014 finish the Review + Writing Quality gates first");
+    const JSZip=await new Promise((res,rej)=>{if(window.JSZip)return res(window.JSZip);const s=document.createElement("script");s.src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js";s.onload=()=>res(window.JSZip);s.onerror=()=>rej(new Error("JSZip CDN load failed"));document.head.appendChild(s);});
+    const zip=new JSZip();
+    const safe=(book.title||"book").replace(/[^a-z0-9]/gi,"_");
+    const chaps=(book.chapters||[]).filter(c=>c.content);
+    const author=getAuthorProfile().name||"Author";
+    const esc=s=>(s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+    const kw=(book.seo_keywords||"").split(/,\s*/).filter(Boolean).slice(0,7);
+    const wc=(book.word_count||chaps.reduce((a,c)=>a+(c.content?c.content.split(/\s+/).length:0),0)).toLocaleString();
+    // 1. Metadata sheet
+    zip.file("01_METADATA.txt",[
+      "BOOKFORGE AI \u2014 PUBLISH METADATA","=".repeat(40),"",
+      "Title: "+(book.title||""), "Subtitle: "+(book.subtitle||""), "Author: "+author,
+      "Genre: "+(book.genre||""), "Target Audience: "+(book.target_audience||""),
+      "Language: "+(book.writing_language||"English"), "Word Count: "+wc+" ("+chaps.length+" chapters)","",
+      "DESCRIPTION (back cover / KDP blurb):",(book.description||"").trim()||"\u2014","",
+      "7 KEYWORDS (KDP keyword slots):",...(kw.length?kw.map((k,i)=>"  "+(i+1)+". "+k):["  \u2014 run the SEO tab first"]),"",
+      "SEO Title: "+(book.seo_title||"\u2014"), "SEO Description: "+(book.seo_description||"\u2014"), "",
+      "Suggested Categories: pick 3 matching "+(book.genre||"your genre")+" on the KDP category tree.",
+      "Pricing suggestion: $2.99\u2013$4.99 ebook (70% royalty band), $9.99\u2013$14.99 paperback.","",
+      "Quality Gates: Review "+(book.review?.overall_score||"?")+"/100 ("+(book.review?.verdict||"?")+") | Writing Quality "+(book.manuscript_quality?.overall_human_score||"?")+"/100 ("+(book.manuscript_quality?.manuscript_verdict||"?")+")",""
+    ].join("\n"));
+    // 2. KDP upload checklist
+    zip.file("02_KDP_UPLOAD_CHECKLIST.txt",[
+      "KDP UPLOAD CHECKLIST","=".repeat(40),"",
+      "1. kdp.amazon.com \u2192 Create \u2192 eBook (then repeat for Paperback).",
+      "2. Paste 01_METADATA.txt fields into the form (language, title, subtitle, author, description, 7 keywords, categories).",
+      "3. eBook content: upload "+safe+".epub (or .doc). Use \u2018Look Inside\u2019 previewer.",
+      "4. Cover: upload cover/"+safe+".jpg (KDP cover creator not needed).",
+      "5. ISBN: skip (KDP free ISBN for paperback; ebook needs none).",
+      "6. Rights: \u201cI own the copyright\u201d. Non-public-domain unless stated.",
+      "7. Pricing: set per metadata sheet; enable KDP Select if you want Kindle Unlimited.",
+      "8. Paperback: use the in-app \u2018KDP Paperback Interior\u2019 button (Publish tab) to print the trim-size PDF, then upload cover + interior.",
+      "9. Free platforms (optional): draft2digital.com and Smashwords accept the .epub directly.",
+      "","Generated by BookForge AI \u2014 "+new Date().toLocaleString(),""
+    ].join("\n"));
+    // 3. Cover art
+    if(book.cover_image_url&&book.cover_image_url.startsWith("data:image")){
+      zip.file("cover/"+safe+".jpg",book.cover_image_url.split(",")[1],{base64:true});
+      try{const png=await dataUrlToPng(book.cover_image_url);if(png)zip.file("cover/"+safe+".png",png.split(",")[1],{base64:true});}catch(e){}
+    }else zip.file("cover/COVER_MISSING.txt","No cover generated yet \u2014 use the Cover tab.\n");
+    // 4. EPUB
+    try{const epubBlob=await buildEPUB(book);zip.file(safe+".epub",epubBlob);}catch(e){zip.file("EPUB_FAILED.txt","EPUB build failed: "+(e?.message||e));}
+    // 5. Word document
+    try{
+      const docHtml="<html><head><meta charset=\"utf-8\"></head><body><h1>"+esc(book.title)+"</h1>"+(book.subtitle?"<h2>"+esc(book.subtitle)+"</h2>":"")+"<p>Copyright \u00a9 "+new Date().getFullYear()+" "+esc(author)+"</p>"+chaps.map(c=>"<h3>Chapter "+(c.number||"")+": "+esc(c.title)+"</h3>"+(c.content||"").split(/\n\n+/).map(p=>"<p>"+esc(p)+"</p>").join("")).join("");
+      zip.file(safe+".doc",new Blob(["\ufeff",docHtml],{type:"application/msword"}));
+    }catch(e){zip.file("DOC_FAILED.txt","Word export failed: "+(e?.message||e));}
+    // 6. Plain text + Markdown
+    zip.file(safe+".txt",chaps.map(c=>"Chapter "+(c.number||"")+": "+c.title+"\n\n"+c.content).join("\n\n\n"));
+    zip.file(safe+".md","# "+(book.title||"")+(book.subtitle?"\n\n## "+book.subtitle:"")+"\n\n"+chaps.map(c=>"## Chapter "+(c.number||"")+": "+c.title+"\n\n"+c.content).join("\n\n"));
+    // 7. Bonus scripts
+    if(book.trailer_script)zip.file("bonus/trailer_script.txt",typeof book.trailer_script==="string"?book.trailer_script:JSON.stringify(book.trailer_script,null,2));
+    if(book.audiobook_script)zip.file("bonus/audiobook_script.txt",typeof book.audiobook_script==="string"?book.audiobook_script:JSON.stringify(book.audiobook_script,null,2));
+    zip.file("README.txt","BookForge AI Publish Kit for \""+(book.title||"")+"\"\nGenerated "+new Date().toISOString()+"\nUpload order: 01_METADATA \u2192 cover \u2192 epub/doc (see checklist).\n");
+    const blob=await zip.generateAsync({type:"blob"});
+    const a=Object.assign(document.createElement("a"),{href:URL.createObjectURL(blob),download:safe+"_PublishKit.zip"});
+    a.click();
+    setTimeout(()=>{try{URL.revokeObjectURL(a.href);}catch(e){}},5000);
+  }catch(e){alert("Publish Kit: "+(e?.message||e));}
+}
 
 function ChapterEditor({book,chIdx,upd}){
   const ch=book.chapters?.[chIdx];
@@ -5801,6 +5987,8 @@ function EditorPage({bookId,navigate,onSettings}){
       const passed=finalBook?.review?.verdict==="PASS";
       const wPassed=finalBook?.manuscript_quality?.manuscript_verdict==="PASS";
       flash(passed&&wPassed?"🎉 Both quality checks passed — ready to publish!":!passed?"📋 Review tab has improvements needed.":"✍️ Writing Quality tab has suggestions to humanize your manuscript.");
+      notifyDone(passed&&wPassed?"📚 Book complete!":"📚 Build finished",`"${finalBook?.title||"Your book"}" — ${passed&&wPassed?"all quality gates passed — Publish Kit ready":"gates need review (Review + Writing Quality tabs)"}`);
+      if(passed&&wPassed&&finalBook?.fully_auto&&!finalBook?.kit_downloaded){try{updateBook(bookId,{kit_downloaded:true});downloadPublishKit(getBook(bookId));}catch(kitE){console.warn("auto-kit failed",kitE);}}
       upd({auto_build:false,build_step:"",status:passed&&wPassed?"ready":"writing",build_complete:!stepsIncomplete&&!chaptersIncomplete,gates_passed:passed&&wPassed,build_complete_date:new Date().toISOString()});
       setTab(passed&&wPassed?10:!passed?4:8);
       if(chaptersIncomplete||stepsIncomplete)log("⚠️ A few items couldn't finish after auto-retries — click ▶ Resume Build anytime to try again.");
@@ -6328,7 +6516,8 @@ Respond ONLY valid JSON: {"needs_improvement":false,"score":85,"issues":["short 
             </div>
             <p className="text-white/50 text-sm font-semibold mb-3">Export Formats</p>
             <div className="grid grid-cols-2 gap-3">
-              <button onClick={()=>download("md")} className="bg-gradient-to-r from-purple-500 to-pink-500 text-white py-3 rounded-xl font-semibold hover:opacity-90 flex items-center justify-center gap-2 text-sm">📝 Markdown (.md)</button>
+              <button onClick={()=>downloadPublishKit(book)} disabled={!reviewPassed||!writingPassed} className="col-span-2 bg-gradient-to-r from-emerald-500 to-teal-500 text-white py-3 rounded-xl font-semibold hover:opacity-90 disabled:opacity-40 flex items-center justify-center gap-2">📦 Download Publish Kit — Complete KDP Upload Bundle (ZIP)</button>
+          <button onClick={()=>download("md")} className="bg-gradient-to-r from-purple-500 to-pink-500 text-white py-3 rounded-xl font-semibold hover:opacity-90 flex items-center justify-center gap-2 text-sm">📝 Markdown (.md)</button>
               <button onClick={()=>download("docx")} className="bg-gradient-to-r from-indigo-500 to-blue-500 text-white py-3 rounded-xl font-semibold hover:opacity-90 flex items-center justify-center gap-2 text-sm">📋 Word (.docx) ⭐ NEW</button>
               <button onClick={()=>download("epub")} className="bg-gradient-to-r from-blue-500 to-cyan-500 text-white py-3 rounded-xl font-semibold hover:opacity-90 flex items-center justify-center gap-2 text-sm">📖 EPUB-ready (.html)</button>
               <button onClick={()=>download("txt")} className="bg-white/10 border border-white/20 text-white py-3 rounded-xl font-semibold hover:bg-white/15 flex items-center justify-center gap-2 text-sm">📄 Plain Text (.txt)</button>
