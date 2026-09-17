@@ -5066,7 +5066,7 @@ function SeriesPage({navigate,onSettings}){
                   </div>
                   <div className="flex items-center gap-2 shrink-0">
                     <button onClick={()=>setViewBible(series.id)} className="text-xs border border-cyan-500/40 text-cyan-300 px-3 py-2 rounded-lg hover:bg-cyan-500/10">📖 View Bible</button>
-                    <button disabled={writingSeries?.id===series.id} onClick={()=>writeSeries(series.id)} className="text-xs border border-amber-500/40 text-amber-300 px-3 py-2 rounded-lg hover:bg-amber-500/10 disabled:opacity-60">{writingSeries?.id===series.id?(writingSeries.note||"…"):"🚀 Write Series"}</button>
+                    <button disabled={writingSeries?.id===series.id} onClick={()=>writeSeries(series.id)} className="text-xs bg-gradient-to-r from-purple-600 via-pink-600 to-purple-700 text-white font-semibold px-4 py-2 rounded-xl shadow-md shadow-purple-500/20 hover:opacity-95 transition-all disabled:opacity-60 shrink-0">{writingSeries?.id===series.id?(writingSeries.note||"Queuing…"):"🚀 Write Series"}</button>
             <button onClick={()=>setContinuity(series.id)} className="text-xs border border-emerald-500/40 text-emerald-300 px-3 py-2 rounded-lg hover:bg-emerald-500/10">🔍 Continuity</button>
                     <button onClick={e=>deleteSeries(series.id,e)} className="text-white/50 hover:text-red-400 text-sm px-2">🗑</button>
                   </div>
@@ -5382,13 +5382,22 @@ setOutline(_ol);setPendingPremise(null);setStep(2);
               <button key={m} onClick={()=>setMode(m)} className={`flex-1 py-2.5 rounded-lg text-sm font-medium transition-all ${mode===m?"bg-purple-500 text-white":"text-white/40 hover:text-white"}`}>{label}</button>
             ))}
           </div>
-          <label className="flex items-start gap-3 bg-amber-500/10 border border-amber-500/30 rounded-xl p-4 cursor-pointer">
-            <input type="checkbox" checked={fullyAuto} onChange={e=>{setFullyAuto(e.target.checked);safeLS("bfai_fully_auto",e.target.checked?"1":"0");if(e.target.checked)ensureNotifyPermission();}} className="mt-1 w-4 h-4 accent-amber-400"/>
-            <div>
-              <span className="text-amber-300 font-semibold text-sm">🚀 Fully Auto Production</span>
-              <p className="text-white/50 text-xs mt-1 leading-relaxed">AI picks the genre & audience from your idea, runs deep market research on what your genre's readers buy, auto-approves the outline, builds the entire book (chapters → SEO → cover → quality gates → self-correction), then auto-downloads the finished Publish Kit. You get a notification + chime when it's done. <span className="text-amber-300/80">Only the topic is required.</span> Turn off anytime to review outlines yourself.</p>
+          <div className={`rounded-2xl p-5 border-2 transition-all mb-4 ${fullyAuto?"bg-gradient-to-r from-purple-900/60 via-pink-900/40 to-slate-900 border-purple-500/50 shadow-xl shadow-purple-500/10":"bg-white/5 border-white/10 hover:border-purple-400/40"}`}>
+            <div className="flex items-start justify-between gap-4">
+              <div className="flex-1">
+                <div className="flex items-center gap-2 mb-1.5">
+                  <span className="bg-gradient-to-r from-purple-500 to-pink-500 text-white text-[10px] font-extrabold uppercase px-2.5 py-0.5 rounded-full tracking-wider shadow-sm">🚀 Flagship Mode</span>
+                  <span className="text-xs text-purple-300/80 font-medium">Topic is all you need</span>
+                </div>
+                <h3 className="text-white text-base font-bold">Fully Auto Production</h3>
+                <p className="text-white/60 text-xs mt-1 leading-relaxed">AI picks the genre & audience from your idea, runs deep market research on what your genre's readers buy, auto-approves the outline, builds the entire book (chapters → SEO → cover → quality gates → self-correction), then auto-downloads the finished Publish Kit. You get a notification + chime when it's done. Turn off anytime to review outlines yourself.</p>
+              </div>
+              <label className="relative inline-flex items-center cursor-pointer shrink-0 mt-1" aria-label="Toggle Fully Auto Production">
+                <input type="checkbox" checked={fullyAuto} onChange={e=>{setFullyAuto(e.target.checked);safeLS("bfai_fully_auto",e.target.checked?"1":"0");if(e.target.checked)ensureNotifyPermission();}} className="sr-only peer"/>
+                <div className="w-12 h-6 bg-white/10 rounded-full peer peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-gradient-to-r peer-checked:from-purple-500 peer-checked:to-pink-500"></div>
+              </label>
             </div>
-          </label>
+          </div>
           {autoNote&&<div className="bg-purple-500/15 border border-purple-500/30 rounded-xl p-3 text-purple-200 text-sm">{autoNote}</div>}
           <div className="space-y-5">
             {mode==="idea"?(
@@ -5986,6 +5995,7 @@ function EditorPage({bookId,navigate,onSettings}){
   const [bookSearch,setBookSearch]=useState(false);
   const [showFindReplace,setShowFindReplace]=useState(false);
   const [isBuilding,setIsBuilding]=useState(false);
+  const [celebrate,setCelebrate]=useState(null);
   const [coverMode,setCoverMode]=useState("auto");
   const [customPrompt,setCustomPrompt]=useState("");
   const [lastAiPrompt,setLastAiPrompt]=useState("");
@@ -6249,6 +6259,7 @@ function EditorPage({bookId,navigate,onSettings}){
       flash(passed&&wPassed?"🎉 Both quality checks passed — ready to publish!":!passed?"📋 Review tab has improvements needed.":"✍️ Writing Quality tab has suggestions to humanize your manuscript.");
       notifyDone(passed&&wPassed?"📚 Book complete!":"📚 Build finished",`"${finalBook?.title||"Your book"}" — ${passed&&wPassed?"all quality gates passed — Publish Kit ready":"gates need review (Review + Writing Quality tabs)"}`);
       if(passed&&wPassed&&finalBook?.fully_auto&&!finalBook?.kit_downloaded){try{updateBook(bookId,{kit_downloaded:true});downloadPublishKit(getBook(bookId));}catch(kitE){console.warn("auto-kit failed",kitE);}}
+      if(passed&&wPassed&&finalBook?.fully_auto)setCelebrate(getBook(bookId)||finalBook);
       upd({auto_build:false,build_step:"",status:passed&&wPassed?"ready":"writing",build_complete:!stepsIncomplete&&!chaptersIncomplete,gates_passed:passed&&wPassed,build_complete_date:new Date().toISOString()});
       setTab(passed&&wPassed?10:!passed?4:8);
       if(chaptersIncomplete||stepsIncomplete)log("⚠️ A few items couldn't finish after auto-retries — click ▶ Resume Build anytime to try again.");
@@ -6539,8 +6550,9 @@ const genCover=async()=>{if(quotaHit||isBuilding)return;setBusy(true);setError("
           <div className="flex items-center gap-3 mb-3"><Spin/><p className="text-purple-300 font-semibold">Auto-building your book…</p></div>
           <div className="h-1.5 bg-white/10 rounded-full overflow-hidden mb-3"><div className="h-full bg-gradient-to-r from-purple-500 to-pink-500 rounded-full pulse-a" style={{width:`${Math.min(((book.chapters||[]).filter(c=>c.generated).length/Math.max((book.chapters||[{a:1}]).length,1))*70+5,95)}%`}}/></div>
           {/* Pipeline step status tracker */}
-          <div className="grid grid-cols-4 gap-1.5 mb-3">
-            {[
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-3">
+            {(()=>{
+              const steps=[
               ["📋","Outline",!book.needs_outline],
               ["✍️","Chapters",(book.chapters||[]).length>0&&(book.chapters||[]).every(c=>c.generated)],
               ["🔍","SEO",!!book.seo_done],
@@ -6548,15 +6560,40 @@ const genCover=async()=>{if(quotaHit||isBuilding)return;setBusy(true);setError("
               ["🤖","Review",!!book.review_done],
               ["🔎","Market",!!book.competitor_done],
               ["🪝","Hooks",!!book.hooks_done],
-              ["📊","Writing",!!book.wq_done],
-            ].map(([icon,label,done])=>(
-              <div key={label} className={`flex items-center gap-1 rounded-lg px-2 py-1 text-xs ${done?"bg-green-500/20 text-green-300":"bg-white/5 text-white/60"}`}>
-                <span>{done?"✅":icon}</span><span className="truncate">{label}</span>
-              </div>
-            ))}
+              ["📊","Writing",!!book.wq_done]];
+              let activeSeen=false;
+              return steps.map(([icon,label,done])=>{
+                const active=!done&&!activeSeen&&isBuilding;
+                if(!done)activeSeen=true;
+                return(
+                  <div key={label} className={`flex items-center gap-2 rounded-xl px-3 py-2 text-xs font-medium transition-all ${done?"bg-green-500/20 border border-green-500/30 text-green-300":active?"bg-purple-500/30 border-2 border-purple-400 text-purple-100 shadow-lg shadow-purple-500/30 animate-pulse":"bg-white/5 border border-white/10 text-white/40"}`}>
+                    <span>{done?"✅":icon}</span><span className="truncate">{label}{active?" …":""}</span>
+                  </div>
+                );
+              });
+            })()}
           </div>
           <div role="log" aria-live="polite" className="space-y-1 max-h-24 overflow-y-auto">{buildLog.slice(-5).map((l,i)=><p key={i} className="text-purple-200/50 text-xs">{l}</p>)}</div>
         </div>}
+        {celebrate&&(<div className="fixed inset-0 bg-black/80 backdrop-blur-md z-[9999] flex items-center justify-center p-4 bf-modal" role="dialog" aria-label="Book complete">
+          <div className="bg-slate-900 border-2 border-purple-500/50 rounded-3xl max-w-lg w-full p-6 text-center shadow-2xl space-y-5">
+            <div className="text-5xl animate-bounce">🎉</div>
+            <div>
+              <h2 className="text-2xl font-extrabold text-white">Your Book is Complete!</h2>
+              <p className="text-purple-300 text-sm mt-1">"{celebrate.title}" is ready for Amazon KDP</p>
+            </div>
+            <div className="grid grid-cols-2 gap-3 bg-white/5 border border-white/10 rounded-2xl p-4 text-left text-xs">
+              <div><span className="text-white/40 block">Word Count</span><span className="text-white font-bold text-sm">{(celebrate.word_count||0).toLocaleString()} words</span></div>
+              <div><span className="text-white/40 block">Chapters</span><span className="text-white font-bold text-sm">{(celebrate.chapters||[]).length} chapters</span></div>
+              <div><span className="text-white/40 block">Review Score</span><span className="text-green-400 font-bold text-sm">{celebrate.review?.overall_score??"—"}/100</span></div>
+              <div><span className="text-white/40 block">Writing Quality</span><span className="text-green-400 font-bold text-sm">{celebrate.manuscript_quality?.overall_human_score??"PASS"}</span></div>
+            </div>
+            <div className="flex gap-2">
+              <button onClick={()=>{try{downloadPublishKit(celebrate);}catch(e){}setCelebrate(null);}} className="flex-1 bg-gradient-to-r from-purple-500 via-pink-500 to-amber-500 text-white font-bold py-3.5 rounded-xl shadow-lg shadow-purple-500/30 hover:opacity-95 text-sm flex items-center justify-center gap-2">📦 Download Publish Kit (ZIP)</button>
+              <button onClick={()=>setCelebrate(null)} className="px-4 text-white/50 hover:text-white text-sm">Close</button>
+            </div>
+          </div>
+        </div>)}
         {quotaHit&&<div className="bg-amber-500/20 border border-amber-500/40 rounded-xl p-4 mb-5 flex gap-3 items-start"><span className="text-2xl">⏳</span><div className="flex-1"><p className="text-amber-300 font-semibold">Daily Gemini Limit Reached</p><p className="text-amber-200/60 text-sm mt-0.5">Resets at midnight Pacific Time. All progress saved!</p></div><button onClick={()=>{setQuotaHit(false);setError("");}} className="text-amber-400/40 hover:text-amber-300">✕</button></div>}
         {error&&!quotaHit&&<div className="bg-red-500/20 border border-red-500/30 text-red-300 rounded-xl p-4 mb-5 text-sm flex items-center justify-between gap-3"><span className="flex-1">{error}</span><div className="flex items-center gap-2 shrink-0">{(book?.chapters?.length>0||book?.needs_outline)&&!isBuilding&&<button onClick={()=>{setError("");upd({auto_build:true});runAutoBuild(getBook(bookId));}} className="bg-cyan-500/20 border border-cyan-500/40 text-cyan-300 text-xs font-bold px-3 py-1.5 rounded-lg hover:bg-cyan-500/30">🔄 Retry</button>}<button onClick={()=>setError("")} className="text-red-300/60 hover:text-red-300">✕</button></div></div>}
         {success&&<div role="status" aria-live="polite" className="bg-green-500/20 border border-green-500/30 text-green-300 rounded-xl p-4 mb-5 text-sm">{success}</div>}
@@ -6776,7 +6813,10 @@ Respond ONLY valid JSON: {"needs_improvement":false,"score":85,"issues":["short 
             </div>
             <p className="text-white/50 text-sm font-semibold mb-3">Export Formats</p>
             <div className="grid grid-cols-2 gap-3">
-              <button onClick={()=>downloadPublishKit(book)} disabled={!reviewPassed||!writingPassed} className="col-span-2 bg-gradient-to-r from-emerald-500 to-teal-500 text-white py-3 rounded-xl font-semibold hover:opacity-90 disabled:opacity-40 flex items-center justify-center gap-2">📦 Download Publish Kit — Complete KDP Upload Bundle (ZIP)</button>
+              <div className="col-span-2 space-y-2">
+              <button onClick={()=>downloadPublishKit(book)} disabled={!reviewPassed||!writingPassed} className="w-full bg-gradient-to-r from-purple-600 via-pink-600 to-amber-500 text-white py-4 rounded-2xl font-bold shadow-xl shadow-purple-500/20 hover:opacity-95 disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-2 text-base transition-all">📦 Download Publish Kit — Complete KDP Upload Bundle (ZIP)</button>
+              {(!reviewPassed||!writingPassed)&&<p className="text-amber-300/80 text-xs text-center flex items-center justify-center gap-1 flex-wrap"><span>🔒 Gated:</span>{!reviewPassed&&<button onClick={()=>setTab(4)} className="underline hover:text-amber-200">Pass Review (70+)</button>}{!reviewPassed&&!writingPassed&&<span>&</span>}{!writingPassed&&<button onClick={()=>setTab(8)} className="underline hover:text-amber-200">Pass Writing Quality (78+)</button>}</p>}
+            </div>
           <button onClick={()=>download("md")} className="bg-gradient-to-r from-purple-500 to-pink-500 text-white py-3 rounded-xl font-semibold hover:opacity-90 flex items-center justify-center gap-2 text-sm">📝 Markdown (.md)</button>
               <button onClick={()=>download("docx")} className="bg-gradient-to-r from-indigo-500 to-blue-500 text-white py-3 rounded-xl font-semibold hover:opacity-90 flex items-center justify-center gap-2 text-sm">📋 Word (.docx) ⭐ NEW</button>
               <button onClick={()=>download("epub")} className="bg-gradient-to-r from-blue-500 to-cyan-500 text-white py-3 rounded-xl font-semibold hover:opacity-90 flex items-center justify-center gap-2 text-sm">📖 EPUB-ready (.html)</button>
