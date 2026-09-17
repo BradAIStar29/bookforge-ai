@@ -28,21 +28,21 @@ const test=`let pass=0,fail=0;const t=(l,c)=>{c?pass++:fail++;console.log((c?'�
   FAILMAP={groq:{code:"QUOTA",msg:"rate limit"}};
   CALLS.length=0;
   const r1=await callAI("hi");
-  t('groq QUOTA → routed to cloudflare (cerebras demoted 2026-09-17: free tier ended)',r1==="cloudflare-result"&&CALLS.join(",")=="groq,cloudflare");
+  t('groq QUOTA → routed to kilo (zero-config, ahead of puter; cerebras demoted last)',r1==="kilo-result"&&CALLS.join(",")=="groq,kilo");
   t('groq marked exhausted',backendExhausted("groq")===true);
 
   // 2. groq still exhausted — next call skips it entirely (no wasted 429)
   CALLS.length=0;
   const r2=await callAI("hi again");
-  t('exhausted backend skipped on next call',CALLS[0]==="cloudflare"&&CALLS.length===1);
+  t('exhausted backend skipped on next call',CALLS[0]==="kilo"&&CALLS.length===1);
 
-  // 3. Chain: cerebras also QUOTA → cloudflare (creds configured)
+  // 3. Chain: cloudflare also QUOTA → kilo (new order; kilo mocked alive pre-scenario-4)
   CONFIG={backend:"groq",groqKey:"gk",cerebrasKey:"ck",cfId:"cfid",cfTok:"cftok",gemKey:"",usage:0};
   BACKEND_EXHAUSTED.clear();
   FAILMAP={groq:{code:"QUOTA"},cloudflare:{code:"QUOTA"}};
   CALLS.length=0;
   const r3=await callAI("hi");
-  t('2-hop chain groq→cerebras→cloudflare',r3==="cloudflare-result"&&CALLS.join(",")==="groq,cerebras,cloudflare");
+  t('2-hop chain groq→cloudflare→kilo',r3==="kilo-result"&&CALLS.join(",")=="groq,cloudflare,kilo");
 
   // 4. No backend with capacity → QUOTA surfaces (no hang, no loop)
   BACKEND_EXHAUSTED.clear();
@@ -80,7 +80,7 @@ const test=`let pass=0,fail=0;const t=(l,c)=>{c?pass++:fail++;console.log((c?'�
   FAILMAP={groq:{code:"QUOTA"}};
   NOTICES.length=0;
   await callAI("first");
-  const wasRouted=CALLS[CALLS.length-1]==="cerebras"&&NOTICES.some(m=>/auto-switching to cerebras/.test(m));
+  const wasRouted=CALLS[CALLS.length-1]==="puter"&&NOTICES.some(m=>/auto-switching to puter/.test(m));
   markBackendExhausted("groq",5);
   await new Promise(res=>setTimeout(res,20));
   FAILMAP={};CALLS.length=0;
@@ -103,7 +103,7 @@ const test=`let pass=0,fail=0;const t=(l,c)=>{c?pass++:fail++;console.log((c?'�
   FAILMAP={groq:{code:"QUOTA"}};
   await callAI("fifth");
   const st=failoverStatus();
-  t('failoverStatus: routed while exhausted',st.original==="groq"&&st.routedTo==="cerebras"&&st.exhaustedFor>0);
+  t('failoverStatus: routed while exhausted',st.original==="groq"&&st.routedTo==="puter"&&st.exhaustedFor>0);
   clearBackendFailover("groq");
   const st2=failoverStatus();
   t('failoverStatus: back to original after revert',st2.original==="groq"&&st2.routedTo==="groq");
