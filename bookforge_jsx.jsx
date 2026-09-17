@@ -2893,6 +2893,44 @@ function SeriesContinuityModal({seriesId,onClose}){
 // ══════════════════════════════════════════════════════════════════════════════
 // REVIEW AGENT
 // ══════════════════════════════════════════════════════════════════════════════
+// ── 📚 Deep Market Research — grounds outlines/chapters in what this genre's readers actually buy ──
+async function runMarketResearch(book){
+  const premise=book.title+(book.description?(" — "+book.description):"");
+  const raw=await callAI(
+    `You are a publishing market analyst who knows exactly what makes readers in each genre buy, binge, finish, and leave 5-star reviews.\n`+
+    `Analyze this book's commercial potential and return actionable intelligence for the writer.\n\n`+
+    `Genre: ${book.genre}\nTarget Audience: ${book.target_audience}\nPremise: ${premise}\n\n`+
+    `Respond ONLY with valid JSON:\n`+
+    `{"hook_line":"the one-line pitch that sells this book in 2 seconds",`+
+    `"unique_angle":"what makes this book stand out from every similar book on Amazon",`+
+    `"genre_conventions":["must-have element readers expect","...","...","..."],`+
+    `"tropes_include":["trope these readers actively WANT","...","...","..."],`+
+    `"tropes_avoid":["cliché readers are tired of — avoid","...","..."],`+
+    `"comp_titles":[{"title":"","author":"","why_it_worked":""}],`+
+    `"reader_desires":["emotional experience these readers crave","...","..."],`+
+    `"reader_pet_peeves":["what makes these readers quit a book or leave 1-star reviews","...","..."],`+
+    `"ending_expectation":"the kind of ending this audience demands to feel satisfied enough to recommend"}`,0.4,{task:"reasoning"}
+  );
+  trackUsage();
+  const m=raw.match(/\{[\s\S]*\}/);
+  let mr=null;
+  if(m){try{mr=JSON.parse(m[0]);}catch(pe){mr=null;}}
+  if(mr&&mr.unique_angle&&book.id&&!String(book.id).startsWith("__"))updateBook(book.id,{market_research:mr,research_done:true});
+  return mr;
+}
+const researchCtxFor=(book)=>{
+  const mr=book?.market_research;
+  if(!mr||!mr.unique_angle)return"";
+  const bits=[];
+  if(mr.hook_line)bits.push("Core hook to deliver: "+mr.hook_line);
+  if(mr.unique_angle)bits.push("Unique angle (this is the book's selling point): "+mr.unique_angle);
+  if(mr.genre_conventions?.length)bits.push("Genre must-haves: "+mr.genre_conventions.slice(0,5).join("; "));
+  if(mr.tropes_include?.length)bits.push("Tropes these readers WANT: "+mr.tropes_include.slice(0,5).join("; "));
+  if(mr.tropes_avoid?.length)bits.push("Clichés to AVOID: "+mr.tropes_avoid.slice(0,5).join("; "));
+  if(mr.reader_desires?.length)bits.push("Emotional payoff readers crave: "+mr.reader_desires.slice(0,4).join("; "));
+  if(mr.ending_expectation)bits.push("Ending must deliver: "+mr.ending_expectation);
+  return bits.length?"\n\nMARKET RESEARCH (this is what makes readers buy and finish this book):\n• "+bits.join("\n• "):"";
+};
 async function runReviewAgent(book){
   const outline=(()=>{try{return JSON.parse(book.outline||"{}");}catch{return {};}})();
   const raw=await callAI(
@@ -2902,9 +2940,11 @@ async function runReviewAgent(book){
     `Target Audience: ${book.target_audience}\nSEO Title: ${book.seo_title||"(not set)"}\n`+
     `SEO Description: ${book.seo_description||"(not set)"}\nKeywords: ${book.seo_keywords||"(not set)"}\n`+
     `Description: ${outline.description||book.description}\n\n`+
-    `Evaluate:\n1. Title appeal & marketability\n2. Keyword strength & searchability\n3. SEO description quality\n4. Subtitle effectiveness\n5. Market differentiation\n\n`+
+    `Market angle: ${book.market_research?.unique_angle||"(none)"}\nReader desires: ${((book.market_research?.reader_desires)||[]).slice(0,3).join("; ")||"(none)"}\n\n`+
+    `Evaluate:\n1. Title appeal & marketability\n2. Keyword strength & searchability\n3. SEO description quality\n4. Subtitle effectiveness\n5. Market differentiation\n6. Reader appeal — will this hook its audience and deliver the emotional payoff that earns 5-star reviews and word-of-mouth\n\n`+
     `Respond ONLY with valid JSON:\n`+
     `{"overall_score":85,"title_score":80,"keyword_score":75,"seo_score":85,"differentiation_score":80,`+
+    `"reader_appeal_score":80,"reader_appeal_analysis":"How strongly this book will hook and satisfy its target readers — promise, emotional payoff, re-read/recommend likelihood",`+
     `"verdict":"PASS","verdict_reason":"One sentence summary.",`+
     `"strengths":["strength 1","strength 2","strength 3"],`+
     `"issues":["issue 1","issue 2"],`+
@@ -3287,7 +3327,8 @@ function ReviewPanel({book,onApply,onSettings}){
     <div className="max-w-3xl mx-auto space-y-5">
       <Card>
         <div className="flex items-start justify-between gap-4 mb-4">
-          <div><h2 className="text-white text-xl font-bold">🤖 AI Review Agent</h2><p className="text-white/40 text-sm mt-1">Scores title, keywords & SEO. Must pass 75+ to unlock publishing.</p></div>
+          <div><h2 className="text-white text-xl font-bold">🤖 AI Review Agent</h2><p className="text-white/40 text-sm mt-1">Scores title, keywords & SEO. Must pass 75+ to unlock publishing.</p>
+          {review&&review.reader_appeal_score!=null&&<p className="text-white/50 text-xs mt-1">Reader Appeal: <b className="text-white/80">{review.reader_appeal_score}/100</b>{review.reader_appeal_analysis?(" — "+review.reader_appeal_analysis.slice(0,120)):""}</p>}</div>
           {review&&<ScoreBadge score={review.overall_score}/>}
         </div>
         {error&&<div className="bg-red-500/20 border border-red-500/30 text-red-300 rounded-xl p-4 mb-4 text-sm">{error}</div>}
@@ -4245,6 +4286,10 @@ function QueuePage({navigate,onSettings}){
       addLog(`📚 Starting: "${book.title}"…`);
       updateBook(id,{status:"writing",auto_build:true,build_step:"Queue building…"});
       reload();
+      if(!book.research_done&&!book.market_research){
+        addLog("  📚 Market research: what this genre's readers buy…");
+        try{const mr=await runMarketResearch(book);const fresh=getBook(id);if(fresh)Object.assign(book,fresh);addLog(mr?"    ✅ Research complete.":"    ⚠️ Research parse failed — continuing.");}catch(e){addLog("    ⚠️ Research unavailable — continuing.");}
+      }
       // Simulate the auto-build by navigating — instead we inline a mini pipeline
       try{
         const outline=book.outline?JSON.parse(book.outline):{};
@@ -4267,7 +4312,7 @@ function QueuePage({navigate,onSettings}){
             prevChaps.length<=2?prevChaps.map(c=>c.title).join(", "):
             prevChaps.slice(-3).map(c=>`Ch.${c.number} "${c.title}": ${(c.content||"").slice(0,200).replace(/\n/g," ")}…`).join("\n");
           const content=await callAIStream(
-            `Write Chapter ${chapters[i].number}: "${chapters[i].title}" for a ${book.genre} book titled "${outline.title||book.title}".${seriesCtx}${qVoiceCtx}${qCharCtx}${qLangNote}${qNfNote}\n`+
+            `Write Chapter ${chapters[i].number}: "${chapters[i].title}" for a ${book.genre} book titled "${outline.title||book.title}".${seriesCtx}${qVoiceCtx}${qCharCtx}${qLangNote}${qNfNote}${researchCtxFor(book)}\n`+
             `Chapter description: ${chapters[i].description}\nPrevious: ${prev}\nAudience: ${book.target_audience}\n\n`+
             `${(()=>{const tw=chapters[i]?.target_words||3800;const wMin=Math.round(tw*0.75);const wMax=tw;return `${wMin.toLocaleString()}–${wMax.toLocaleString()} words`;})()}. Match genre tone. Aim for the full word count.\n\nSTRUCTURE:\n• 3-5 distinct scenes per chapter, separated by: ⁂\n• Each scene has a clear goal → obstacle → outcome\n• Chapter must END on a hook, unresolved tension, or revelation that forces reading on\n• DO NOT wrap up cleanly — the best chapters end mid-breath\n\nWRITING RULES — violating these will get this chapter rejected:\n• NEVER start a sentence with 'He/She/They couldn't help but', 'In that moment', 'It dawned on', 'Something about the way', 'A wave of', 'A surge of'\n• NEVER state emotions directly ('he felt sad', 'warmth spread through her') — express through physical action, dialogue, or specific sensory detail\n• NEVER use em-dashes for dramatic effect more than once per page\n• VARY sentence length violently: one-word sentences. Fragments. Then a long, breathing sentence that winds through a scene and refuses to end neatly.\n• Dialogue must be messy and human: people talk past each other, leave things half-said, interrupt, change subject\n• Use SPECIFIC details: not 'the coffee shop smelled like coffee' but the burnt-sugar smell of the espresso machine at 6am, the sticky ring on the table from someone's iced latte\n• No clean emotional resolutions — conflict leaves residue\n• Character psychology must be specific, not convenient\n• Every scene must have a sensory anchor: a smell, a texture, a specific sound\n• Read like a published novel — no chapter summaries, no scene headers, no markdown`,0.85,{task:"creative",onStream:t=>{addLog(`  ✍️ Ch.${i+1}/${chapters.length}: ${t.split(/\s+/).filter(Boolean).length} words streamed…`);}}
           );
@@ -5051,7 +5096,7 @@ function CreatePage({navigate,onSettings}){
     if(!hasCredentials()){onSettings();return;}
     if(mode==="idea"&&(!form.topic||(!fullyAuto&&(!form.genre||!form.audience)))){setError(fullyAuto?"Enter your topic/idea first.":"Fill in topic, genre and audience.");return;}
     if(mode==="import"&&!importText.trim()){setError("Paste your draft or notes first.");return;}
-    setLoading(true);setError("");setAutoNote("");
+    setLoading(true);setError("");setAutoNote("");try{localStorage.removeItem("bfai_pending_research");}catch(e){}
     try{
       // Fully Auto: AI infers genre + audience from the idea
       let f=form;
@@ -5065,6 +5110,16 @@ function CreatePage({navigate,onSettings}){
         }catch(e){/* keep user-entered fields */}
         setAutoNote("");
       }
+      // 📚 Fully Auto deep market research — outline + chapters grounded in what these readers buy
+      let mrPending=null;
+      if(mode==="idea"&&fullyAuto){
+        try{
+          setAutoNote("📚 Researching what readers in this genre buy…");
+          mrPending=await runMarketResearch({id:"__pending__",title:f.topic||"Untitled",description:"",genre:f.genre||"Fiction",target_audience:f.audience||"General Adults"});
+        }catch(e){mrPending=null;}
+        setAutoNote("");
+      }
+      const mrCtx=mrPending?("\n\nMARKET RESEARCH (build the outline to deliver):\n• "+[mrPending.hook_line?("Core hook: "+mrPending.hook_line):"",mrPending.unique_angle?("Unique angle (selling point): "+mrPending.unique_angle):"",...(mrPending.genre_conventions||[]).slice(0,4).map(x=>"Genre must-have: "+x),...(mrPending.tropes_include||[]).slice(0,4).map(x=>"Trope readers want: "+x),...(mrPending.tropes_avoid||[]).slice(0,3).map(x=>"Cliché to avoid: "+x),...(mrPending.reader_desires||[]).slice(0,3).map(x=>"Readers crave: "+x),mrPending.ending_expectation?("Ending must deliver: "+mrPending.ending_expectation):""].filter(Boolean).join("\n• ")):"";
       const styleCtx=buildStyleCtx();
       // If we have a pending premise from AI title generator, inject it into the prompt
       const premiseCtx=pendingPremise?`\n\nAI-GENERATED PREMISE (use this as the foundation):\nTitle: ${pendingPremise.title}\nSubtitle: ${pendingPremise.subtitle||""}\nDescription: ${pendingPremise.description||""}\nThemes: ${(pendingPremise.themes||[]).join(", ")}\nUse this title and description as the foundation for the outline. Expand it into a full chapter-by-chapter plan.`:"";
@@ -5081,12 +5136,13 @@ function CreatePage({navigate,onSettings}){
       if(mode==="import"){
         prompt=`You are a professional book editor. Analyze this draft/notes and build a polished book outline from it.\n\nDRAFT/NOTES:\n${importText.slice(0,6000)}\n\nGenre: ${form.genre||"Fiction"}\nAudience: ${form.audience||"General Adults"}${styleCtx}${langNote}\n\n${form.nonfiction_mode?"Include exercises/reflections/action-steps fields per chapter.":""}\n\nRespond ONLY with valid JSON:\n{"title":"","subtitle":"","description":"","themes":[""],"tone_notes":"describe the intended emotional register and prose style","estimated_word_count":50000,"writing_language":"${form.language}","chapters":[{"number":1,"title":"","description":"","opening_hook":"how this chapter should open — first line or image","${form.nonfiction_mode?"exercise":"notes"}":""}]}`;
       } else {
-        prompt=`You are a bestselling author. Create a detailed, commercially compelling book outline.\nTopic: ${f.topic}\nGenre: ${f.genre||"Fiction"}\nAudience: ${f.audience||"General Adults"}${styleCtx}${langNote}${premiseCtx}\n${form.nonfiction_mode?"Nonfiction mode: include exercises, reflections, and action steps per chapter.":""}\n\nRULES:\n${lengthNote.slice(2)}${wordsNote}\n• Chapter titles must be SPECIFIC and evocative — never generic (e.g. not "Chapter 1: The Beginning")\n• Subtitle must be a compelling, keyword-rich phrase (not just a restatement of the title)\n• Themes must be 3-5 specific thematic elements (e.g. "loss and redemption", "the cost of ambition")\n• Each chapter description must be 2-3 sentences with a clear narrative purpose — never generic (e.g. not "Chapter 1: The Beginning")\n• Each chapter description must be 2-3 sentences with clear conflict or stakes\n• Subtitle must be sharp, benefit-driven, or intriguing\n• Target ~${Math.round(50000/13)} words per chapter\n• No filler chapters — every chapter must earn its place\n\nRespond ONLY with valid JSON:\n{"title":"","subtitle":"","description":"","themes":[""],"tone_notes":"describe the intended emotional register and prose style","estimated_word_count":50000,"writing_language":"${form.language}","chapters":[{"number":1,"title":"","description":"","opening_hook":"how this chapter should open — first line or image","target_words":${_twTarget},"${form.nonfiction_mode?"exercise":"notes"}":""}]}`;
+        prompt=`You are a bestselling author. Create a detailed, commercially compelling book outline.\nTopic: ${f.topic}\nGenre: ${f.genre||"Fiction"}\nAudience: ${f.audience||"General Adults"}${styleCtx}${langNote}${premiseCtx}${mrCtx}\n${form.nonfiction_mode?"Nonfiction mode: include exercises, reflections, and action steps per chapter.":""}\n\nRULES:\n${lengthNote.slice(2)}${wordsNote}\n• Chapter titles must be SPECIFIC and evocative — never generic (e.g. not "Chapter 1: The Beginning")\n• Subtitle must be a compelling, keyword-rich phrase (not just a restatement of the title)\n• Themes must be 3-5 specific thematic elements (e.g. "loss and redemption", "the cost of ambition")\n• Each chapter description must be 2-3 sentences with a clear narrative purpose — never generic (e.g. not "Chapter 1: The Beginning")\n• Each chapter description must be 2-3 sentences with clear conflict or stakes\n• Subtitle must be sharp, benefit-driven, or intriguing\n• Target ~${Math.round(50000/13)} words per chapter\n• No filler chapters — every chapter must earn its place\n\nRespond ONLY with valid JSON:\n{"title":"","subtitle":"","description":"","themes":[""],"tone_notes":"describe the intended emotional register and prose style","estimated_word_count":50000,"writing_language":"${form.language}","chapters":[{"number":1,"title":"","description":"","opening_hook":"how this chapter should open — first line or image","target_words":${_twTarget},"${form.nonfiction_mode?"exercise":"notes"}":""}]}`;
       }
       const raw=await callAI(prompt);
       trackUsage();
       const match=raw.match(/\{[\s\S]*\}/);if(!match)throw{code:"PARSE"};
       let _ol;try{_ol=JSON.parse(match[0]);}catch(pe){throw{code:"PARSE",msg:"AI returned malformed JSON — please retry."};}
+if(mrPending){try{localStorage.setItem("bfai_pending_research",JSON.stringify(mrPending));}catch(pe){}}
 setOutline(_ol);setPendingPremise(null);setStep(2);
     }catch(e){setError(errMsg(e));}finally{setLoading(false);}
   };
@@ -5095,6 +5151,8 @@ setOutline(_ol);setPendingPremise(null);setStep(2);
   useEffect(()=>{if(!fullyAuto||step!==2||!outline)return;const t=setTimeout(()=>{approve();},1500);return()=>clearTimeout(t);},[fullyAuto,step,outline]);
   const approve=()=>{
     if(fullyAuto)ensureNotifyPermission();
+    let pendingMR=null;
+    try{const s=localStorage.getItem("bfai_pending_research");if(s){localStorage.removeItem("bfai_pending_research");pendingMR=JSON.parse(s);}}catch(e){pendingMR=null;}
     const books=getBooks();
     const book={
       id:"book_"+Date.now()+"_"+Math.random().toString(36).slice(2,7),
@@ -5109,7 +5167,7 @@ setOutline(_ol);setPendingPremise(null);setStep(2);
       chapters:(outline.chapters||[]).map(c=>({...c,content:"",generated:false})),
       outline:JSON.stringify(outline),status:"writing",word_count:0,
       cover_image_url:"",seo_title:"",seo_description:"",seo_keywords:"",notes:"",review:null,
-      auto_build:true,fully_auto:fullyAuto,build_step:"Starting…",created_date:new Date().toISOString(),book_length:form.book_length,length_words_min:_wMin,length_words_max:_wMax
+      auto_build:true,fully_auto:fullyAuto,build_step:"Starting…",created_date:new Date().toISOString(),market_research:pendingMR,research_done:!!(pendingMR&&pendingMR.unique_angle),book_length:form.book_length,length_words_min:_wMin,length_words_max:_wMax
     };
     books.unshift(book);setBooks(books);navigate("editor",book.id);
   };
@@ -5132,7 +5190,7 @@ setOutline(_ol);setPendingPremise(null);setStep(2);
             <input type="checkbox" checked={fullyAuto} onChange={e=>{setFullyAuto(e.target.checked);safeLS("bfai_fully_auto",e.target.checked?"1":"0");if(e.target.checked)ensureNotifyPermission();}} className="mt-1 w-4 h-4 accent-amber-400"/>
             <div>
               <span className="text-amber-300 font-semibold text-sm">🚀 Fully Auto Production</span>
-              <p className="text-white/50 text-xs mt-1 leading-relaxed">AI picks the genre & audience from your idea, auto-approves the outline, builds the entire book (chapters → SEO → cover → quality gates → self-correction), then auto-downloads the finished Publish Kit. You get a notification + chime when it's done. <span className="text-amber-300/80">Only the topic is required.</span> Turn off anytime to review outlines yourself.</p>
+              <p className="text-white/50 text-xs mt-1 leading-relaxed">AI picks the genre & audience from your idea, runs deep market research on what your genre's readers buy, auto-approves the outline, builds the entire book (chapters → SEO → cover → quality gates → self-correction), then auto-downloads the finished Publish Kit. You get a notification + chime when it's done. <span className="text-amber-300/80">Only the topic is required.</span> Turn off anytime to review outlines yourself.</p>
             </div>
           </label>
           {autoNote&&<div className="bg-purple-500/15 border border-purple-500/30 rounded-xl p-3 text-purple-200 text-sm">{autoNote}</div>}
@@ -5798,6 +5856,12 @@ function EditorPage({bookId,navigate,onSettings}){
       log("⚠️ Only "+(b.chapters?.length||0)+" chapters found in outline. Regenerate the outline with at least 8 chapters before building.");
       upd({auto_build:false,build_step:""});setIsBuilding(false);return;
     }
+    // 📚 Deep market research first — chapters target what this genre's readers crave
+    if(!b.research_done&&!b.market_research){
+      log("📚 Deep market research: analyzing what your genre's readers buy…");
+      try{await runMarketResearch(b);b=getBook(b.id)||b;log("  ✅ Research complete — chapters will target reader cravings and avoid clichés.");}
+      catch(e){log("  ⚠️ Market research unavailable — continuing without it.");}
+    }
     setIsBuilding(true);setTab(0);
     try{
       let chapters=b.chapters||[];let outline=b.outline?JSON.parse(b.outline):{};
@@ -5829,7 +5893,7 @@ function EditorPage({bookId,navigate,onSettings}){
           const charCtx=chars.length?`\n\nESTABLISHED CHARACTERS (maintain exact consistency):\n${chars.map(c=>`${c.name} [${c.role||""}]: ${c.appearance||""} — ${c.personality||""}`).join("\n")}`:"";
           const langNote=b.writing_language&&b.writing_language!=="English"?`\n\nWRITE IN: ${b.writing_language}`:"";
           const nonfictionNote=b.nonfiction_mode?"\n\nNONFICTION MODE: End the chapter with a clearly marked Exercise, Reflection question, and Action Step.":"";
-          const content=await callAIStream(`Write Chapter ${chapters[i].number}: "${chapters[i].title}" for a ${b.genre} book titled "${outline.title}".${seriesCtx}${voiceCtx}${charCtx}${langNote}${nonfictionNote}\n\nChapter: ${chapters[i].description}\nPrevious: ${prev}\nAudience: ${b.target_audience}\n\n${(()=>{const tw=chapters[i]?.target_words||3800;return `${Math.round(tw*0.75).toLocaleString()}–${tw.toLocaleString()} words`;})()}. Match genre tone precisely.\n\nSTRUCTURE:\n• 3-5 distinct scenes per chapter, separated by: ⁂\n• Each scene has a clear goal → obstacle → outcome\n• Chapter must END on a hook, unresolved tension, or revelation that forces reading on\n• DO NOT wrap up cleanly — the best chapters end mid-breath\n\nWRITING RULES — violating these will get this chapter rejected:\n• NEVER start a sentence with 'He/She/They couldn't help but', 'In that moment', 'It dawned on', 'Something about the way', 'A wave of', 'A surge of'\n• NEVER state emotions directly ('he felt sad', 'warmth spread through her') — express through physical action, dialogue, or specific sensory detail\n• NEVER use em-dashes for dramatic effect more than once per page\n• VARY sentence length violently: one-word sentences. Fragments. Then a long, breathing sentence that winds through a scene and refuses to end neatly.\n• Dialogue must be messy and human: people talk past each other, leave things half-said, interrupt, change subject\n• Use SPECIFIC details: not 'the coffee shop smelled like coffee' but the burnt-sugar smell of the espresso machine at 6am, the sticky ring on the table from someone's iced latte\n• No clean emotional resolutions — conflict leaves residue\n• Character psychology must be specific, not convenient\n• Read like a novel — no chapter summaries, no scene headers, no markdown`,0.85,{task:"creative",onStream:rafThrottle(t=>setStreamText(t))});
+          const content=await callAIStream(`Write Chapter ${chapters[i].number}: "${chapters[i].title}" for a ${b.genre} book titled "${outline.title}".${seriesCtx}${voiceCtx}${charCtx}${langNote}${nonfictionNote}${researchCtxFor(b)}\n\nChapter: ${chapters[i].description}\nPrevious: ${prev}\nAudience: ${b.target_audience}\n\n${(()=>{const tw=chapters[i]?.target_words||3800;return `${Math.round(tw*0.75).toLocaleString()}–${tw.toLocaleString()} words`;})()}. Match genre tone precisely.\n\nSTRUCTURE:\n• 3-5 distinct scenes per chapter, separated by: ⁂\n• Each scene has a clear goal → obstacle → outcome\n• Chapter must END on a hook, unresolved tension, or revelation that forces reading on\n• DO NOT wrap up cleanly — the best chapters end mid-breath\n\nWRITING RULES — violating these will get this chapter rejected:\n• NEVER start a sentence with 'He/She/They couldn't help but', 'In that moment', 'It dawned on', 'Something about the way', 'A wave of', 'A surge of'\n• NEVER state emotions directly ('he felt sad', 'warmth spread through her') — express through physical action, dialogue, or specific sensory detail\n• NEVER use em-dashes for dramatic effect more than once per page\n• VARY sentence length violently: one-word sentences. Fragments. Then a long, breathing sentence that winds through a scene and refuses to end neatly.\n• Dialogue must be messy and human: people talk past each other, leave things half-said, interrupt, change subject\n• Use SPECIFIC details: not 'the coffee shop smelled like coffee' but the burnt-sugar smell of the espresso machine at 6am, the sticky ring on the table from someone's iced latte\n• No clean emotional resolutions — conflict leaves residue\n• Character psychology must be specific, not convenient\n• Read like a novel — no chapter summaries, no scene headers, no markdown`,0.85,{task:"creative",onStream:rafThrottle(t=>setStreamText(t))});
           setStreamText(null);
           bump();chapters[i]={...withVersionSnapshot(chapters[i],"auto-build rewrite"),content,generated:true};
           const wc=chapters.reduce((a,c)=>a+(c.content?c.content.split(/\s+/).length:0),0);
@@ -6015,7 +6079,7 @@ function EditorPage({bookId,navigate,onSettings}){
       const charCtx=chars.length?`\n\nCHARACTERS:\n${chars.map(c=>`${c.name}: ${c.appearance||""} — ${c.personality||""}`).join("\n")}`:"";
       const langNote=fb.writing_language&&fb.writing_language!=="English"?`\n\nWRITE IN: ${fb.writing_language}`:"";
       const nfNote=fb.nonfiction_mode?"\n\nEnd with: Exercise, Reflection, Action Step.":"";
-      const content=await callAIStream(`Write Chapter ${ch.number}: "${ch.title}" for a ${fb.genre} book titled "${outline.title}".${seriesCtx}${voiceCtx}${charCtx}${langNote}${nfNote}\n\nDesc: ${ch.description}\nPrevious: ${prev}\nAudience: ${fb.target_audience}\n\n${(()=>{const tw=fb.chapters?.[idx]?.target_words||3800;return `${Math.round(tw*0.75).toLocaleString()}–${tw.toLocaleString()} words`;})()}. Match genre tone.\n\nSTRUCTURE:\n• 3-5 distinct scenes per chapter, separated by: ⁂\n• Each scene has a clear goal → obstacle → outcome\n• Chapter must END on a hook, unresolved tension, or revelation that forces reading on\n• DO NOT wrap up cleanly — the best chapters end mid-breath\n\nWRITING RULES — violating these will get this chapter rejected:\n• NEVER start a sentence with 'He/She/They couldn't help but', 'In that moment', 'It dawned on', 'Something about the way', 'A wave of', 'A surge of'\n• NEVER state emotions directly ('he felt sad', 'warmth spread through her') — express through physical action, dialogue, or specific sensory detail\n• NEVER use em-dashes for dramatic effect more than once per page\n• VARY sentence length violently: one-word sentences. Fragments. Then a long, breathing sentence that winds through a scene and refuses to end neatly.\n• Dialogue must be messy and human: people talk past each other, leave things half-said, interrupt, change subject\n• Use SPECIFIC details: not 'the coffee shop smelled like coffee' but the burnt-sugar smell of the espresso machine at 6am, the sticky ring on the table from someone's iced latte\n• No clean emotional resolutions — conflict leaves residue\n• Character psychology must be specific, not convenient\n• Read like a novel — no chapter summaries, no scene headers, no markdown`,0.85,{task:"creative",onStream:rafThrottle(t=>setStreamText(t))});
+      const content=await callAIStream(`Write Chapter ${ch.number}: "${ch.title}" for a ${fb.genre} book titled "${outline.title}".${seriesCtx}${voiceCtx}${charCtx}${langNote}${nfNote}${researchCtxFor(fb)}\n\nDesc: ${ch.description}\nPrevious: ${prev}\nAudience: ${fb.target_audience}\n\n${(()=>{const tw=fb.chapters?.[idx]?.target_words||3800;return `${Math.round(tw*0.75).toLocaleString()}–${tw.toLocaleString()} words`;})()}. Match genre tone.\n\nSTRUCTURE:\n• 3-5 distinct scenes per chapter, separated by: ⁂\n• Each scene has a clear goal → obstacle → outcome\n• Chapter must END on a hook, unresolved tension, or revelation that forces reading on\n• DO NOT wrap up cleanly — the best chapters end mid-breath\n\nWRITING RULES — violating these will get this chapter rejected:\n• NEVER start a sentence with 'He/She/They couldn't help but', 'In that moment', 'It dawned on', 'Something about the way', 'A wave of', 'A surge of'\n• NEVER state emotions directly ('he felt sad', 'warmth spread through her') — express through physical action, dialogue, or specific sensory detail\n• NEVER use em-dashes for dramatic effect more than once per page\n• VARY sentence length violently: one-word sentences. Fragments. Then a long, breathing sentence that winds through a scene and refuses to end neatly.\n• Dialogue must be messy and human: people talk past each other, leave things half-said, interrupt, change subject\n• Use SPECIFIC details: not 'the coffee shop smelled like coffee' but the burnt-sugar smell of the espresso machine at 6am, the sticky ring on the table from someone's iced latte\n• No clean emotional resolutions — conflict leaves residue\n• Character psychology must be specific, not convenient\n• Read like a novel — no chapter summaries, no scene headers, no markdown`,0.85,{task:"creative",onStream:rafThrottle(t=>setStreamText(t))});
       bump();const chapters=[...(fb.chapters||[])];chapters[idx]={...withVersionSnapshot(chapters[idx],"AI chapter write"),content,generated:true};
       const wc=chapters.reduce((a,c)=>a+(c.content?c.content.split(/\s+/).length:0),0);
       // If all chapters now done + pipeline already ran → auto-stamp build_complete
