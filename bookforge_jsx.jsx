@@ -507,9 +507,10 @@ function notifyDone(title,body){
   try{if("Notification" in window&&Notification.permission==="granted")new Notification(title,{body,silent:true});}catch(e){}
 }
 
+const getSoundOn=()=>{try{return localStorage.getItem("bfai_sound")!=="0";}catch{return true;}};
 function playRetryChime(){
   try{
-    if(safeLS("bfai_sound","1")!=="1")return; // 🔊 sound notifications can be silenced
+    if(!getSoundOn())return; // 🔊 sound notifications can be silenced
     const Ctx=window.AudioContext||window.webkitAudioContext;
     if(!Ctx)return;
     const ctx=new Ctx();
@@ -3139,7 +3140,7 @@ function SettingsModal({onClose}){
   const [draft,setDraft]=useState(getKey());
   const [saved,setSaved]=useState(false);
   const [sTab,setSTab]=useState("api");
-  const [soundOn,setSoundOn]=useState(safeLS("bfai_sound","1")==="1"); // api | voice | author
+  const [soundOn,setSoundOn]=useState(getSoundOn()); // api | voice | author
   const [author,setAuthor]=useState(getAuthorProfile());
   const [authorSaved,setAuthorSaved]=useState(false);
   const [autoCorrect,setAutoCorrect]=useState(getAutoCorrect());
