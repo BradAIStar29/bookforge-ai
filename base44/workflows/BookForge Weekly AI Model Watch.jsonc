@@ -1,0 +1,44 @@
+{
+  "name": "BookForge Weekly AI Model Watch",
+  "description": "Every Monday at 9am ET: research current free AI model/backend landscape (Groq, Gemini, Cloudflare, Cerebras, Kilo, Puter, new entrants), verify app backends still work, and report findings + recommendations to Brad. No app changes without approval.",
+  "trigger": {
+    "condition": null,
+    "config": {
+      "trigger_type": "scheduled",
+      "events": [],
+      "schedule_mode": "recurring",
+      "cron_expression": "0 9 * * 1",
+      "one_time_date": null,
+      "timezone": "America/New_York",
+      "interval_value": null,
+      "interval_unit": null,
+      "interval_anchor": null,
+      "ends_type": "never",
+      "ends_on_date": null,
+      "ends_after_count": null
+    }
+  },
+  "definition": {
+    "document": {
+      "dsl": "1.0.0",
+      "name": "bookforge_model_watch",
+      "namespace": "base44",
+      "version": "1.0"
+    },
+    "do": [
+      {
+        "model_check": {
+          "call": "invoke_superagent_step",
+          "then": "end",
+          "with": {
+            "message": "Weekly BookForge AI model watch (runs Mondays 9am ET). Research the CURRENT free-tier AI landscape for BookForge AI (a 100% client-side browser app, so CORS-usable APIs only):\n\n1. Check the app's existing backends for changes: Groq (free tier + model lineup), Google Gemini API (free tier + new models), Cloudflare Workers AI (daily neurons + new models), Cerebras (catalog/pricing), Kilo Code gateway (is it still CORS-dead from browsers?), Puter.js (models), Pollinations.ai (image gen status/limits).\n2. Scan for NEW free LLM/image/TTS APIs usable directly from a browser without a server (verify with a quick curl OPTIONS preflight or official docs that CORS works \u2014 Kilo died from silent CORS removal, so this check is critical).\n3. Compare against what's already in the app (bookforge_jsx.jsx in /app) and identify only what is NEW, IMPROVED, or BROKEN since last check.\n\nThen report to Brad with a concise summary: what changed, what's worth adding (ranked, with free-tier limits and CORS status), and what broke (if anything). Do NOT modify the app in this scheduled run \u2014 propose changes and let Brad decide. Read /app/conversations/69f75ac1777455158dd49d61/ for past model research notes (research_free_models.md) to avoid repeating findings. Keep it short: a few bullet points, only actionable items."
+          },
+          "x-base44": {
+            "description": "Research + report, no app changes",
+            "title": "Weekly free-AI model check"
+          }
+        }
+      }
+    ]
+  }
+}
