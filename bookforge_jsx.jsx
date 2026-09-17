@@ -509,6 +509,7 @@ function notifyDone(title,body){
 
 function playRetryChime(){
   try{
+    if(safeLS("bfai_sound","1")!=="1")return; // 🔊 sound notifications can be silenced
     const Ctx=window.AudioContext||window.webkitAudioContext;
     if(!Ctx)return;
     const ctx=new Ctx();
@@ -3137,7 +3138,8 @@ function DataManagementPanel(){
 function SettingsModal({onClose}){
   const [draft,setDraft]=useState(getKey());
   const [saved,setSaved]=useState(false);
-  const [sTab,setSTab]=useState("api"); // api | voice | author
+  const [sTab,setSTab]=useState("api");
+  const [soundOn,setSoundOn]=useState(safeLS("bfai_sound","1")==="1"); // api | voice | author
   const [author,setAuthor]=useState(getAuthorProfile());
   const [authorSaved,setAuthorSaved]=useState(false);
   const [autoCorrect,setAutoCorrect]=useState(getAutoCorrect());
@@ -3208,10 +3210,12 @@ function SettingsModal({onClose}){
                 </div>):null;})()}
                 {BACKENDS.map(b=>{
                   const sel=getBackend()===b.id;
+                  const badge=b.id==="kilo"||b.id==="puter"?"🎁 No Key Needed":b.id==="groq"?"⚡ Fastest":b.id==="cloudflare"?"☁️ 10K/day":b.id==="cerebras"?"💳 Paid Trial":b.id==="openrouter"?"📦 25+ Free Models":b.id==="huggingface"?"🤗 1K/day Free":b.id==="gemini"?"🔑 BYO Key":"⚡ Puter Free";
+                  const badgeColor=b.id==="kilo"||b.id==="puter"?"bg-green-500/20 text-green-300 border-green-500/30":b.id==="groq"?"bg-orange-500/20 text-orange-300 border-orange-500/30":b.id==="cerebras"?"bg-red-500/15 text-red-300 border-red-500/30":"bg-purple-500/20 text-purple-300 border-purple-500/30";
                   return (
-                    <button key={b.id} onClick={()=>{setBackend(b.id);setBackendChanged(true);setTimeout(()=>setBackendChanged(false),2000);}} className={`text-left p-3 rounded-xl border transition-all ${sel?"bg-purple-500/20 border-purple-500 text-white":"bg-white/5 border-white/10 text-white/60 hover:border-purple-400/50"}`}>
-                      <p className="text-sm font-semibold">{b.label}</p>
-                      <p className="text-xs text-white/35 mt-1">{b.desc}</p>
+                    <button key={b.id} onClick={()=>{setBackend(b.id);setBackendChanged(true);setTimeout(()=>setBackendChanged(false),2000);}} className={`text-left p-3.5 rounded-2xl border transition-all ${sel?"bg-purple-500/20 border-purple-500 text-white shadow-lg shadow-purple-500/10 ring-1 ring-purple-500/50":"bg-white/5 border-white/10 text-white/60 hover:border-purple-400/50"}`}>
+                      <div className="flex items-center justify-between gap-2 mb-1"><p className="text-sm font-bold text-white">{b.label}</p><span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full border shrink-0 ${badgeColor}`}>{badge}</span></div>
+                      <p className="text-xs text-white/35 mt-1 leading-relaxed">{b.desc}</p>
                     </button>
                   );
                 })}
@@ -3375,6 +3379,10 @@ function SettingsModal({onClose}){
           {sTab==="build"&&(
             <div className="space-y-5">
               <div><h3 className="text-white font-bold text-lg mb-1">🔧 Build Settings</h3><p className="text-white/40 text-sm">Control how auto-build handles quality gates.</p></div>
+              <div className="bg-white/5 border border-white/10 rounded-xl p-4 flex items-center justify-between gap-4">
+                <div><p className="text-white font-semibold text-sm">🔊 Sound Notifications</p><p className="text-white/40 text-xs mt-0.5">Completion chimes and retry alerts</p></div>
+                <button onClick={()=>{const v=!soundOn;safeLS("bfai_sound",v?"1":"0");setSoundOn(v);}} aria-pressed={soundOn} className={`relative shrink-0 w-12 h-6 rounded-full transition-colors ${soundOn?"bg-green-500":"bg-white/20"}`}><span className={`absolute top-[2px] left-[2px] bg-white rounded-full h-5 w-5 transition-all ${soundOn?"translate-x-6":""}`}/></button>
+              </div>
               <div className="bg-cyan-500/10 border border-cyan-500/20 rounded-xl p-4">
                 <div className="flex items-center justify-between gap-4">
                   <div>
@@ -3437,7 +3445,7 @@ function Header({onBack,title,subtitle,onSettings,onTour,activeTab,setActiveTab}
           <div className="w-9 h-9 bg-gradient-to-br from-purple-500 to-pink-500 rounded-xl flex items-center justify-center text-lg shrink-0">📚</div>
           <div className="min-w-0"><h1 className="text-white font-bold text-base leading-tight truncate">{title||"BookForge AI"}</h1>{subtitle&&<p className="text-white/60 text-xs truncate">{subtitle}</p>}</div>
         </div>
-        <div className="flex items-center gap-2 shrink-0">
+        <div className="flex items-center gap-2 shrink-0 overflow-x-auto" style={{scrollbarWidth:"none",maxWidth:"60vw"}}>
           {getBackend()==="gemini"&&(
             <div className="bg-white/5 border border-white/10 rounded-lg px-3 py-1.5 flex items-center gap-2">
               <span className={`text-xs font-bold ${pct>=90?"text-red-400":pct>=70?"text-amber-400":"text-green-400"}`}>{usage}/{DAILY_LIMIT}</span>
@@ -4604,17 +4612,25 @@ function QueuePage({navigate,onSettings}){
     <div className="max-w-4xl mx-auto px-4 sm:px-6 py-8">
       <div className="flex items-start justify-between mb-6 gap-4 flex-wrap">
         <div><h2 className="text-white text-xl font-bold">⏳ Build Queue</h2><p className="text-white/40 text-sm mt-1">Line up multiple books — they build one by one automatically, respecting your daily quota.</p></div>
-        {quotaPaused&&<div className="bg-amber-500/15 border border-amber-500/40 rounded-xl p-3 mb-4 text-amber-300 text-sm" role="status">⏳ Queue paused on quota — auto-resumes the moment the daily quota resets (checks every minute while this page is open).</div>}
+        {quotaPaused&&<div className="bg-amber-950/40 border border-amber-500/30 backdrop-blur-md rounded-2xl p-4 mb-4 text-amber-200 text-sm shadow-lg shadow-amber-500/5 flex items-center justify-between gap-3" role="status">⏳ Queue paused on quota — auto-resumes the moment the daily quota resets (checks every minute while this page is open).</div>}
         {queuedIds.length>0&&<button onClick={runQueue} disabled={running} className="bg-gradient-to-r from-purple-500 to-pink-500 text-white px-5 py-2.5 rounded-xl font-semibold hover:opacity-90 disabled:opacity-50 flex items-center gap-2">{running?<><Spin/>Running queue…</>:"▶ Start Queue"}</button>}
       </div>
 
-      {running&&buildStart&&builtSoFar>0&&(()=>{
+      {running&&buildStart&&(()=>{
         const elapsed=(Date.now()-buildStart)/1000;
-        const rate=builtSoFar/elapsed;
-        const remaining=Math.max(totalToBuild-builtSoFar,0);
-        const etaSecs=remaining/Math.max(rate,0.0001);
-        const mins=Math.round(etaSecs/60);
-        const pct=Math.round(builtSoFar/totalToBuild*100);
+        let mins,pct;
+        if(builtSoFar>0){
+          const rate=builtSoFar/elapsed;
+          const remaining=Math.max(totalToBuild-builtSoFar,0);
+          mins=Math.round(remaining/Math.max(rate,0.0001)/60);
+          pct=Math.round(builtSoFar/Math.max(totalToBuild,1)*100);
+        }else{
+          const avgCh=Math.max(chTotal/Math.max(totalToBuild,1),1);
+          const chRate=chDone/Math.max(elapsed,1);
+          const remainingCh=Math.max(chTotal-chDone,0)+Math.max(totalToBuild-1,0)*avgCh;
+          mins=Math.round(remainingCh/Math.max(chRate,0.0001)/60);
+          pct=Math.round(chDone/Math.max(chTotal,1)*100/Math.max(totalToBuild,1));
+        }
         return(<div className="mb-4">
           <div className="flex items-center justify-between mb-2"><span className="text-white/50 text-sm font-medium">{builtSoFar}/{totalToBuild} books · {pct}%</span><span className="text-white/60 text-xs">{mins>0?`~${mins} min remaining`:"Almost done…"}</span></div>
           <div className="h-2 bg-white/10 rounded-full overflow-hidden"><div className="h-full bg-gradient-to-r from-cyan-500 to-blue-500 rounded-full transition-all" style={{width:pct+"%"}}/></div>
@@ -4646,9 +4662,9 @@ function QueuePage({navigate,onSettings}){
                     <p className="text-white/60 text-xs">{b.genre} · {b.chapters?.filter(c=>c.generated).length||0}/{b.chapters?.length||0} chapters</p>
                   </div>
                   <div className="flex gap-1 shrink-0">
-                    <button aria-label="Move book up in queue" onClick={()=>moveUp(id)} disabled={i===0||running} className="w-7 h-7 text-white/60 hover:text-white disabled:opacity-20">↑</button>
-                    <button aria-label="Move book down in queue" onClick={()=>moveDown(id)} disabled={i===queuedIds.length-1||running} className="w-7 h-7 text-white/60 hover:text-white disabled:opacity-20">↓</button>
-                    <button onClick={()=>removeFromQueue(id)} disabled={running} className="w-7 h-7 text-red-400/40 hover:text-red-400 disabled:opacity-20">✕</button>
+                    <button aria-label="Move book up in queue" onClick={()=>moveUp(id)} disabled={i===0||running} className="w-11 h-11 flex items-center justify-center rounded-xl hover:bg-white/10 focus-visible:ring-2 focus-visible:ring-purple-400 text-white/60 hover:text-white disabled:opacity-20">↑</button>
+                    <button aria-label="Move book down in queue" onClick={()=>moveDown(id)} disabled={i===queuedIds.length-1||running} className="w-11 h-11 flex items-center justify-center rounded-xl hover:bg-white/10 focus-visible:ring-2 focus-visible:ring-purple-400 text-white/60 hover:text-white disabled:opacity-20">↓</button>
+                    <button aria-label="Remove from queue" onClick={()=>removeFromQueue(id)} disabled={running} className="w-11 h-11 flex items-center justify-center rounded-xl hover:bg-red-500/10 focus-visible:ring-2 focus-visible:ring-red-400 text-red-400/40 hover:text-red-400 disabled:opacity-20">✕</button>
                   </div>
                 </div>
               );
@@ -5392,10 +5408,10 @@ setOutline(_ol);setPendingPremise(null);setStep(2);
                   <span className="text-xs text-purple-300/80 font-medium">Topic is all you need</span>
                 </div>
                 <h3 className="text-white text-base font-bold">Fully Auto Production</h3>
-                <p className="text-white/60 text-xs mt-1 leading-relaxed">AI picks the genre & audience from your idea, runs deep market research on what your genre's readers buy, auto-approves the outline, builds the entire book (chapters → SEO → cover → quality gates → self-correction), then auto-downloads the finished Publish Kit. You get a notification + chime when it's done. Turn off anytime to review outlines yourself.</p>
+                <p id="fully-auto-desc" className="text-white/60 text-xs mt-1 leading-relaxed">AI picks the genre & audience from your idea, runs deep market research on what your genre's readers buy, auto-approves the outline, builds the entire book (chapters → SEO → cover → quality gates → self-correction), then auto-downloads the finished Publish Kit. You get a notification + chime when it's done. Turn off anytime to review outlines yourself.</p>
               </div>
               <label className="relative inline-flex items-center cursor-pointer shrink-0 mt-1" aria-label="Toggle Fully Auto Production">
-                <input type="checkbox" checked={fullyAuto} onChange={e=>{setFullyAuto(e.target.checked);safeLS("bfai_fully_auto",e.target.checked?"1":"0");if(e.target.checked)ensureNotifyPermission();}} className="sr-only peer"/>
+                <input type="checkbox" aria-describedby="fully-auto-desc" checked={fullyAuto} onChange={e=>{setFullyAuto(e.target.checked);safeLS("bfai_fully_auto",e.target.checked?"1":"0");if(e.target.checked)ensureNotifyPermission();}} className="sr-only peer"/>
                 <div className="w-12 h-6 bg-white/10 rounded-full peer peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-gradient-to-r peer-checked:from-purple-500 peer-checked:to-pink-500"></div>
               </label>
             </div>
@@ -6581,7 +6597,34 @@ const genCover=async()=>{if(quotaHit||isBuilding)return;setBusy(true);setError("
         </div>
       );})()}
       <div className="border-b border-white/10 bg-black/10">
-        <div role="tablist" aria-label="Book sections" onKeyDown={onTabBarKey} className="max-w-7xl mx-auto px-4 sm:px-6 flex gap-1 overflow-x-auto">
+        <div className="sm:hidden px-4 pt-3">
+          <label htmlFor="editor-tab-select" className="sr-only">Select tab</label>
+          <select id="editor-tab-select" value={tab} onChange={e=>setTab(Number(e.target.value))} className="w-full bg-slate-800 border border-white/20 rounded-xl px-4 py-3 text-white text-sm font-medium focus:outline-none focus:border-purple-500 appearance-none">
+            <optgroup label="📝 Drafting">
+              <option value={0}>📋 Outline</option>
+              <option value={1}>✍️ Chapters</option>
+              <option value={9}>👥 Characters</option>
+            </optgroup>
+            <optgroup label="📊 Quality & Review">
+              <option value={4}>🤖 Review Agent</option>
+              <option value={7}>📊 Chapter Quality</option>
+              <option value={8}>✍️ Writing Quality</option>
+            </optgroup>
+            <optgroup label="📦 Publishing & Marketing">
+              <option value={2}>🎨 Cover Art</option>
+              <option value={3}>🔍 SEO Metadata</option>
+              <option value={5}>🔎 Market Analysis</option>
+              <option value={6}>🪝 Hooks & Blurbs</option>
+              <option value={10}>📤 Publish Kit & Export</option>
+              <option value={13}>📦 Amazon KDP</option>
+            </optgroup>
+            <optgroup label="🛠️ Studio Extras">
+              <option value={11}>🌍 Translation Studio</option>
+              <option value={12}>🎙️ Audio Studio</option>
+            </optgroup>
+          </select>
+        </div>
+        <div role="tablist" aria-label="Book sections" aria-hidden="true" onKeyDown={onTabBarKey} className="hidden sm:flex max-w-7xl mx-auto px-4 sm:px-6 gap-1 overflow-x-auto">
           {TABS.map((t,i)=>(
             <button key={i} role="tab" aria-selected={tab===i} tabIndex={tab===i?0:-1} data-tab-btn={i} onClick={()=>setTab(i)} className={`px-3 py-2.5 text-xs sm:text-sm font-medium whitespace-nowrap rounded-t-lg transition-all relative ${tab===i?"bg-white/10 text-white border-b-2 border-purple-500":"text-white/35 hover:text-white/70"}`}>
               {t}
