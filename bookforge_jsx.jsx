@@ -5660,17 +5660,38 @@ const puterImageToUrl=async (imgEl,w,h)=>{
     img.src=src;
   });
 };
+// Puter image call with the SAME protections text calls get: registered in the
+// low-balance reject registry (the DOM watcher rejects it the instant Puter's
+// "Upgrade Now" modal appears) + a hang timeout. Unregistered txt2img calls
+// used to spin for 3 minutes while the user stared at the upgrade modal.
+async function puterTxt2ImgGuarded(prompt,model,timeoutMs=120000){
+  if(typeof puter==="undefined")throw{code:"PUTER_NOT_LOADED"};
+  let lbReject=null;
+  const lbGuard=new Promise((_,rej)=>{lbReject=rej;PUTER_PENDING_REJECTS.add(rej);});
+  try{
+    return await Promise.race([
+      puter.ai.txt2img(prompt,{model}),
+      lbGuard,
+      new Promise((_,rej)=>setTimeout(()=>rej({code:"TIMEOUT",msg:`Cover image generation timed out (${Math.round(timeoutMs/1000)}s).`}),timeoutMs))
+    ]);
+  }finally{if(lbReject)PUTER_PENDING_REJECTS.delete(lbReject);}
+}
+const coverFailoverNotice=(msg)=>{try{window.dispatchEvent(new CustomEvent("bfai:retry",{detail:{reason:"notice",msg}}));}catch(e){}};
 async function genCoverImage(prompt,opts={}){
   const imgModel=getPuterImageModel();
   const w=opts.width||832,h=opts.height||1216;
   // The chosen Cover Image Model is authoritative on EVERY text backend —
   // Puter.js image models work regardless of which AI engine writes the text.
-  if(imgModel!=="pollinations"&&typeof puter!=="undefined"){
+  // Session low-balance? Skip Puter images entirely and go straight to Pollinations.
+  if(imgModel!=="pollinations"&&typeof puter!=="undefined"&&!PUTER_LOW_BALANCE){
     try{
-      const imgEl=await puterWithTimeout(()=>puter.ai.txt2img(prompt,{model:imgModel}),180000);
+      const imgEl=await puterTxt2ImgGuarded(prompt,imgModel);
       return {url:await puterImageToUrl(imgEl,w,h),method:"puter"};
     }catch(e){
-      // Puter path failed (no sign-in / low balance / timeout) — fall through to Pollinations
+      if(e?.code==="PUTER_LOW_BALANCE"){
+        coverFailoverNotice("💳 Puter image balance ran out — cover auto-switched to Pollinations.ai (free, no sign-in).");
+      }
+      // Other failure (no sign-in / timeout) — fall through to Pollinations silently
     }
   }
   // Pollinations: chosen model, or automatic fallback. Hardened with a real
@@ -5679,9 +5700,10 @@ async function genCoverImage(prompt,opts={}){
     const url=await pollinationsCoverUrl(prompt,w,h);
     return {url,method:"url"};
   }catch(e){
-    if(typeof puter!=="undefined"){
+    // Pollinations down too — try Puter FLUX.2 Pro ONLY if balance is still good
+    if(typeof puter!=="undefined"&&!PUTER_LOW_BALANCE){
       try{
-        const imgEl=await puterWithTimeout(()=>puter.ai.txt2img(prompt,{model:"black-forest-labs/flux-2-pro"}),180000);
+        const imgEl=await puterTxt2ImgGuarded(prompt,"black-forest-labs/flux-2-pro");
         return {url:await puterImageToUrl(imgEl,w,h),method:"puter"};
       }catch(pe){/* both down */}
     }

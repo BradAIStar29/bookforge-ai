@@ -5400,23 +5400,49 @@ const puterImageToUrl = async (imgEl, w, h) => {
     img.src = src;
   });
 };
+async function puterTxt2ImgGuarded(prompt2, model, timeoutMs = 12e4) {
+  if (typeof puter === "undefined") throw { code: "PUTER_NOT_LOADED" };
+  let lbReject = null;
+  const lbGuard = new Promise((_, rej) => {
+    lbReject = rej;
+    PUTER_PENDING_REJECTS.add(rej);
+  });
+  try {
+    return await Promise.race([
+      puter.ai.txt2img(prompt2, { model }),
+      lbGuard,
+      new Promise((_, rej) => setTimeout(() => rej({ code: "TIMEOUT", msg: `Cover image generation timed out (${Math.round(timeoutMs / 1e3)}s).` }), timeoutMs))
+    ]);
+  } finally {
+    if (lbReject) PUTER_PENDING_REJECTS.delete(lbReject);
+  }
+}
+const coverFailoverNotice = (msg) => {
+  try {
+    window.dispatchEvent(new CustomEvent("bfai:retry", { detail: { reason: "notice", msg } }));
+  } catch (e) {
+  }
+};
 async function genCoverImage(prompt2, opts = {}) {
   const imgModel = getPuterImageModel();
   const w = opts.width || 832, h = opts.height || 1216;
-  if (imgModel !== "pollinations" && typeof puter !== "undefined") {
+  if (imgModel !== "pollinations" && typeof puter !== "undefined" && !PUTER_LOW_BALANCE) {
     try {
-      const imgEl = await puterWithTimeout(() => puter.ai.txt2img(prompt2, { model: imgModel }), 18e4);
+      const imgEl = await puterTxt2ImgGuarded(prompt2, imgModel);
       return { url: await puterImageToUrl(imgEl, w, h), method: "puter" };
     } catch (e) {
+      if (e?.code === "PUTER_LOW_BALANCE") {
+        coverFailoverNotice("\u{1F4B3} Puter image balance ran out \u2014 cover auto-switched to Pollinations.ai (free, no sign-in).");
+      }
     }
   }
   try {
     const url = await pollinationsCoverUrl(prompt2, w, h);
     return { url, method: "url" };
   } catch (e) {
-    if (typeof puter !== "undefined") {
+    if (typeof puter !== "undefined" && !PUTER_LOW_BALANCE) {
       try {
-        const imgEl = await puterWithTimeout(() => puter.ai.txt2img(prompt2, { model: "black-forest-labs/flux-2-pro" }), 18e4);
+        const imgEl = await puterTxt2ImgGuarded(prompt2, "black-forest-labs/flux-2-pro");
         return { url: await puterImageToUrl(imgEl, w, h), method: "puter" };
       } catch (pe) {
       }
