@@ -226,16 +226,33 @@ const PUTER_IMAGE_MODELS=[
   {id:"bytedance-seed/seedream-4.5",label:"Seedream 4.5",desc:"ByteDance — strong artistic quality"},
   {id:"bytedance-seed/seedream-4.0",label:"Seedream 4.0",desc:"ByteDance — artistic styles"},
   {id:"ideogram/ideogram-3.0",label:"Ideogram 3.0",desc:"Best at rendering text on images"},
-  {id:"pollinations",label:"Pollinations.ai (No Sign-in)",desc:"Default — zero friction, URL-based, no account needed"}
+  {id:"pollinations",label:"Pollinations.ai (No Sign-in)",desc:"Free fallback — no account, slower queue"}
 ];
 const getPuterImageModel=()=>{
-  const saved=localStorage.getItem("bfai_puter_image_model");
+  let saved=localStorage.getItem("bfai_puter_image_model");
+  // One-time migration: "pollinations" was the old silent default, not an informed
+  // choice — upgrade it to FLUX.2 Pro (Brad's request 2026-09-20). Re-selecting
+  // Pollinations in Settings sticks (flag set).
+  if(saved==="pollinations"&&localStorage.getItem("bfai_cover_model_migrated")!=="1"){
+    safeLS("bfai_puter_image_model","black-forest-labs/flux-2-pro");
+    safeLS("bfai_cover_model_migrated","1");
+    saved="black-forest-labs/flux-2-pro";
+  }
   if(saved)return saved;
-  // Auto-upgrade: Puter.js users get FLUX.2 Pro by default (they're already signed in)
-  if(getBackend()==="puter")return "black-forest-labs/flux-2-pro";
-  // Everyone else (Kilo Code, Gemini, Groq, Cerebras, Cloudflare) gets Pollinations (zero friction, no sign-in)
-  return "pollinations";
+  // FLUX.2 Pro default for EVERY backend — cover art goes through Puter.js
+  // image models (free Puter account, user-pays); Pollinations is an opt-in fallback.
+  return "black-forest-labs/flux-2-pro";
 };
+// Real image preload — verifies Pollinations actually renders (45s), replacing the
+// fragile 3s HEAD probe that false-failed under queue load.
+const pollinationsCoverUrl=(prompt,w,h)=>new Promise((resolve,reject)=>{
+  const url=`https://image.pollinations.ai/prompt/${encodeURIComponent(prompt.trim())}?width=${w}&height=${h}&model=flux&nologo=true&seed=${Date.now()}`;
+  const img=new Image();
+  const timer=setTimeout(()=>{img.onload=img.onerror=null;img.src="";reject(new Error("pollinations-timeout"));},45000);
+  img.onload=()=>{clearTimeout(timer);resolve(url);};
+  img.onerror=()=>{clearTimeout(timer);reject(new Error("pollinations-error"));};
+  img.src=url;
+});
 const setPuterImageModel=m=>safeLS("bfai_puter_image_model",m);
 // ── Groq Models ──────────────────────────────────────────────────────────────────
 const GROQ_MODELS=[
@@ -3248,10 +3265,6 @@ function SettingsModal({onClose}){
                   <select value={getPuterTextModel()} onChange={e=>setPuterTextModel(e.target.value)} className="w-full bg-white/10 border border-white/20 rounded-xl px-4 py-3 text-white text-sm mb-2 focus:outline-none focus:border-purple-500">
                     {PUTER_TEXT_MODELS.map(m=><option key={m.id} value={m.id} className="bg-gray-800">{m.label} — {m.desc}</option>)}
                   </select>
-                  <label className="text-white/60 text-sm font-medium block mb-2 mt-4">Cover Image Model</label>
-                  <select value={getPuterImageModel()} onChange={e=>setPuterImageModel(e.target.value)} className="w-full bg-white/10 border border-white/20 rounded-xl px-4 py-3 text-white text-sm mb-2 focus:outline-none focus:border-purple-500">
-                    {PUTER_IMAGE_MODELS.map(m=><option key={m.id} value={m.id} className="bg-gray-800">{m.label} — {m.desc}</option>)}
-                  </select>
                   <p className="text-white/35 text-xs mt-3">ℹ️ The first time you generate, a Puter login window may appear. Sign in once — it's free and stores nothing in BookForge.</p>
                 </div>
               )}
@@ -3272,7 +3285,7 @@ function SettingsModal({onClose}){
                   <select value={getGroqModel()} onChange={e=>setGroqModel(e.target.value)} className="w-full bg-white/10 border border-white/20 rounded-xl px-4 py-3 text-white text-sm mb-2 focus:outline-none focus:border-orange-500">
                     {GROQ_MODELS.map(m=><option key={m.id} value={m.id} className="bg-gray-800">{m.label} — {m.desc}</option>)}
                   </select>
-                  <p className="text-white/35 text-xs mt-3">ℹ️ Groq is text-only — cover images still use Pollinations.ai (free, no key).</p>
+                  <p className="text-white/35 text-xs mt-3">ℹ️ Groq is text-only — cover art uses the Cover Image Model below (FLUX.2 Pro via Puter.js, or pick another).</p>
                 </div>
               )}
 
@@ -3357,6 +3370,13 @@ function SettingsModal({onClose}){
               )}
               {/* 🔌 Test Connection — available for EVERY backend */}
               <div className="mt-6 pt-5 border-t border-white/10">
+                <div className="bg-white/5 border border-white/10 rounded-xl p-4 mb-4">
+                  <label className="text-white/60 text-sm font-medium block mb-2">🎨 Cover Image Model <span className="text-white/30 font-normal text-xs">— applies to every AI backend</span></label>
+                  <select value={getPuterImageModel()} onChange={e=>setPuterImageModel(e.target.value)} className="w-full bg-white/10 border border-white/20 rounded-xl px-4 py-3 text-white text-sm focus:outline-none focus:border-purple-500">
+                    {PUTER_IMAGE_MODELS.map(m=><option key={m.id} value={m.id} className="bg-gray-800">{m.label} — {m.desc}</option>)}
+                  </select>
+                  <p className="text-white/35 text-xs mt-2">ℹ️ Cover art generates via your chosen model (FLUX.2 Pro default — free Puter account, one-time sign-in popup on first image). Pick Pollinations.ai for a no-sign-in fallback.</p>
+                </div>
                 <label className="text-white/60 text-sm font-medium block mb-2">Verify Your Setup</label>
                 <p className="text-white/35 text-xs mb-3">Sends one tiny test request to your selected AI engine and shows the response.</p>
                 <button onClick={async()=>{setTestingConn(true);try{const r=await testConnection();setTestResult(r);}catch(tcE){setTestResult({ok:false,msg:errMsg(tcE)});}finally{setTestingConn(false);}}} disabled={testingConn} className={`w-full py-3 rounded-xl font-semibold transition-all mb-4 ${testingConn?"bg-white/10 text-white/50":testResult?.ok?"bg-green-500/20 text-green-300 border border-green-500/30":testResult?"bg-red-500/20 text-red-300 border border-red-500/30":"bg-gradient-to-r from-purple-500 to-pink-500 text-white hover:opacity-90"}`}>
@@ -5616,87 +5636,59 @@ function BookStatsBar({book}){
 // Module-level (hoisted out of EditorPage — the Queue builder also calls this;
 // it was accidentally nested inside EditorPage by an old splice, making it
 // invisible to QueuePage → every Queue cover silently failed).
-async function genCoverImage(prompt,opts={}){
-  const imgModel=getPuterImageModel();
-  const w=opts.width||832,h=opts.height||1216;
-  
-  // Smart routing: if user hasn't explicitly chosen a model, auto-pick based on backend
-  const effectiveModel=imgModel==="pollinations"&&getBackend()==="puter"?"black-forest-labs/flux-2-pro":imgModel;
-  if(effectiveModel==="pollinations"||getBackend()==="gemini"||getBackend()==="groq"||getBackend()==="kilo"||getBackend()==="cerebras"||getBackend()==="cloudflare"||getBackend()==="openrouter"||getBackend()==="huggingface"){
-    // Pollinations URL-based approach — no Puter account needed, zero friction
-    try{
-      const url=`https://image.pollinations.ai/prompt/${encodeURIComponent(prompt.trim())}?width=${w}&height=${h}&model=flux&nologo=true&seed=${Date.now()}`;
-      // Verify the URL is reachable with a quick HEAD check (3s timeout)
-      const probe=await Promise.race([
-        fetch(url,{method:"HEAD"}),
-        new Promise((_,reject)=>setTimeout(()=>reject(new Error("timeout")),3000))
-      ]);
-      if(probe.ok)return {url,method:"url"};
-    }catch(e){
-      // Pollinations unreachable — fall through to Puter.js txt2img if available
-      if(typeof puter!=="undefined"){
-        try{
-          const imgEl=await puter.ai.txt2img(prompt,{model:"black-forest-labs/flux-2-pro"});
-          let src="";
-          if(typeof imgEl==="string")src=imgEl;
-          else if(imgEl?.src)src=imgEl.src;
-          else if(imgEl?.toString().startsWith("data:"))src=imgEl.toString();
-          else src=String(imgEl);
-          if(src.startsWith("data:"))return {url:src,method:"puter"};
-          // Try canvas conversion
-          if(imgEl instanceof HTMLImageElement||imgEl?.tagName==="IMG"){
-            const canvas=document.createElement("canvas");
-            canvas.width=w;canvas.height=h;
-            const ctx=canvas.getContext("2d");
-            ctx.drawImage(imgEl,0,0,w,h);
-            return {url:canvas.toDataURL("image/jpeg",0.92),method:"puter"};
-          }
-          return {url:src,method:"puter"};
-        }catch(pe){
-          // Both failed — return a placeholder data URI
-          return {url:"data:image/svg+xml;base64,"+btoa(`<svg xmlns='http://www.w3.org/2000/svg' width='${w}' height='${h}'><rect width='100%' height='100%' fill='%231a1a2e'/><text x='50%' y='50%' fill='%23888' font-size='20' text-anchor='middle' dy='.3em'>Cover generation failed — try again</text></svg>`),method:"fallback"};
-        }
-      }
-      // No Puter available — return error
-      throw{code:"IMAGE_FAILED",msg:"Cover generation failed — Pollinations unreachable and Puter.js not loaded."};
-    }
-  }
-  
-  // Puter.js image generation — returns an <img> element, convert to data URL
-  if(typeof puter==="undefined")throw{code:"PUTER_NOT_LOADED"};
-  const imgEl=await puter.ai.txt2img(prompt,{model:effectiveModel});
-  // Convert image element to canvas then data URL
-  const canvas=document.createElement("canvas");
-  canvas.width=w;canvas.height=h;
-  const ctx=canvas.getContext("2d");
-  // The returned element might be an <img> or already a data URL
+const puterImageToUrl=async (imgEl,w,h)=>{
+  // Convert Puter's result (an <img> element or data URL string) to a data URL at target size
   let src="";
   if(typeof imgEl==="string"){src=imgEl;}
   else if(imgEl?.src){src=imgEl.src;}
   else if(imgEl?.toString().startsWith("data:")){src=imgEl.toString();}
   else{src=String(imgEl);}
-  
-  // If it's already a data URL, return directly
-  if(src.startsWith("data:")){
-    return {url:src,method:"data"};
-  }
-  
-  // Otherwise load the image and composite to our target size
+  if(src.startsWith("data:"))return src;
   return new Promise((resolve,reject)=>{
     const img=new Image();
     img.crossOrigin="anonymous";
     img.onload=()=>{
-      // Cover-fit draw (crop to fill)
+      const canvas=document.createElement("canvas");
+      canvas.width=w;canvas.height=h;
+      const ctx=canvas.getContext("2d");
       const scale=Math.max(w/img.width,h/img.height);
       const sw=w/scale,sh=h/scale;
-      const sx=(img.width-sw)/2,sy=(img.height-sh)/2;
-      ctx.drawImage(img,sx,sy,sw,sh,0,0,w,h);
-      resolve({url:canvas.toDataURL("image/jpeg",0.9),method:"data"});
+      ctx.drawImage(img,(img.width-sw)/2,(img.height-sh)/2,sw,sh,0,0,w,h);
+      resolve(canvas.toDataURL("image/jpeg",0.92));
     };
     img.onerror=()=>reject(new Error("Puter image load failed"));
     img.src=src;
   });
+};
+async function genCoverImage(prompt,opts={}){
+  const imgModel=getPuterImageModel();
+  const w=opts.width||832,h=opts.height||1216;
+  // The chosen Cover Image Model is authoritative on EVERY text backend —
+  // Puter.js image models work regardless of which AI engine writes the text.
+  if(imgModel!=="pollinations"&&typeof puter!=="undefined"){
+    try{
+      const imgEl=await puterWithTimeout(()=>puter.ai.txt2img(prompt,{model:imgModel}),180000);
+      return {url:await puterImageToUrl(imgEl,w,h),method:"puter"};
+    }catch(e){
+      // Puter path failed (no sign-in / low balance / timeout) — fall through to Pollinations
+    }
+  }
+  // Pollinations: chosen model, or automatic fallback. Hardened with a real
+  // image preload (45s) instead of the old 3s HEAD probe.
+  try{
+    const url=await pollinationsCoverUrl(prompt,w,h);
+    return {url,method:"url"};
+  }catch(e){
+    if(typeof puter!=="undefined"){
+      try{
+        const imgEl=await puterWithTimeout(()=>puter.ai.txt2img(prompt,{model:"black-forest-labs/flux-2-pro"}),180000);
+        return {url:await puterImageToUrl(imgEl,w,h),method:"puter"};
+      }catch(pe){/* both down */}
+    }
+    return {url:"data:image/svg+xml;base64,"+btoa(`<svg xmlns='http://www.w3.org/2000/svg' width='${w}' height='${h}'><rect width='100%' height='100%' fill='%231a1a2e'/><text x='50%' y='50%' fill='%23888' font-size='20' text-anchor='middle' dy='.3em'>Cover generation failed — try again</text></svg>`),method:"fallback"};
+  }
 }
+
 
 // ── Chapter Version History ─────────────────────────────────────────────────
 // Snapshots live on the chapter itself (ch.versions, capped) so they persist with
@@ -6391,22 +6383,22 @@ function EditorPage({bookId,navigate,onSettings}){
       // Build optimized KDP cover prompt
       setBusyStep("🎨 Generating KDP-optimized thumbnail prompt…");
       const coverRaw=await callAI(
-        `You are an Amazon KDP cover design expert. Generate a Pollinations.ai image prompt for a HIGH-CONVERTING Amazon thumbnail.\n\nBook: "${kdp.kdp_title}"\nGenre: ${book.genre}\nAudience: ${book.target_audience}\nBISAC: ${kdp.kdp_bisac_1}\nExisting cover URL: ${book.cover_image_url||"none"}\n\nAmazon thumbnail requirements:\n• Must look STUNNING at 160x250px (thumbnail size on search results)\n• Bold, high-contrast imagery that pops on white Amazon background\n• Strong focal point — single hero element or face\n• Genre visual language (romance: warm intimate tones; thriller: cold dark contrast; self-help: clean aspirational; fantasy: epic dramatic)\n• "Professional bestselling book cover" quality\n\nReturn ONLY the image prompt string — no JSON, no explanations.\nEnd with: "Amazon book cover, ultra-detailed, commercially published quality, no text no words no letters, portrait orientation 2:3 ratio"`
+        `You are an Amazon KDP cover design expert. Generate an image-generation prompt for a HIGH-CONVERTING Amazon thumbnail.\n\nBook: "${kdp.kdp_title}"\nGenre: ${book.genre}\nAudience: ${book.target_audience}\nBISAC: ${kdp.kdp_bisac_1}\nExisting cover URL: ${book.cover_image_url||"none"}\n\nAmazon thumbnail requirements:\n• Must look STUNNING at 160x250px (thumbnail size on search results)\n• Bold, high-contrast imagery that pops on white Amazon background\n• Strong focal point — single hero element or face\n• Genre visual language (romance: warm intimate tones; thriller: cold dark contrast; self-help: clean aspirational; fantasy: epic dramatic)\n• "Professional bestselling book cover" quality\n\nReturn ONLY the image prompt string — no JSON, no explanations.\nEnd with: "Amazon book cover, ultra-detailed, commercially published quality, no text no words no letters, portrait orientation 2:3 ratio"`
       );
       bump();
       const coverPrompt=coverRaw.trim();
 
-      // Generate the KDP thumbnail via Pollinations
+      // Generate the KDP thumbnail via the user's chosen Cover Image Model
       setBusyStep("🖼️ Rendering KDP thumbnail (optimized for Amazon search)…");
-      const seed=Math.floor(Math.random()*99999);
-      const thumbUrl=`https://image.pollinations.ai/prompt/${encodeURIComponent(coverPrompt)}?width=1400&height=2100&seed=${seed}&nologo=true&enhance=true`;
+      const thumbRes=await genCoverImage(coverPrompt,{width:1400,height:2100});
+      const thumbUrl=thumbRes.url;
 
       // ACX/Audiobook fields if applicable
       let acx={};
       if(isAudio){
         setBusyStep("🎧 Building ACX/Audible product page…");
         const acxRaw=await callAI(
-          `You are an ACX (Audible Creation Exchange) publishing expert. Generate the complete Audible/ACX product page for this audiobook.\n\nBook: "${kdp.kdp_title}"\nGenre: ${book.genre}\nAudience: ${book.target_audience}\nRuntime estimate: ${Math.ceil(((book.chapters||[]).reduce((s,c)=>s+(c.content||"").split(/\s+/).length,0))/150)} minutes\n\nRespond ONLY with valid JSON:\n{"acx_title":"Audiobook title for ACX/Audible","acx_subtitle":"Audiobook subtitle","acx_description":"Audible product description 2000 chars — hook, what listeners experience, narrator style note, call to action","acx_keywords":["8 Audible search keywords"],"acx_categories":["Primary Audible category","Secondary"],"acx_narrator_direction":"2-sentence note to narrator on tone, pacing and emotion","acx_cover_prompt":"Pollinations.ai prompt for ACX square cover (3000x3000 required) — same art style as book cover but square crop"}`
+          `You are an ACX (Audible Creation Exchange) publishing expert. Generate the complete Audible/ACX product page for this audiobook.\n\nBook: "${kdp.kdp_title}"\nGenre: ${book.genre}\nAudience: ${book.target_audience}\nRuntime estimate: ${Math.ceil(((book.chapters||[]).reduce((s,c)=>s+(c.content||"").split(/\s+/).length,0))/150)} minutes\n\nRespond ONLY with valid JSON:\n{"acx_title":"Audiobook title for ACX/Audible","acx_subtitle":"Audiobook subtitle","acx_description":"Audible product description 2000 chars — hook, what listeners experience, narrator style note, call to action","acx_keywords":["8 Audible search keywords"],"acx_categories":["Primary Audible category","Secondary"],"acx_narrator_direction":"2-sentence note to narrator on tone, pacing and emotion","acx_cover_prompt":"image-generation prompt for ACX square cover (3000x3000 required) — same art style as book cover but square crop"}`
         );
         bump();
         const acxM=acxRaw.match(/\{[\s\S]*\}/);
@@ -6438,7 +6430,7 @@ const genSEO=async()=>{if(quotaHit||isBuilding)return;setBusy(true);setError("")
   };
 
   // Generate a cover image URL — routes to Puter or Pollinations based on settings
-const genCover=async()=>{if(quotaHit||isBuilding)return;setBusy(true);setError("");try{let finalPrompt="";if(coverMode==="custom"&&customPrompt.trim()){finalPrompt=customPrompt.trim()+". Professional book cover, no text, no letters.";}else{const outline=(()=>{try{return JSON.parse(book.outline||"{}");}catch{return {};}})();const aiPrompt=await callAI(`You are a professional book cover art director. Generate a detailed Pollinations.ai image prompt for a stunning, commercially competitive book cover.\n\nBook: "${outline.title}"\nGenre: ${book.genre}\nTarget Audience: ${book.target_audience}\nDescription: ${outline.description}\n\nCOVER REQUIREMENTS:\n• Describe EXACTLY what the illustration shows: subjects (age, gender, expression, pose, clothing), setting, foreground/background\n• For romance: two emotionally connected characters, chemistry visible in body language\n• For gay/LGBT+ romance: two male characters, intimate and emotionally charged interaction\n• For thriller/mystery: dark, cinematic, tense atmosphere with strong single focal point\n• For nonfiction/self-help: clean, bold, aspirational — minimalist design language\n• For fantasy/sci-fi: epic world-building detail, dramatic lighting, expansive scale\n\n• Color palette: specify 2-3 dominant colors that match the genre mood\n• Lighting: (e.g., "golden hour backlight", "neon noir", "cold winter morning", "dramatic studio")\n• Art style: (e.g., "painterly digital art", "photorealistic", "graphic novel ink", "watercolor", "CGI render")\n• Camera angle and composition (rule of thirds, centered, low angle)\n• Quality tags: masterpiece, award-winning book cover, professional commercial illustration, 4k detail\n\nCRITICAL RULES:\n• NO text, letters, words, numbers, watermarks of any kind\n• Portrait orientation optimized for book covers\n• Return ONLY the image prompt — no explanations, no JSON, just the prompt string.`);bump();finalPrompt=aiPrompt.trim()+". No text, no words, no letters.";setLastAiPrompt(finalPrompt);}const _artResult3=await genCoverImage(finalPrompt);const artUrl=_artResult3.url;const _ol=(()=>{try{return JSON.parse(book.outline||"{}");}catch{return {};}})();const finalUrl=await finalizeCoverImage(artUrl,_ol.title||book.title,getAuthorProfile().name,book.subtitle);upd({cover_art_url:artUrl,cover_image_url:finalUrl,cover_done:true});flash(getAuthorProfile().name?"Cover generated! 🎨":"Cover generated! 🎨 (set your author name in Settings to replace the \"Author\" placeholder)");}catch(e){handleErr(e);}finally{setBusy(false);}};
+const genCover=async()=>{if(quotaHit||isBuilding)return;setBusy(true);setError("");try{let finalPrompt="";if(coverMode==="custom"&&customPrompt.trim()){finalPrompt=customPrompt.trim()+". Professional book cover, no text, no letters.";}else{const outline=(()=>{try{return JSON.parse(book.outline||"{}");}catch{return {};}})();const aiPrompt=await callAI(`You are a professional book cover art director. Generate a detailed image-generation prompt for a stunning, commercially competitive book cover.\n\nBook: "${outline.title}"\nGenre: ${book.genre}\nTarget Audience: ${book.target_audience}\nDescription: ${outline.description}\n\nCOVER REQUIREMENTS:\n• Describe EXACTLY what the illustration shows: subjects (age, gender, expression, pose, clothing), setting, foreground/background\n• For romance: two emotionally connected characters, chemistry visible in body language\n• For gay/LGBT+ romance: two male characters, intimate and emotionally charged interaction\n• For thriller/mystery: dark, cinematic, tense atmosphere with strong single focal point\n• For nonfiction/self-help: clean, bold, aspirational — minimalist design language\n• For fantasy/sci-fi: epic world-building detail, dramatic lighting, expansive scale\n\n• Color palette: specify 2-3 dominant colors that match the genre mood\n• Lighting: (e.g., "golden hour backlight", "neon noir", "cold winter morning", "dramatic studio")\n• Art style: (e.g., "painterly digital art", "photorealistic", "graphic novel ink", "watercolor", "CGI render")\n• Camera angle and composition (rule of thirds, centered, low angle)\n• Quality tags: masterpiece, award-winning book cover, professional commercial illustration, 4k detail\n\nCRITICAL RULES:\n• NO text, letters, words, numbers, watermarks of any kind\n• Portrait orientation optimized for book covers\n• Return ONLY the image prompt — no explanations, no JSON, just the prompt string.`);bump();finalPrompt=aiPrompt.trim()+". No text, no words, no letters.";setLastAiPrompt(finalPrompt);}const _artResult3=await genCoverImage(finalPrompt);const artUrl=_artResult3.url;const _ol=(()=>{try{return JSON.parse(book.outline||"{}");}catch{return {};}})();const finalUrl=await finalizeCoverImage(artUrl,_ol.title||book.title,getAuthorProfile().name,book.subtitle);upd({cover_art_url:artUrl,cover_image_url:finalUrl,cover_done:true});flash(getAuthorProfile().name?"Cover generated! 🎨":"Cover generated! 🎨 (set your author name in Settings to replace the \"Author\" placeholder)");}catch(e){handleErr(e);}finally{setBusy(false);}};
 
   const newVariation=async()=>{if(!book?.cover_art_url&&!book?.cover_image_url)return;setBusy(true);try{const base=book.cover_art_url||book.cover_image_url;const u=new URL(base);u.searchParams.set("seed",Date.now().toString());const artUrl=u.toString();const _ol=(()=>{try{return JSON.parse(book.outline||"{}");}catch{return {};}})();const finalUrl=await finalizeCoverImage(artUrl,_ol.title||book.title,getAuthorProfile().name,book.subtitle);upd({cover_art_url:artUrl,cover_image_url:finalUrl,cover_done:true});flash("New variation! 🎨");}catch(e){handleErr(e);}finally{setBusy(false);}};
 
@@ -7959,7 +7951,7 @@ const TOUR_STEPS = {
     { element: "#tour-btn", popover: { title: "📖 Book Editor", description: "This is your book's workspace. Every tab here handles a different part of your book's creation pipeline.", side: "bottom" }},
     { popover: { title: "📋 Outline Tab", description: "AI generates a chapter-by-chapter outline first. You review and approve it before writing begins. You can edit any chapter title or description directly.", side: "bottom" }},
     { popover: { title: "✍️ Chapters Tab", description: "Once your outline is approved, write chapters one at a time or use 'Write All'. Each chapter is ~2,000-3,000 words with anti-AI patterns built in for natural prose.", side: "bottom" }},
-    { popover: { title: "🎨 Cover Tab", description: "Generate a professional book cover using Pollinations.ai (free, no API key needed). Describe your cover or let it auto-generate from your book's details.", side: "bottom" }},
+    { popover: { title: "🎨 Cover Tab", description: "Generate a professional book cover with your selected Cover Image Model (FLUX.2 Pro default via Puter.js — free account). Describe your cover or let it auto-generate from your book's details.", side: "bottom" }},
     { popover: { title: "🔍 SEO Tab", description: "Generates Amazon KDP-optimized title, subtitle, description, and 7 exact-match keywords. This is what makes your book discoverable.", side: "bottom" }},
     { popover: { title: "🤖 Review Agent", description: "Your book must score 75+ on marketability before downloads unlock. The agent checks title appeal, keyword strength, SEO quality, and market differentiation.", side: "bottom" }},
     { popover: { title: "📊 Quality Agent", description: "Your book must also score 78+ on writing quality. This agent specifically hunts AI writing patterns: em-dash overuse, filler openers, unstated emotions, passive voice.", side: "bottom" }},
