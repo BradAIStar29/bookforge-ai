@@ -3,7 +3,15 @@ const {useState,useEffect,useRef}=React;
 const {createRoot}=ReactDOM;
 
 // ── Constants ─────────────────────────────────────────────────────────────────
-const GEMINI_URL="https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent";
+// Only verified free-tier text models; project-specific quotas are shown in AI Studio.
+const GEMINI_MODELS=[
+  {id:"gemini-2.5-flash",label:"Gemini 2.5 Flash",desc:"Existing default, keeps current books on a familiar model"},
+  {id:"gemini-3.8-flash",label:"Gemini 3.8 Flash",desc:"Newest Flash, free-tier eligible; actual project limits vary"},
+  {id:"gemini-3.1-flash-lite",label:"Gemini 3.1 Flash-Lite",desc:"Lightweight, free-tier eligible"}
+];
+const getGeminiModel=()=>{const saved=localStorage.getItem("bfai_gemini_model");return GEMINI_MODELS.some(m=>m.id===saved)?saved:"gemini-2.5-flash";};
+const setGeminiModel=m=>{if(GEMINI_MODELS.some(x=>x.id===m))safeLS("bfai_gemini_model",m);};
+const geminiUrl=()=>`https://generativelanguage.googleapis.com/v1beta/models/${getGeminiModel()}:generateContent`;
 const DAILY_LIMIT=1500;
 const GENRES=["Fiction - Romance","Fiction - Gay Romance","Fiction - LGBT+","Fiction - Thriller","Fiction - Fantasy","Fiction - Sci-Fi","Fiction - Mystery","Fiction - Horror","Self-Help","Business & Finance","Health & Wellness","Personal Development","Biography & Memoir","History","True Crime","Cookbook","Travel","Spirituality","Science","Technology","Parenting","Education"];
 const BOOK_LENGTHS=[
@@ -39,10 +47,9 @@ const setKey=k=>localStorage.setItem("gemini_api_key",k.trim());
 
 // ── AI Backend selector (Gemini API key OR Puter.js free) ──
 const BACKENDS=[
-  {id:"kilo",label:"Kilo Code (No Key! 200/hr)",desc:"Zero config — no API key, no account. Auto-routes to Nemotron 550B, Tencent Hy3, and more. 200 req/hr free."},
   {id:"cerebras",label:"Cerebras (trial credits)",desc:"Wafer-scale ultra-fast inference. \u26a0\ufe0f No longer free (Aug 2026): $5 trial credits, expire in 30 days, card required. Catalog: GPT-OSS 120B, Qwen 3.8 27B."},
-  {id:"groq",label:"Groq Turbo (⚡ Fastest)",desc:"500+ tokens/sec with GPT-OSS 120B. Free API key, 14,400 req/day."},
-  {id:"gemini",label:"Gemini API Key",desc:"Bring your own free Google AI Studio key. 1,500 req/day."},
+  {id:"groq",label:"Groq Turbo (⚡ Fastest)",desc:"500+ tokens/sec with GPT-OSS 120B. Free API key; actual daily/model limits vary by account."},
+  {id:"gemini",label:"Gemini API Key",desc:"Bring your own Google AI Studio key. BookForge caps usage at 1,500 requests/day; Google’s per-model limits may be lower."},
   {id:"cloudflare",label:"Cloudflare Workers AI (10K/day)",desc:"75+ models incl. Llama 4 Scout, gpt-oss-120B, Mistral, DeepSeek. 10K Neurons/day free, no credit card."},
   {id:"openrouter",label:"OpenRouter (25+ Free Models)",desc:"One free key unlocks 25+ free open-weight models — GPT-OSS 120B, Llama 4 Maverick, DeepSeek, Qwen3. 20 req/min, ~50-200 req/day free per model."},
   {id:"huggingface",label:"HuggingFace Router (1K/day)",desc:"Your free HF token unlocks thousands of open models incl. DeepSeek V3 + Llama 4. ~1,000 requests/day free."},
@@ -169,7 +176,8 @@ async function callOpenAICompat(url,key,defModel,prompt,temperature=0.85,opts={}
 }
 const callOpenRouter=(p,t,o)=>callOpenAICompat(OPENROUTER_URL,getOpenRouterKey(),getOpenRouterModel(),p,t,o);
 const callHuggingFace=(p,t,o)=>callOpenAICompat(HUGGINGFACE_URL,getHfToken(),getHfModel(),p,t,o);
-const getBackend=()=>localStorage.getItem("bfai_backend")||"puter"; // kilo default removed 2026-09-02: gateway dropped browser CORS
+// Kilo's browser API lacks CORS. Keep old user data, but never route calls there.
+const getBackend=()=>{const saved=localStorage.getItem("bfai_backend");return saved==="kilo"?"puter":saved||"puter";};
 const setBackend=b=>safeLS("bfai_backend",b);
 
 // Puter text model options
@@ -310,7 +318,7 @@ const TASK_MODELS={
     multilingual:"qwen/qwen3.8-flash",    // 1M context, multimodal, strong multilingual
   },
   gemini:{
-    creative:"gemini-2.5-flash",        // Only model available
+    creative:"gemini-2.5-flash", // The direct Gemini API follows the explicit user selection below.
     structured:"gemini-2.5-flash",
     short:"gemini-2.5-flash",
     reasoning:"gemini-2.5-flash",
@@ -497,7 +505,7 @@ const hasCredentials=()=>{
   if(b==="gemini")return!!getKey();
   if(b==="groq")return!!getGroqKey();
   if(b==="cerebras")return!!getCerebrasKey();
-  if(b==="kilo")return true; // no key needed!
+  if(b==="kilo")return false; // unreachable from browsers
   if(b==="cloudflare")return!!getCloudflareAccountId()&&!!getCloudflareToken();
   if(b==="openrouter")return!!getOpenRouterKey();
   if(b==="huggingface")return!!getHfToken();
@@ -656,7 +664,7 @@ async function callGemini(prompt,temperature=0.85,opts={}){
     const controller=new AbortController();
     const timer=setTimeout(()=>controller.abort(),timeoutMs);
     try{
-      const res=await fetch(`${GEMINI_URL}?key=${key}`,{method:"POST",headers:{"Content-Type":"application/json"},signal:controller.signal,
+      const res=await fetch(`${geminiUrl()}?key=${key}`,{method:"POST",headers:{"Content-Type":"application/json"},signal:controller.signal,
         body:JSON.stringify({contents:[{parts:[{text:prompt}]}],generationConfig:{temperature,maxOutputTokens:8192}})});
       clearTimeout(timer);
       const data=await res.json().catch(()=>({}));
@@ -1202,7 +1210,7 @@ function kiloFailureShouldFailover(e){
 let PUTER_LOW_BALANCE=false;
 const PUTER_PENDING_REJECTS=new Set();
 function notifyPuterLowBalance(routedTo){
-  try{window.dispatchEvent(new CustomEvent("bfai:retry",{detail:{reason:"notice",msg:routedTo?`💳 Puter's free balance ran out for this session — auto-switched to ${routedTo}.`:"💳 Puter's free balance ran out and no other backend is configured — add a free Groq or Cerebras key in Settings to keep going."}}));}catch(e){}
+  try{window.dispatchEvent(new CustomEvent("bfai:retry",{detail:{reason:"notice",msg:routedTo?`💳 Puter's free balance ran out for this session — auto-switched to ${routedTo}.`:"💳 Puter's free balance ran out and no other backend is configured — add a free Groq key or Cloudflare credentials in Settings to keep going."}}));}catch(e){}
 }
 function initPuterLowBalanceWatcher(){
   if(typeof document==="undefined"||window.__puterLBWatcher)return;
@@ -1236,7 +1244,7 @@ function initPuterLowBalanceWatcher(){
 // and known capacity. Each backend can only be tried once per call chain
 // (exhaustion marks + depth cap), so this can never loop forever.
 const BACKEND_EXHAUSTED=new Map(); // backend → expiry timestamp (ms)
-const FAILOVER_ORDER=["groq","cloudflare","openrouter","huggingface","gemini","kilo","puter","cerebras"]; // cerebras demoted (free tier ended), OR+HF added 2026-09-17
+const FAILOVER_ORDER=["groq","cloudflare","openrouter","huggingface","gemini","puter","cerebras"]; // Kilo is not browser-accessible; Cerebras is a paid trial, only available with a configured key
 function markBackendExhausted(b,ms){
   if(!ms)ms=b==="cloudflare"?12*3600e3:b==="gemini"?3600e3:10*60e3; // transient 429s ~10min; Cloudflare daily neurons 12h; Gemini 1h (usage pre-check is authoritative)
   BACKEND_EXHAUSTED.set(b,Date.now()+ms);
@@ -1250,7 +1258,7 @@ function backendExhausted(b){
 }
 function backendAvailable(b){
   if(backendExhausted(b))return false;
-  if(b==="kilo")return!KILO_SESSION_DEAD;
+  if(b==="kilo")return false; // browser preflight lacks CORS; never select as fallback
   if(b==="puter")return!PUTER_LOW_BALANCE;
   if(b==="groq")return!!getGroqKey();
   if(b==="cerebras")return!!getCerebrasKey();
@@ -1313,7 +1321,7 @@ async function callAI(prompt,temperature=0.85,opts={},_depth=0){
         const next=nextAvailableBackend("puter");
         if(next){notifyPuterLowBalance(next);return callAI(prompt,temperature,{...opts,__forceBackend:next},_depth+1);}
         notifyPuterLowBalance(null);
-        throw{code:"PUTER_LOW_BALANCE",msg:"Puter's free balance ran out and no other AI backend is configured. Add a free Groq or Cerebras API key in Settings (2-min signup, no card) to keep generating."};
+        throw{code:"PUTER_LOW_BALANCE",msg:"Puter's free balance ran out and no other AI backend is configured. Add a free Groq key or Cloudflare credentials in Settings to keep generating."};
       }
       if(e?.code==="QUOTA"){ // ANY backend hit its rate/daily limit → try the next one with capacity
         markBackendExhausted(backend);
@@ -1352,7 +1360,7 @@ async function callAIStream(prompt,temperature=0.85,opts={},_depth=0){
         const next=nextAvailableBackend("puter");
         if(next){notifyPuterLowBalance(next);return callAIStream(prompt,temperature,{...opts,__forceBackend:next},_depth+1);}
         notifyPuterLowBalance(null);
-        throw{code:"PUTER_LOW_BALANCE",msg:"Puter's free balance ran out and no other AI backend is configured. Add a free Groq or Cerebras API key in Settings (2-min signup, no card) to keep generating."};
+        throw{code:"PUTER_LOW_BALANCE",msg:"Puter's free balance ran out and no other AI backend is configured. Add a free Groq key or Cloudflare credentials in Settings to keep generating."};
       }
       if(e?.code==="QUOTA"){
         markBackendExhausted(backend);
@@ -3155,6 +3163,7 @@ function DataManagementPanel(){
 
 function SettingsModal({onClose}){
   const [draft,setDraft]=useState(getKey());
+  const [geminiModel,setGeminiModelState]=useState(getGeminiModel());
   const [saved,setSaved]=useState(false);
   const [sTab,setSTab]=useState("api");
   const [soundOn,setSoundOn]=useState(getSoundOn()); // api | voice | author
@@ -3187,9 +3196,11 @@ function SettingsModal({onClose}){
   const saveHf=()=>{setHfToken(hfTokenDraft);setHfSaved(true);setTimeout(()=>setHfSaved(false),2000);}; // null | "testing" | "ok" | "fail"
   const testKey=async()=>{
     if(!draft.trim())return;
+    if(getUsage()>=DAILY_LIMIT){setTestStatus("quota");setTimeout(()=>setTestStatus(null),4000);return;}
     setTestStatus("testing");
     try{
-      const r=await fetch(`${GEMINI_URL}?key=${draft.trim()}`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({contents:[{parts:[{text:"Reply with just the word OK"}]}],generationConfig:{maxOutputTokens:5}})});
+      trackUsage(); // Verification is a Gemini API request too, so it counts toward the safety cap.
+      const r=await fetch(`${geminiUrl()}?key=${draft.trim()}`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({contents:[{parts:[{text:"Reply with just the word OK"}]}],generationConfig:{maxOutputTokens:5}})});
       if(r.ok)setTestStatus("ok");
       else{const err=await r.json();setTestStatus("fail");}
     }catch(e){setTestStatus("fail");}
@@ -3228,8 +3239,8 @@ function SettingsModal({onClose}){
                 </div>):null;})()}
                 {BACKENDS.map(b=>{
                   const sel=getBackend()===b.id;
-                  const badge=b.id==="kilo"||b.id==="puter"?"🎁 No Key Needed":b.id==="groq"?"⚡ Fastest":b.id==="cloudflare"?"☁️ 10K/day":b.id==="cerebras"?"💳 Paid Trial":b.id==="openrouter"?"📦 25+ Free Models":b.id==="huggingface"?"🤗 1K/day Free":b.id==="gemini"?"🔑 BYO Key":"⚡ Puter Free";
-                  const badgeColor=b.id==="kilo"||b.id==="puter"?"bg-green-500/20 text-green-300 border-green-500/30":b.id==="groq"?"bg-orange-500/20 text-orange-300 border-orange-500/30":b.id==="cerebras"?"bg-red-500/15 text-red-300 border-red-500/30":"bg-purple-500/20 text-purple-300 border-purple-500/30";
+                  const badge=b.id==="puter"?"🎁 No Key Needed":b.id==="groq"?"⚡ Fastest":b.id==="cloudflare"?"☁️ 10K/day":b.id==="cerebras"?"💳 Paid Trial":b.id==="openrouter"?"📦 25+ Free Models":b.id==="huggingface"?"🤗 1K/day Free":b.id==="gemini"?"🔑 BYO Key":"⚡ Puter Free";
+                  const badgeColor=b.id==="puter"?"bg-green-500/20 text-green-300 border-green-500/30":b.id==="groq"?"bg-orange-500/20 text-orange-300 border-orange-500/30":b.id==="cerebras"?"bg-red-500/15 text-red-300 border-red-500/30":"bg-purple-500/20 text-purple-300 border-purple-500/30";
                   return (
                     <button key={b.id} onClick={()=>{setBackend(b.id);setBackendChanged(true);setTimeout(()=>setBackendChanged(false),2000);}} className={`text-left p-3.5 rounded-2xl border transition-all ${sel?"bg-purple-500/20 border-purple-500 text-white shadow-lg shadow-purple-500/10 ring-1 ring-purple-500/50":"bg-white/5 border-white/10 text-white/60 hover:border-purple-400/50"}`}>
                       <div className="flex items-center justify-between gap-2 mb-1"><p className="text-sm font-bold text-white">{b.label}</p><span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full border shrink-0 ${badgeColor}`}>{badge}</span></div>
@@ -3247,8 +3258,13 @@ function SettingsModal({onClose}){
                   <p className="text-white/35 text-xs mb-3">Stored only in your browser. Never sent anywhere except Google's API.</p>
                   <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noopener noreferrer" className="inline-block text-purple-400 text-xs underline mb-4 hover:text-purple-300">Get a free key at Google AI Studio →</a>
                   <input type="password" placeholder="AIza..." value={draft} onChange={e=>setDraft(e.target.value)} onKeyDown={e=>e.key==="Enter"&&save()} className="w-full bg-white/10 border border-white/20 rounded-xl px-4 py-3 text-white placeholder-white/30 focus:outline-none focus:border-purple-500 mb-4 font-mono text-sm"/>
+                  <label htmlFor="bfai-gemini-model" className="text-white/60 text-sm font-medium block mb-2">Direct Gemini text model</label>
+                  <select id="bfai-gemini-model" value={geminiModel} onChange={e=>{setGeminiModel(e.target.value);setGeminiModelState(e.target.value);}} className="w-full bg-white/10 border border-white/20 rounded-xl px-4 py-3 text-white text-sm mb-2 focus:outline-none focus:border-purple-500">
+                    {GEMINI_MODELS.map(m=><option key={m.id} value={m.id} className="bg-gray-800">{m.label} — {m.desc}</option>)}
+                  </select>
+                  <p className="text-white/40 text-xs mb-4">All listed models have free-tier text access. Your project's actual RPM and daily limits may be lower than BookForge's 1,500/day safety cap. Check Google AI Studio for your limits.</p>
                   <div className="flex gap-2">
-                    <button onClick={testKey} disabled={!draft.trim()||testStatus==="testing"} className={`flex-1 py-3 rounded-xl font-semibold text-sm transition-all border ${testStatus==="ok"?"bg-green-500/20 border-green-500 text-green-400":testStatus==="fail"?"bg-red-500/20 border-red-500 text-red-400":testStatus==="testing"?"border-white/20 text-white/40":"border-white/20 text-white/60 hover:border-purple-400 hover:text-white"}`}>{testStatus==="testing"?"⏳ Testing…":testStatus==="ok"?"✅ Key works!":testStatus==="fail"?"❌ Invalid key":"🔬 Test Key"}</button>
+                    <button onClick={testKey} disabled={!draft.trim()||testStatus==="testing"||getUsage()>=DAILY_LIMIT} className={`flex-1 py-3 rounded-xl font-semibold text-sm transition-all border ${testStatus==="ok"?"bg-green-500/20 border-green-500 text-green-400":testStatus==="fail"?"bg-red-500/20 border-red-500 text-red-400":testStatus==="testing"?"border-white/20 text-white/40":"border-white/20 text-white/60 hover:border-purple-400 hover:text-white"}`}>{testStatus==="testing"?"⏳ Testing…":testStatus==="ok"?"✅ Key works!":testStatus==="fail"?"❌ Test failed":testStatus==="quota"?"⚠️ Daily cap reached":"🔬 Test Key"}</button>
                     <button onClick={save} disabled={!draft.trim()} className={`flex-1 py-3 rounded-xl font-semibold transition-all ${saved?"bg-green-500 text-white":"bg-gradient-to-r from-purple-500 to-pink-500 text-white hover:opacity-90 disabled:opacity-50"}`}>{saved?"✅ Saved!":"Save Key"}</button>
                   </div>
                 </div>
@@ -3429,7 +3445,7 @@ function SettingsModal({onClose}){
               <div className="bg-white/5 border border-white/10 rounded-xl p-4">
                 <p className="text-white/50 text-xs">When enabled, auto-build will:</p>
                 <ul className="text-white/40 text-xs mt-2 space-y-1.5">
-                  <li className="flex gap-2"><span className="text-purple-400">📖</span>Apply Review Agent title, subtitle, keyword & SEO suggestions if review score &lt; 70</li>
+                  <li className="flex gap-2"><span className="text-purple-400">📖</span>Apply Review Agent title, subtitle, keyword & SEO suggestions if review score &lt; 75</li>
                   <li className="flex gap-2"><span className="text-purple-400">✍️</span>Analyze chapters for AI-tell rewrites and apply them if writing quality score &lt; 78</li>
                   <li className="flex gap-2"><span className="text-purple-400">🔄</span>Re-run both quality checks and report the improved scores</li>
                 </ul>
@@ -4427,7 +4443,7 @@ function VoiceTrainingPanel({onClose}){
   const [saved,setSaved]=useState(false);
 
   const analyze=async()=>{
-    if(!hasCredentials()){setError("No AI backend configured — open Settings to pick one (Kilo Code needs no key!).");return;}
+    if(!hasCredentials()){setError("No AI backend configured — open Settings to choose Puter.js or add a free API key.");return;}
     if(!sample.trim()||sample.length<200){setError("Paste at least 200 characters of your writing.");return;}
     setLoading(true);setError("");
     try{
@@ -4752,7 +4768,7 @@ function HelpPage({onSettings}){
   // answer in-app via the configured AI backend so the user is never dead-ended.
   const fallbackAIAnswer=async(q,ctx)=>{
     try{
-      const ans=await callAI(`You are the in-app help assistant for BookForge AI, a browser-based book writing & publishing tool. Answer the user's help question clearly and concisely (under 150 words). App features: outline generation, chapter writing with streaming, cover art (Pollinations/FLUX via Puter.js), SEO tools, dual publish gate (75+ marketability, 78+ writing quality), EPUB/PDF/Markdown/DOCX/TXT export, audiobook scripts + browser TTS, voice training, character manager, series manager + continuity checker, queue batch builder, translate tool, manga studio, help chat. Data is stored locally (IndexedDB/localStorage) — no cloud account. Settings: 8 AI backends (Puter.js no-key default, Groq, Gemini, Cloudflare, OpenRouter, HuggingFace, Kilo, Cerebras).\n\nUser context: ${ctx}\nQuestion: ${q}\n\nAnswer:`,0.3);
+      const ans=await callAI(`You are the in-app help assistant for BookForge AI, a browser-based book writing & publishing tool. Answer the user's help question clearly and concisely (under 150 words). App features: outline generation, chapter writing with streaming, cover art (Pollinations/FLUX via Puter.js), SEO tools, dual publish gate (75+ marketability, 78+ writing quality), EPUB/PDF/Markdown/DOCX/TXT export, audiobook scripts + browser TTS, voice training, character manager, series manager + continuity checker, queue batch builder, translate tool, manga studio, help chat. Data is stored locally (IndexedDB/localStorage) — no cloud account. Settings: 7 AI backends (Puter.js no-key default, Groq, Gemini, Cloudflare, OpenRouter, HuggingFace, Cerebras).\n\nUser context: ${ctx}\nQuestion: ${q}\n\nAnswer:`,0.3);
       const newReq={id:"local_"+Date.now(),question:q,context:ctx,answered:true,answer:ans||"I couldn't find an answer — please try rephrasing.",created_date:new Date().toISOString(),instant:true};
       setRequests(prev=>[newReq,...prev]);
       setQuestion("");
@@ -6246,7 +6262,7 @@ function EditorPage({bookId,navigate,onSettings}){
               const reReview=await runReviewAgent(updated);
               updateBook(bookId,{review:reReview,review_done:true});setBook(getBook(bookId));
               rvPassed=reReview.verdict==="PASS";
-              log(rvPassed?`  ✅ Review improved to ${reReview.overall_score}/100 — PASS!`:`  📊 Review improved to ${reReview.overall_score}/100 (still below 70)`);
+              log(rvPassed?`  ✅ Review improved to ${reReview.overall_score}/100 — PASS!`:`  📊 Review improved to ${reReview.overall_score}/100 (still below 75)`);
             }
           }catch(e){if(e?.code==="QUOTA"){setQuotaHit(true);}log("  ⚠️ Review auto-fix failed — see Review tab");}
         }
@@ -6904,8 +6920,8 @@ Respond ONLY valid JSON: {"needs_improvement":false,"score":85,"issues":["short 
 
         {tab===10&&<div className="max-w-3xl mx-auto space-y-5">
           {/* Gate 1: Review Agent */}
-          {!book.review?<div className="bg-amber-500/15 border border-amber-500/40 rounded-2xl p-6 text-center"><div className="text-4xl mb-3">🤖</div><h3 className="text-amber-300 font-bold text-lg mb-2">Review Agent Required</h3><p className="text-amber-200/60 text-sm mb-5">The Review Agent must score 70+ before you can publish.</p><button onClick={()=>setTab(4)} className="bg-gradient-to-r from-amber-500 to-orange-500 text-black font-bold px-8 py-3 rounded-xl hover:opacity-90">Run Review Agent →</button></div>
-          :!reviewPassed?<div className="bg-red-500/15 border border-red-500/40 rounded-2xl p-6 text-center"><div className="text-4xl mb-3">❌</div><h3 className="text-red-300 font-bold text-lg mb-2">Review Score Too Low ({reviewScore}/100)</h3><p className="text-red-200/60 text-sm mb-5">Needs 70+. Apply improvements in the Review tab then re-run.</p><button onClick={()=>setTab(4)} className="bg-gradient-to-r from-red-500 to-pink-500 text-white font-bold px-8 py-3 rounded-xl hover:opacity-90">View Review Suggestions →</button></div>
+          {!book.review?<div className="bg-amber-500/15 border border-amber-500/40 rounded-2xl p-6 text-center"><div className="text-4xl mb-3">🤖</div><h3 className="text-amber-300 font-bold text-lg mb-2">Review Agent Required</h3><p className="text-amber-200/60 text-sm mb-5">The Review Agent must score 75+ before you can publish.</p><button onClick={()=>setTab(4)} className="bg-gradient-to-r from-amber-500 to-orange-500 text-black font-bold px-8 py-3 rounded-xl hover:opacity-90">Run Review Agent →</button></div>
+          :!reviewPassed?<div className="bg-red-500/15 border border-red-500/40 rounded-2xl p-6 text-center"><div className="text-4xl mb-3">❌</div><h3 className="text-red-300 font-bold text-lg mb-2">Review Score Too Low ({reviewScore}/100)</h3><p className="text-red-200/60 text-sm mb-5">Needs 75+. Apply improvements in the Review tab then re-run.</p><button onClick={()=>setTab(4)} className="bg-gradient-to-r from-red-500 to-pink-500 text-white font-bold px-8 py-3 rounded-xl hover:opacity-90">View Review Suggestions →</button></div>
           :<div className="bg-green-500/10 border border-green-500/30 rounded-2xl p-4 flex items-center gap-3"><span className="text-2xl">✅</span><div><p className="text-green-300 font-bold text-sm">Review Passed — {reviewScore}/100</p></div></div>}
           {/* Gate 2: Writing Quality */}
           {reviewPassed&&(!book.manuscript_quality?<div className="bg-amber-500/15 border border-amber-500/40 rounded-2xl p-6 text-center"><div className="text-4xl mb-3">✍️</div><h3 className="text-amber-300 font-bold text-lg mb-2">Writing Quality Check Required</h3><p className="text-amber-200/60 text-sm mb-5">Run the Writing Quality Agent to verify your manuscript reads like a human author, not AI. Required before publishing.</p><button onClick={()=>setTab(8)} className="bg-gradient-to-r from-purple-500 to-pink-500 text-white font-bold px-8 py-3 rounded-xl hover:opacity-90">Run Writing Quality Check →</button></div>
@@ -6913,14 +6929,14 @@ Respond ONLY valid JSON: {"needs_improvement":false,"score":85,"issues":["short 
           :<div className="bg-green-500/10 border border-green-500/30 rounded-2xl p-4 flex items-center gap-3"><span className="text-2xl">✅</span><div><p className="text-green-300 font-bold text-sm">Writing Quality Passed — {writingScore}/100 human</p></div></div>)}
           {reviewPassed&&writingPassed&&<Card><h2 className="text-white text-xl font-bold mb-2">Publish Your Book</h2><p className="text-white/40 mb-6 text-sm">Your book includes the series read-order page (if hooks were generated).</p>
             <div className="space-y-3 mb-8">
-              <BookStatsBar book={book}/>{[{label:"Chapters written",done:book.chapters?.some(c=>c.content)},{label:"Cover generated",done:!!book.cover_image_url},{label:"SEO ready",done:!!book.seo_title},{label:"Review Agent passed (70+)",done:reviewPassed},{label:"Writing Quality passed (72+)",done:writingPassed},{label:"Market analysis done",done:!!book.competitor_analysis},{label:"Hooks & blurbs generated",done:!!book.hooks},{label:"Characters documented",done:(getCharacters(bookId)||[]).length>0},
+              <BookStatsBar book={book}/>{[{label:"Chapters written",done:book.chapters?.some(c=>c.content)},{label:"Cover generated",done:!!book.cover_image_url},{label:"SEO ready",done:!!book.seo_title},{label:"Review Agent passed (75+)",done:reviewPassed},{label:"Writing Quality passed (78+)",done:writingPassed},{label:"Market analysis done",done:!!book.competitor_analysis},{label:"Hooks & blurbs generated",done:!!book.hooks},{label:"Characters documented",done:(getCharacters(bookId)||[]).length>0},
       {label:"Readability checked",done:!!getBookReadability(book)}].map((item,i)=><div key={i} className={`flex items-center gap-3 px-4 py-3 rounded-lg ${item.done?"bg-green-500/10":"bg-white/5"}`}><span>{item.done?"✅":"⭕"}</span><span className={`text-sm ${item.done?"text-white":"text-white/35"}`}>{item.label}</span></div>)}
             </div>
             <p className="text-white/50 text-sm font-semibold mb-3">Export Formats</p>
             <div className="grid grid-cols-2 gap-3">
               <div className="col-span-2 space-y-2">
               <button onClick={()=>downloadPublishKit(book)} disabled={!reviewPassed||!writingPassed} className="w-full bg-gradient-to-r from-purple-600 via-pink-600 to-amber-500 text-white py-4 rounded-2xl font-bold shadow-xl shadow-purple-500/20 hover:opacity-95 disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-2 text-base transition-all">📦 Download Publish Kit — Complete KDP Upload Bundle (ZIP)</button>
-              {(!reviewPassed||!writingPassed)&&<p className="text-amber-300/80 text-xs text-center flex items-center justify-center gap-1 flex-wrap"><span>🔒 Gated:</span>{!reviewPassed&&<button onClick={()=>setTab(4)} className="underline hover:text-amber-200">Pass Review (70+)</button>}{!reviewPassed&&!writingPassed&&<span>&</span>}{!writingPassed&&<button onClick={()=>setTab(8)} className="underline hover:text-amber-200">Pass Writing Quality (78+)</button>}</p>}
+              {(!reviewPassed||!writingPassed)&&<p className="text-amber-300/80 text-xs text-center flex items-center justify-center gap-1 flex-wrap"><span>🔒 Gated:</span>{!reviewPassed&&<button onClick={()=>setTab(4)} className="underline hover:text-amber-200">Pass Review (75+)</button>}{!reviewPassed&&!writingPassed&&<span>&</span>}{!writingPassed&&<button onClick={()=>setTab(8)} className="underline hover:text-amber-200">Pass Writing Quality (78+)</button>}</p>}
             </div>
           <button onClick={()=>download("md")} className="bg-gradient-to-r from-purple-500 to-pink-500 text-white py-3 rounded-xl font-semibold hover:opacity-90 flex items-center justify-center gap-2 text-sm">📝 Markdown (.md)</button>
               <button onClick={()=>download("docx")} className="bg-gradient-to-r from-indigo-500 to-blue-500 text-white py-3 rounded-xl font-semibold hover:opacity-90 flex items-center justify-center gap-2 text-sm">📋 Word (.docx) ⭐ NEW</button>
@@ -7977,7 +7993,7 @@ const TOUR_STEPS = {
     { popover: { title: "🔍 SEO Tab", description: "Generates Amazon KDP-optimized title, subtitle, description, and 7 exact-match keywords. This is what makes your book discoverable.", side: "bottom" }},
     { popover: { title: "🤖 Review Agent", description: "Your book must score 75+ on marketability before downloads unlock. The agent checks title appeal, keyword strength, SEO quality, and market differentiation.", side: "bottom" }},
     { popover: { title: "📊 Quality Agent", description: "Your book must also score 78+ on writing quality. This agent specifically hunts AI writing patterns: em-dash overuse, filler openers, unstated emotions, passive voice.", side: "bottom" }},
-    { popover: { title: "📤 Publish Tab", description: "Download your book as EPUB (for Amazon KDP), TXT, Audiobook script, or RTF. The dual gate (Review 70+ AND Quality 78+) must pass first.", side: "bottom" }},
+    { popover: { title: "📤 Publish Tab", description: "Download your book as EPUB (for Amazon KDP), TXT, Audiobook script, or RTF. The dual gate (Review 75+ AND Quality 78+) must pass first.", side: "bottom" }},
     { popover: { title: "🎙️ Audio Studio Tab", description: "Generate a real narrated audiobook using Kokoro TTS — 82M parameter AI model running free in your browser. 15 voices, WAV export. First load downloads ~82MB (cached after).", side: "bottom" }},
   ],
   manga_editor: [
@@ -8530,7 +8546,7 @@ function HelpBot(){
       }else{
         // Relay offline (private-app rejection etc.) — answer in-app via AI so the user isn't dead-ended
         try{
-          const ans=await callAI(`You are the in-app help assistant for BookForge AI, a browser-based book writing & publishing tool. Answer the user's question clearly and concisely (under 150 words). Features: outline generation, chapter writing with streaming, cover art, SEO tools, dual publish gate, EPUB/PDF/Markdown/DOCX export, audiobook scripts + browser TTS, voice training, character manager, series manager + continuity checker, queue batch builder, translate, manga studio. Data stored locally (IndexedDB). Settings: 8 AI backends (Puter.js no-key default, Groq, Gemini, Cloudflare, OpenRouter, HuggingFace, Kilo, Cerebras).\n\nQuestion: ${lastUser.text}\n\nAnswer:`,0.3);
+          const ans=await callAI(`You are the in-app help assistant for BookForge AI, a browser-based book writing & publishing tool. Answer the user's question clearly and concisely (under 150 words). Features: outline generation, chapter writing with streaming, cover art, SEO tools, dual publish gate, EPUB/PDF/Markdown/DOCX export, audiobook scripts + browser TTS, voice training, character manager, series manager + continuity checker, queue batch builder, translate, manga studio. Data stored locally (IndexedDB). Settings: 7 AI backends (Puter.js no-key default, Groq, Gemini, Cloudflare, OpenRouter, HuggingFace, Cerebras).\n\nQuestion: ${lastUser.text}\n\nAnswer:`,0.3);
           setMessages(prev=>[...prev,{role:"bot",text:"⚡ The direct-to-Axel relay is offline right now, so here's an instant AI answer:\n\n"+(ans||"")+"\n\nIf this didn't help, try the Help tab or rephrase your question."}]);
         }catch(e2){
           setMessages(prev=>[...prev,{role:"bot",text:"❌ Couldn't send to Axel or answer in-app. Please try again later."}]);
@@ -8539,7 +8555,7 @@ function HelpBot(){
       }
     }catch(e){
       try{
-        const ans=await callAI(`You are the in-app help assistant for BookForge AI, a browser-based book writing & publishing tool. Answer the user's question clearly and concisely (under 150 words). Features: outline generation, chapter writing with streaming, cover art, SEO tools, dual publish gate, EPUB/PDF/Markdown/DOCX export, audiobook scripts + browser TTS, voice training, character manager, series manager + continuity checker, queue batch builder, translate, manga studio. Data stored locally (IndexedDB). Settings: 8 AI backends (Puter.js no-key default, Groq, Gemini, Cloudflare, OpenRouter, HuggingFace, Kilo, Cerebras).\n\nQuestion: ${lastUser.text}\n\nAnswer:`,0.3);
+        const ans=await callAI(`You are the in-app help assistant for BookForge AI, a browser-based book writing & publishing tool. Answer the user's question clearly and concisely (under 150 words). Features: outline generation, chapter writing with streaming, cover art, SEO tools, dual publish gate, EPUB/PDF/Markdown/DOCX export, audiobook scripts + browser TTS, voice training, character manager, series manager + continuity checker, queue batch builder, translate, manga studio. Data stored locally (IndexedDB). Settings: 7 AI backends (Puter.js no-key default, Groq, Gemini, Cloudflare, OpenRouter, HuggingFace, Cerebras).\n\nQuestion: ${lastUser.text}\n\nAnswer:`,0.3);
         setMessages(prev=>[...prev,{role:"bot",text:"⚡ The direct-to-Axel relay is unreachable, so here's an instant AI answer:\n\n"+(ans||"")+"\n\nIf this didn't help, try the Help tab or rephrase your question."}]);
       }catch(e2){
         setMessages(prev=>[...prev,{role:"bot",text:"❌ Connection error. Make sure you're online and try again."}]);
@@ -8626,7 +8642,7 @@ function App(){
     // First-run welcome for zero-config backends (Kilo Code)
     if(!localStorage.getItem("bfai_visited")){
       localStorage.setItem("bfai_visited","1");
-      if(getBackend()==="puter"||getBackend()==="kilo")setShowWelcome(true);
+      if(getBackend()==="puter")setShowWelcome(true);
     }
   },[]);
   // Keyboard shortcuts

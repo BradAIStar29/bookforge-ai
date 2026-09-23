@@ -25,25 +25,25 @@ eval(block); // defines BACKEND_EXHAUSTED, callAI, callAIStream, etc.
 
 const test=`let pass=0,fail=0;const t=(l,c)=>{c?pass++:fail++;console.log((c?'✅':'❌')+' '+l)};
 (async()=>{
-  // 1. Groq 429 → Cerebras takes over
+  // 1. Groq 429 → Puter takes over (Kilo is CORS-dead, Cerebras paid trial)
   FAILMAP={groq:{code:"QUOTA",msg:"rate limit"}};
   CALLS.length=0;
   const r1=await callAI("hi");
-  t('groq QUOTA → routed to kilo (zero-config, ahead of puter; cerebras demoted last)',r1==="kilo-result"&&CALLS.join(",")=="groq,kilo");
+  t('groq QUOTA → routed to puter (Kilo disabled)',r1==="puter-result"&&CALLS.join(",")=="groq,puter");
   t('groq marked exhausted',backendExhausted("groq")===true);
 
   // 2. groq still exhausted — next call skips it entirely (no wasted 429)
   CALLS.length=0;
   const r2=await callAI("hi again");
-  t('exhausted backend skipped on next call',CALLS[0]==="kilo"&&CALLS.length===1);
+  t('exhausted backend skipped on next call',CALLS[0]==="puter"&&CALLS.length===1);
 
-  // 3. Chain: cloudflare also QUOTA → kilo (new order; kilo mocked alive pre-scenario-4)
+  // 3. Chain: Cloudflare also QUOTA → Puter (Kilo never auto-selected)
   CONFIG={backend:"groq",groqKey:"gk",cerebrasKey:"ck",cfId:"cfid",cfTok:"cftok",gemKey:"",usage:0};
   BACKEND_EXHAUSTED.clear();
   FAILMAP={groq:{code:"QUOTA"},cloudflare:{code:"QUOTA"}};
   CALLS.length=0;
   const r3=await callAI("hi");
-  t('2-hop chain groq→cloudflare→kilo',r3==="kilo-result"&&CALLS.join(",")=="groq,cloudflare,kilo");
+  t('2-hop chain groq→cloudflare→puter',r3==="puter-result"&&CALLS.join(",")=="groq,cloudflare,puter");
 
   // 4. No backend with capacity → QUOTA surfaces (no hang, no loop)
   BACKEND_EXHAUSTED.clear();
