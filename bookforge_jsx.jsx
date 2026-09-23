@@ -2181,11 +2181,10 @@ function exportLibraryBackup(){
       books:getBooks(),
       series:getSeries(),
       settings:{
-        author_profile:localStorage.getItem("author_profile"),
-        voice_fingerprint:localStorage.getItem("voice_fingerprint"),
         backend:localStorage.getItem("bfai_backend"),
         model:localStorage.getItem("bfai_model"),
         gemini_api_key:localStorage.getItem("gemini_api_key"),
+        bfai_gemini_model:localStorage.getItem("bfai_gemini_model"),
         groq_api_key:localStorage.getItem("groq_api_key"),
         cerebras_api_key:localStorage.getItem("cerebras_api_key"),
         cloudflare_account:localStorage.getItem("cf_account_id"),
