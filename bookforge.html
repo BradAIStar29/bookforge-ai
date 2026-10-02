@@ -3890,6 +3890,38 @@ Manuscript verdict: "PASS" only if overall_human_score>=78. Otherwise "FAIL". Be
     throw { code: "PARSE", msg: "AI returned malformed JSON \u2014 please retry." };
   }
 }
+async function rewriteChapterWithFeedback(ch, score, book) {
+  const tells = [...score?.ai_tells_found || [], ...score?.structural_issues || [], ...score?.voice_issues || []].filter(Boolean).slice(0, 10);
+  const wordCount = ch.content.split(/\s+/).length;
+  const prompt2 = `You are a human novelist doing a hard line-edit. Rewrite the chapter below so it reads unmistakably human. An AI detector flagged these problems:
+
+` + (tells.length ? tells.map((t, i) => `${i + 1}. ${t}`).join("\n") : "AI-sounding prose \u2014 flat rhythm, told emotions, generic details") + (score?.overall_advice ? `
+
+EDITOR NOTE: ${score.overall_advice}` : "") + `
+
+REWRITE RULES \u2014 violating these fails the human-voice gate:
+\u2022 Fix EVERY flagged problem
+\u2022 NEVER state emotions directly \u2014 show them through action, dialogue, specific sensory detail
+\u2022 VARY sentence length violently: fragments. One-word punches. Then a long winding sentence that breathes.
+\u2022 Dialogue is messy \u2014 interruptions, half-said thoughts, people talking past each other
+\u2022 Replace generic details with specific observed ones (brands, textures, exact shades)
+\u2022 No "in that moment", "couldn't help but", "a wave of", no em-dash overuse
+\u2022 Conflict leaves residue \u2014 do NOT resolve cleanly
+\u2022 Keep the SAME plot events, character names, scene order, and dialogue intent
+\u2022 Output ONLY the rewritten chapter text \u2014 no commentary, no markdown, no headers
+
+Book: "${book.title}" (${book.genre})
+Chapter ${ch.number}: "${ch.title}"
+Target: ~${wordCount.toLocaleString()} words (same story, same length).
+
+CHAPTER TEXT:
+${ch.content}`;
+  const content = await callAI(prompt2, 0.85, { task: "creative" });
+  trackUsage();
+  const wc = (content || "").split(/\s+/).length;
+  if (!content || wc < Math.max(250, Math.round(wordCount * 0.5))) throw { code: "SHORT_REWRITE", msg: "Rewrite came back too short \u2014 kept the original chapter." };
+  return content;
+}
 function WritingQualityPanel({ book, onSettings, onApply }) {
   const [chScores, setChScores] = useState(book.writing_quality || {});
   const [manuscript, setManuscript] = useState(book.manuscript_quality || null);
@@ -3903,6 +3935,14 @@ function WritingQualityPanel({ book, onSettings, onApply }) {
   const [owAnalyzing, setOwAnalyzing] = useState(false);
   const [aiResults, setAiResults] = useState(null);
   const [aiScanning, setAiScanning] = useState(false);
+  const [improvePhase, setImprovePhase] = useState("");
+  const [fixingCh, setFixingCh] = useState(null);
+  useEffect(() => {
+    if (book.writing_quality) setChScores(book.writing_quality);
+  }, [book.writing_quality]);
+  useEffect(() => {
+    if (book.manuscript_quality) setManuscript(book.manuscript_quality);
+  }, [book.manuscript_quality]);
   function flashWQ(msg) {
     setWqFlash(msg);
     setTimeout(() => setWqFlash(""), 5e3);
@@ -3910,7 +3950,7 @@ function WritingQualityPanel({ book, onSettings, onApply }) {
   const hasRewrites = Object.values(chScores).some((s) => s.rewrite_examples?.length > 0);
   const totalRewrites = Object.values(chScores).reduce((a, s) => a + (s.rewrite_examples?.length || 0), 0);
   const improveWriting = async () => {
-    if (!hasRewrites || improving) return;
+    if (improving) return;
     if (!hasCredentials()) {
       onSettings();
       return;
@@ -3919,27 +3959,133 @@ function WritingQualityPanel({ book, onSettings, onApply }) {
     setError("");
     const oldScore = manuscript?.overall_human_score || avgHuman || 0;
     try {
-      const chapters = (book.chapters || []).map((ch, idx) => {
-        const s = chScores[idx];
+      let scores = { ...chScores };
+      if (Object.keys(scores).length === 0) {
+        const all = book.chapters || [];
+        const writable = all.filter((c) => c.content);
+        const cap = Math.min(writable.length, 10);
+        for (let k = 0; k < cap; k++) {
+          if (quotaBlocked()) break;
+          const idx = all.indexOf(writable[k]);
+          setImprovePhase(`Analyzing chapter ${idx + 1}\u2026`);
+          try {
+            const res = await analyzeChapterHumanness(writable[k].content, book.title, book.genre, writable[k].title);
+            scores = { ...scores, [idx]: res };
+            setChScores({ ...scores });
+            updateBook(book.id, { writing_quality: scores });
+          } catch (e) {
+            if (e?.code === "QUOTA") break;
+          }
+        }
+      }
+      setImprovePhase("Applying rewrite suggestions\u2026");
+      let changed = false;
+      let chapters = (book.chapters || []).map((ch, idx) => {
+        const s = scores[idx];
         if (!s?.rewrite_examples?.length || !ch.content) return ch;
         let content = ch.content;
         for (const ex of s.rewrite_examples) {
           if (ex.original && ex.rewrite && content.includes(ex.original)) {
             content = content.replace(ex.original, ex.rewrite);
+            changed = true;
           }
         }
-        return { ...ch, content };
+        return content === ch.content ? ch : { ...withVersionSnapshot(ch, "Improve My Writing rewrites"), content };
       });
-      const updatedBook = onApply?.({ chapters }) || { ...book, chapters };
-      const result = await runManuscriptHumanCheck(updatedBook);
-      setManuscript(result);
-      updateBook(book.id, { manuscript_quality: result, chapters, wq_done: true });
-      const delta = result.overall_human_score - oldScore;
-      flashWQ(delta >= 0 ? `Improved! Score: ${oldScore} \u2192 ${result.overall_human_score} (+${delta}) \u{1F680}` : `Re-scored: ${oldScore} \u2192 ${result.overall_human_score}`);
+      let budget = 3;
+      const fixed = [];
+      for (let idx = 0; idx < chapters.length && budget > 0; idx++) {
+        const ch = chapters[idx];
+        const s = scores[idx];
+        if (!ch?.content || !s || s.human_score >= 78) continue;
+        if (quotaBlocked()) break;
+        setImprovePhase(`Rewriting chapter ${idx + 1} (scored ${s.human_score}/100)\u2026`);
+        try {
+          const better = await rewriteChapterWithFeedback(ch, s, book);
+          chapters[idx] = { ...withVersionSnapshot(ch, "AI rewrite (Improve My Writing)"), content: better };
+          fixed.push(idx + 1);
+          budget--;
+          changed = true;
+        } catch (e) {
+          if (e?.code === "QUOTA") break;
+        }
+      }
+      if (changed) {
+        onApply?.({ chapters });
+        updateBook(book.id, { chapters });
+      }
+      if (!quotaBlocked()) {
+        setImprovePhase("Re-checking the manuscript\u2026");
+        const finalBook = getBook(book.id) || book;
+        const result = await runManuscriptHumanCheck(finalBook);
+        setManuscript(result);
+        updateBook(book.id, { manuscript_quality: result, wq_done: true });
+        const delta = result.overall_human_score - oldScore;
+        flashWQ((delta >= 0 ? `Improved! Score: ${oldScore} \u2192 ${result.overall_human_score} (+${delta})` : `Re-scored: ${oldScore} \u2192 ${result.overall_human_score}`) + (fixed.length ? ` \xB7 chapters rewritten: ${fixed.join(", ")}` : "") + " \u{1F680}");
+      } else {
+        flashWQ("Applied what quota allowed \u2014 run again after the daily reset to finish.");
+      }
     } catch (e) {
       setError(errMsg(e));
     } finally {
       setImproving(false);
+      setImprovePhase("");
+    }
+  };
+  const fixChapter = async (idx) => {
+    if (!hasCredentials()) {
+      onSettings();
+      return;
+    }
+    const ch = book.chapters?.[idx];
+    if (!ch?.content) {
+      setError("Write this chapter first.");
+      return;
+    }
+    setFixingCh(idx);
+    setError("");
+    try {
+      const s = chScores[idx];
+      let content = ch.content;
+      if (s?.rewrite_examples?.length) for (const ex of s.rewrite_examples) {
+        if (ex.original && ex.rewrite && content.includes(ex.original)) content = content.replace(ex.original, ex.rewrite);
+      }
+      const weak = !s || s.human_score < 78;
+      let aiRewrote = false;
+      if (weak && !quotaBlocked()) {
+        try {
+          content = await rewriteChapterWithFeedback({ ...ch, content }, s, book);
+          aiRewrote = true;
+        } catch (e) {
+          if (e?.code === "QUOTA") throw e;
+        }
+      }
+      if (content === ch.content) {
+        flashWQ(`Chapter ${idx + 1}: no fix available \u2014 run "Check" to analyze it first.`);
+        return;
+      }
+      const chapters = [...book.chapters || []];
+      chapters[idx] = { ...withVersionSnapshot(ch, "Writing Quality fix"), content };
+      onApply?.({ chapters });
+      updateBook(book.id, { chapters });
+      if (aiRewrote && !quotaBlocked()) {
+        try {
+          const res = await analyzeChapterHumanness(content, book.title, book.genre, ch.title);
+          const fresh = getBook(book.id);
+          const updated = { ...fresh?.writing_quality || chScores, [idx]: res };
+          setChScores({ ...updated });
+          updateBook(book.id, { writing_quality: updated });
+          flashWQ(`\u2705 Chapter ${idx + 1} rewritten \u2014 new score ${res.human_score}/100.`);
+        } catch (e) {
+          flashWQ(`\u2705 Chapter ${idx + 1} rewritten (quota hit before re-score).`);
+        }
+      } else {
+        flashWQ(`\u2705 Chapter ${idx + 1}: rewrite suggestions applied.`);
+      }
+    } catch (e) {
+      setError(errMsg(e));
+    } finally {
+      setFixingCh(null);
     }
   };
   const scoreChapter = async (idx) => {
@@ -4019,6 +4165,7 @@ function WritingQualityPanel({ book, onSettings, onApply }) {
   const scoredCount = Object.keys(chScores).length;
   const avgHuman = scoredCount > 0 ? Math.round(Object.values(chScores).reduce((a, s) => a + (s.human_score || 0), 0) / scoredCount) : null;
   const msPassed = manuscript?.manuscript_verdict === "PASS";
+  const canImprove = writtenCount > 0 && (hasRewrites || !msPassed || scoredCount === 0);
   return /* @__PURE__ */ React.createElement("div", { className: "max-w-3xl mx-auto space-y-5" }, /* @__PURE__ */ React.createElement(Card, null, /* @__PURE__ */ React.createElement("div", { className: "flex items-start justify-between gap-4 mb-2" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("h2", { className: "text-white text-xl font-bold" }, "\u270D\uFE0F Writing Quality Agent"), /* @__PURE__ */ React.createElement("p", { className: "text-white/40 text-sm mt-1" }, "Detects AI writing patterns and flags anything that doesn't read like a real human author. Must pass before publishing."), getBookReadability(book) && (() => {
     const r = getBookReadability(book);
     return React.createElement(
@@ -4043,15 +4190,15 @@ function WritingQualityPanel({ book, onSettings, onApply }) {
         React.createElement("p", { className: "text-white/60 text-xs" }, r.wordCount.toLocaleString() + " words analyzed")
       )
     );
-  })()), avgHuman !== null && /* @__PURE__ */ React.createElement("div", { className: "text-center shrink-0" }, /* @__PURE__ */ React.createElement("div", { className: `text-3xl font-bold ${hc(avgHuman)}` }, avgHuman), /* @__PURE__ */ React.createElement("div", { className: "text-white/60 text-xs" }, "avg human score"))), manuscript && /* @__PURE__ */ React.createElement("div", { className: `rounded-xl border p-4 mt-3 ${msPassed ? "bg-green-500/10 border-green-500/30" : "bg-red-500/10 border-red-500/30"}` }, /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-3" }, /* @__PURE__ */ React.createElement("span", { className: "text-2xl" }, msPassed ? "\u2705" : "\u274C"), /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("p", { className: `font-bold ${msPassed ? "text-green-300" : "text-red-300"}` }, msPassed ? "Manuscript Approved \u2014 Reads Human" : "Manuscript Needs Work"), /* @__PURE__ */ React.createElement("p", { className: "text-white/50 text-sm" }, manuscript.verdict_summary)), /* @__PURE__ */ React.createElement("span", { className: `ml-auto text-2xl font-bold shrink-0 ${hc(manuscript.overall_human_score)}` }, manuscript.overall_human_score, "/100"))), error && /* @__PURE__ */ React.createElement("div", { className: "bg-red-500/20 border border-red-500/30 text-red-300 rounded-xl p-3 mt-3 text-sm" }, error)), /* @__PURE__ */ React.createElement("div", { className: "bg-white/5 border border-white/10 rounded-xl p-1 flex gap-1 flex-wrap" }, [["manuscript", "\u{1F4C4} Manuscript Check"], ["chapters", "\u{1F4D1} Chapter-by-Chapter"], ["overused", "\u{1F50D} Overused Words"], ["aidetect", "\u{1F916} AI Detection"], ["vocab", "\u{1F4DA} Vocabulary"]].map(([id, label]) => /* @__PURE__ */ React.createElement("button", { key: id, onClick: () => setActiveTab(id), className: `flex-1 py-2.5 rounded-lg text-sm font-medium transition-all ${activeTab === id ? "bg-purple-500 text-white" : "text-white/40 hover:text-white"}` }, label))), activeTab === "manuscript" && /* @__PURE__ */ React.createElement("div", { className: "space-y-5" }, /* @__PURE__ */ React.createElement("button", { onClick: runMsCheck, disabled: loadingMs || writtenCount === 0, className: "w-full bg-gradient-to-r from-purple-500 to-pink-500 text-white py-3.5 rounded-xl font-semibold hover:opacity-90 disabled:opacity-50 flex items-center justify-center gap-2" }, loadingMs ? /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement(Spin, null), "Analyzing manuscript\u2026") : manuscript ? "\u{1F504} Re-analyze Manuscript" : "\u{1F50D} Analyze Full Manuscript"), writtenCount === 0 && /* @__PURE__ */ React.createElement("p", { className: "text-white/50 text-sm text-center" }, "Write at least one chapter first."), manuscript && /* @__PURE__ */ React.createElement(React.Fragment, null, wqFlash && /* @__PURE__ */ React.createElement("div", { className: "bg-purple-500/15 border border-purple-500/40 text-purple-200 rounded-xl p-3 text-sm text-center font-medium" }, wqFlash), hasRewrites && /* @__PURE__ */ React.createElement("button", { onClick: improveWriting, disabled: improving || loadingMs, className: "w-full bg-gradient-to-r from-amber-500 to-orange-500 text-white py-4 rounded-xl font-bold text-lg hover:opacity-90 disabled:opacity-50 flex items-center justify-center gap-2 shadow-lg shadow-amber-900/30" }, improving ? /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement(Spin, null), "Applying ", totalRewrites, " rewrites & re-scoring\u2026") : "\u{1F680} Improve My Writing \u2014 Apply All Rewrites"), !hasRewrites && manuscript?.manuscript_verdict !== "PASS" && /* @__PURE__ */ React.createElement("p", { className: "text-white/60 text-xs text-center bg-white/5 rounded-xl p-3" }, "\u{1F4A1} Run Chapter-by-Chapter analysis to get specific rewrite suggestions you can auto-apply here."), /* @__PURE__ */ React.createElement(Card, null, /* @__PURE__ */ React.createElement("h3", { className: "text-white font-semibold mb-4" }, "Manuscript Assessment"), /* @__PURE__ */ React.createElement("div", { className: "space-y-4" }, [
+  })()), avgHuman !== null && /* @__PURE__ */ React.createElement("div", { className: "text-center shrink-0" }, /* @__PURE__ */ React.createElement("div", { className: `text-3xl font-bold ${hc(avgHuman)}` }, avgHuman), /* @__PURE__ */ React.createElement("div", { className: "text-white/60 text-xs" }, "avg human score"))), manuscript && /* @__PURE__ */ React.createElement("div", { className: `rounded-xl border p-4 mt-3 ${msPassed ? "bg-green-500/10 border-green-500/30" : "bg-red-500/10 border-red-500/30"}` }, /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-3" }, /* @__PURE__ */ React.createElement("span", { className: "text-2xl" }, msPassed ? "\u2705" : "\u274C"), /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("p", { className: `font-bold ${msPassed ? "text-green-300" : "text-red-300"}` }, msPassed ? "Manuscript Approved \u2014 Reads Human" : "Manuscript Needs Work"), /* @__PURE__ */ React.createElement("p", { className: "text-white/50 text-sm" }, manuscript.verdict_summary)), /* @__PURE__ */ React.createElement("span", { className: `ml-auto text-2xl font-bold shrink-0 ${hc(manuscript.overall_human_score)}` }, manuscript.overall_human_score, "/100"))), error && /* @__PURE__ */ React.createElement("div", { className: "bg-red-500/20 border border-red-500/30 text-red-300 rounded-xl p-3 mt-3 text-sm" }, error)), /* @__PURE__ */ React.createElement("div", { className: "bg-white/5 border border-white/10 rounded-xl p-1 flex gap-1 flex-wrap" }, [["manuscript", "\u{1F4C4} Manuscript Check"], ["chapters", "\u{1F4D1} Chapter-by-Chapter"], ["overused", "\u{1F50D} Overused Words"], ["aidetect", "\u{1F916} AI Detection"], ["vocab", "\u{1F4DA} Vocabulary"]].map(([id, label]) => /* @__PURE__ */ React.createElement("button", { key: id, onClick: () => setActiveTab(id), className: `flex-1 py-2.5 rounded-lg text-sm font-medium transition-all ${activeTab === id ? "bg-purple-500 text-white" : "text-white/40 hover:text-white"}` }, label))), activeTab === "manuscript" && /* @__PURE__ */ React.createElement("div", { className: "space-y-5" }, /* @__PURE__ */ React.createElement("button", { onClick: runMsCheck, disabled: loadingMs || writtenCount === 0, className: "w-full bg-gradient-to-r from-purple-500 to-pink-500 text-white py-3.5 rounded-xl font-semibold hover:opacity-90 disabled:opacity-50 flex items-center justify-center gap-2" }, loadingMs ? /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement(Spin, null), "Analyzing manuscript\u2026") : manuscript ? "\u{1F504} Re-analyze Manuscript" : "\u{1F50D} Analyze Full Manuscript"), writtenCount === 0 && /* @__PURE__ */ React.createElement("p", { className: "text-white/50 text-sm text-center" }, "Write at least one chapter first."), manuscript && /* @__PURE__ */ React.createElement(React.Fragment, null, wqFlash && /* @__PURE__ */ React.createElement("div", { className: "bg-purple-500/15 border border-purple-500/40 text-purple-200 rounded-xl p-3 text-sm text-center font-medium" }, wqFlash), canImprove && /* @__PURE__ */ React.createElement("button", { onClick: improveWriting, disabled: improving || loadingMs, className: "w-full bg-gradient-to-r from-amber-500 to-orange-500 text-white py-4 rounded-xl font-bold text-lg hover:opacity-90 disabled:opacity-50 flex items-center justify-center gap-2 shadow-lg shadow-amber-900/30" }, improving ? /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement(Spin, null), improvePhase || "Improving\u2026") : hasRewrites ? `\u{1F680} Improve My Writing \u2014 Apply ${totalRewrites} Fix${totalRewrites === 1 ? "" : "es"} & Re-score` : "\u{1F680} Improve My Writing \u2014 Analyze & Fix"), improvePhase && improving && /* @__PURE__ */ React.createElement("p", { className: "text-amber-300/70 text-xs text-center" }, improvePhase), manuscript?.manuscript_verdict !== "PASS" && /* @__PURE__ */ React.createElement("p", { className: "text-white/60 text-xs text-center bg-white/5 rounded-xl p-3" }, "\u{1F4A1} One click: analyzes your chapters, applies every AI-detected rewrite, rewrites the weakest prose below the 78 gate (3 per pass), and re-scores the manuscript."), /* @__PURE__ */ React.createElement(Card, null, /* @__PURE__ */ React.createElement("h3", { className: "text-white font-semibold mb-4" }, "Manuscript Assessment"), /* @__PURE__ */ React.createElement("div", { className: "space-y-4" }, [
     { label: "Voice Consistency", val: manuscript.voice_consistency },
     { label: "Dialogue Quality", val: manuscript.dialogue_quality },
     { label: "Prose Variety & Rhythm", val: manuscript.prose_variety },
     { label: "Emotional Authenticity", val: manuscript.emotional_authenticity }
-  ].map((d, i) => /* @__PURE__ */ React.createElement("div", { key: i }, /* @__PURE__ */ React.createElement("p", { className: "text-white/50 text-xs uppercase tracking-wider mb-1" }, d.label), /* @__PURE__ */ React.createElement("p", { className: "text-white/75 text-sm leading-relaxed" }, d.val))))), manuscript.top_ai_patterns?.length > 0 && /* @__PURE__ */ React.createElement(Card, null, /* @__PURE__ */ React.createElement("h3", { className: "text-white font-semibold mb-3" }, "\u{1F916} Top AI Patterns Found"), /* @__PURE__ */ React.createElement("ul", { className: "space-y-2" }, manuscript.top_ai_patterns.map((p, i) => /* @__PURE__ */ React.createElement("li", { key: i, className: "text-red-300/80 text-sm flex gap-2" }, /* @__PURE__ */ React.createElement("span", { className: "text-red-400 shrink-0" }, "\u26A0"), p)))), manuscript.priority_fixes?.length > 0 && /* @__PURE__ */ React.createElement(Card, null, /* @__PURE__ */ React.createElement("h3", { className: "text-white font-semibold mb-3" }, "\u{1F527} Priority Fixes"), /* @__PURE__ */ React.createElement("div", { className: "space-y-2" }, manuscript.priority_fixes.map((f, i) => /* @__PURE__ */ React.createElement("div", { key: i, className: "flex gap-3 items-start" }, /* @__PURE__ */ React.createElement("span", { className: "w-6 h-6 bg-purple-500/30 text-purple-300 rounded-full flex items-center justify-center text-xs font-bold shrink-0 mt-0.5" }, i + 1), /* @__PURE__ */ React.createElement("p", { className: "text-white/70 text-sm" }, f))))))), activeTab === "chapters" && /* @__PURE__ */ React.createElement("div", { className: "space-y-4" }, /* @__PURE__ */ React.createElement("div", { className: "flex items-center justify-between" }, /* @__PURE__ */ React.createElement("p", { className: "text-white/40 text-sm" }, scoredCount, "/", writtenCount, " chapters analyzed"), /* @__PURE__ */ React.createElement("button", { onClick: scoreAll, disabled: loadingCh !== null || writtenCount === 0, className: "text-xs bg-purple-500/20 text-purple-300 border border-purple-500/30 px-4 py-2 rounded-lg hover:bg-purple-500/30 disabled:opacity-40 flex items-center gap-1.5" }, loadingCh !== null ? /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement(Spin, { size: "h-3 w-3" }), "Analyzing\u2026") : "Analyze All Chapters")), (book.chapters || []).map((ch, idx) => {
+  ].map((d, i) => /* @__PURE__ */ React.createElement("div", { key: i }, /* @__PURE__ */ React.createElement("p", { className: "text-white/50 text-xs uppercase tracking-wider mb-1" }, d.label), /* @__PURE__ */ React.createElement("p", { className: "text-white/75 text-sm leading-relaxed" }, d.val))))), manuscript.top_ai_patterns?.length > 0 && /* @__PURE__ */ React.createElement(Card, null, /* @__PURE__ */ React.createElement("h3", { className: "text-white font-semibold mb-3" }, "\u{1F916} Top AI Patterns Found"), /* @__PURE__ */ React.createElement("ul", { className: "space-y-2" }, manuscript.top_ai_patterns.map((p, i) => /* @__PURE__ */ React.createElement("li", { key: i, className: "text-red-300/80 text-sm flex gap-2" }, /* @__PURE__ */ React.createElement("span", { className: "text-red-400 shrink-0" }, "\u26A0"), p)))), manuscript.priority_fixes?.length > 0 && /* @__PURE__ */ React.createElement(Card, null, /* @__PURE__ */ React.createElement("h3", { className: "text-white font-semibold mb-3" }, "\u{1F527} Priority Fixes"), /* @__PURE__ */ React.createElement("div", { className: "space-y-2" }, manuscript.priority_fixes.map((f, i) => /* @__PURE__ */ React.createElement("div", { key: i, className: "flex gap-3 items-start" }, /* @__PURE__ */ React.createElement("span", { className: "w-6 h-6 bg-purple-500/30 text-purple-300 rounded-full flex items-center justify-center text-xs font-bold shrink-0 mt-0.5" }, i + 1), /* @__PURE__ */ React.createElement("p", { className: "text-white/70 text-sm" }, f))))))), activeTab === "chapters" && /* @__PURE__ */ React.createElement("div", { className: "space-y-4" }, /* @__PURE__ */ React.createElement("div", { className: "flex items-center justify-between" }, /* @__PURE__ */ React.createElement("p", { className: "text-white/40 text-sm" }, scoredCount, "/", writtenCount, " chapters analyzed"), /* @__PURE__ */ React.createElement("button", { onClick: scoreAll, disabled: loadingCh !== null || writtenCount === 0, className: "text-xs bg-purple-500/20 text-purple-300 border border-purple-500/30 px-4 py-2 rounded-lg hover:bg-purple-500/30 disabled:opacity-40 flex items-center gap-1.5" }, loadingCh !== null ? /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement(Spin, { size: "h-3 w-3" }), "Analyzing\u2026") : "Analyze All Chapters")), /* @__PURE__ */ React.createElement("button", { onClick: improveWriting, disabled: improving || loadingCh !== null, className: "w-full bg-gradient-to-r from-amber-500 to-orange-500 text-white py-3.5 rounded-xl font-bold hover:opacity-90 disabled:opacity-50 flex items-center justify-center gap-2" }, improving ? /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement(Spin, null), improvePhase || "Improving\u2026") : hasRewrites ? `\u{1F680} Improve My Writing (${totalRewrites} fix${totalRewrites === 1 ? "" : "es"})` : "\u{1F680} Improve My Writing \u2014 Analyze & Fix"), (book.chapters || []).map((ch, idx) => {
     const s = chScores[idx];
     const isLoading = loadingCh === idx;
-    return /* @__PURE__ */ React.createElement("div", { key: idx, className: `bg-white/5 border rounded-2xl p-5 ${s ? hcBg(s.human_score) : "border-white/10"}` }, /* @__PURE__ */ React.createElement("div", { className: "flex items-start justify-between gap-4 mb-3" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("p", { className: "text-white font-semibold text-sm" }, "Ch. ", ch.number, ": ", ch.title), s && /* @__PURE__ */ React.createElement("p", { className: `text-xs font-medium mt-0.5 ${hc(s.human_score)}` }, s.verdict_label || s.verdict, " \xB7 ", s.human_score, "/100")), /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-2 shrink-0" }, s && /* @__PURE__ */ React.createElement("span", { className: `text-xl font-bold ${hc(s.human_score)}` }, s.human_score), /* @__PURE__ */ React.createElement("button", { onClick: () => scoreChapter(idx), disabled: isLoading || !ch.content, className: "text-xs bg-purple-500/20 text-purple-300 border border-purple-500/30 px-3 py-1.5 rounded-lg hover:bg-purple-500/30 disabled:opacity-40 flex items-center gap-1.5" }, isLoading ? /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement(Spin, { size: "h-3 w-3" }), "\u2026") : s ? "Re-check" : "Check"))), s && /* @__PURE__ */ React.createElement(React.Fragment, null, s.ai_tells_found?.length > 0 && /* @__PURE__ */ React.createElement("div", { className: "mb-3" }, /* @__PURE__ */ React.createElement("p", { className: "text-red-300/60 text-xs uppercase tracking-wider mb-2" }, "AI Tells Detected"), /* @__PURE__ */ React.createElement("div", { className: "space-y-1" }, s.ai_tells_found.slice(0, 4).map((t, i) => /* @__PURE__ */ React.createElement("p", { key: i, className: "text-red-300/70 text-xs flex gap-2" }, /* @__PURE__ */ React.createElement("span", null, "\u26A0"), /* @__PURE__ */ React.createElement("span", { className: "italic" }, '"', t, '"'))))), s.rewrite_examples?.length > 0 && /* @__PURE__ */ React.createElement("div", { className: "mb-3 space-y-3" }, /* @__PURE__ */ React.createElement("p", { className: "text-white/40 text-xs uppercase tracking-wider" }, "Rewrite Examples"), s.rewrite_examples.slice(0, 2).map((ex, i) => /* @__PURE__ */ React.createElement("div", { key: i, className: "bg-black/30 rounded-xl p-3" }, /* @__PURE__ */ React.createElement("div", { className: "flex gap-2 mb-2" }, /* @__PURE__ */ React.createElement("span", { className: "text-red-400 text-xs shrink-0 mt-0.5" }, "AI:"), /* @__PURE__ */ React.createElement("p", { className: "text-red-300/70 text-xs italic" }, '"', ex.original, '"')), /* @__PURE__ */ React.createElement("div", { className: "flex gap-2 mb-1" }, /* @__PURE__ */ React.createElement("span", { className: "text-green-400 text-xs shrink-0 mt-0.5" }, "Human:"), /* @__PURE__ */ React.createElement("p", { className: "text-green-300/80 text-xs italic" }, '"', ex.rewrite, '"')), ex.why && /* @__PURE__ */ React.createElement("p", { className: "text-white/50 text-xs ml-12" }, ex.why)))), s.overall_advice && /* @__PURE__ */ React.createElement("p", { className: "text-white/40 text-xs italic bg-white/5 rounded-lg p-3" }, "\u{1F4A1} ", s.overall_advice), s.strengths?.length > 0 && /* @__PURE__ */ React.createElement("div", { className: "mt-2 space-y-1" }, s.strengths.map((st, i) => /* @__PURE__ */ React.createElement("p", { key: i, className: "text-green-400/60 text-xs flex gap-1" }, /* @__PURE__ */ React.createElement("span", null, "\u2713"), st)))), !ch.content && /* @__PURE__ */ React.createElement("p", { className: "text-white/50 text-xs" }, "Write this chapter first"));
+    return /* @__PURE__ */ React.createElement("div", { key: idx, className: `bg-white/5 border rounded-2xl p-5 ${s ? hcBg(s.human_score) : "border-white/10"}` }, /* @__PURE__ */ React.createElement("div", { className: "flex items-start justify-between gap-4 mb-3" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("p", { className: "text-white font-semibold text-sm" }, "Ch. ", ch.number, ": ", ch.title), s && /* @__PURE__ */ React.createElement("p", { className: `text-xs font-medium mt-0.5 ${hc(s.human_score)}` }, s.verdict_label || s.verdict, " \xB7 ", s.human_score, "/100")), /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-2 shrink-0" }, s && /* @__PURE__ */ React.createElement("span", { className: `text-xl font-bold ${hc(s.human_score)}` }, s.human_score), /* @__PURE__ */ React.createElement("button", { onClick: () => scoreChapter(idx), disabled: isLoading || !ch.content, className: "text-xs bg-purple-500/20 text-purple-300 border border-purple-500/30 px-3 py-1.5 rounded-lg hover:bg-purple-500/30 disabled:opacity-40 flex items-center gap-1.5" }, isLoading ? /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement(Spin, { size: "h-3 w-3" }), "\u2026") : s ? "Re-check" : "Check"), /* @__PURE__ */ React.createElement("button", { onClick: () => fixChapter(idx), disabled: fixingCh !== null || !ch.content, title: "Apply this chapter's rewrites, AI-rewrite weak prose, re-score", className: "text-xs bg-amber-500/20 text-amber-300 border border-amber-500/30 px-3 py-1.5 rounded-lg hover:bg-amber-500/30 disabled:opacity-40 flex items-center gap-1.5" }, fixingCh === idx ? /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement(Spin, { size: "h-3 w-3" }), "Fixing\u2026") : "\u{1F527} Fix"))), s && /* @__PURE__ */ React.createElement(React.Fragment, null, s.ai_tells_found?.length > 0 && /* @__PURE__ */ React.createElement("div", { className: "mb-3" }, /* @__PURE__ */ React.createElement("p", { className: "text-red-300/60 text-xs uppercase tracking-wider mb-2" }, "AI Tells Detected"), /* @__PURE__ */ React.createElement("div", { className: "space-y-1" }, s.ai_tells_found.slice(0, 4).map((t, i) => /* @__PURE__ */ React.createElement("p", { key: i, className: "text-red-300/70 text-xs flex gap-2" }, /* @__PURE__ */ React.createElement("span", null, "\u26A0"), /* @__PURE__ */ React.createElement("span", { className: "italic" }, '"', t, '"'))))), s.rewrite_examples?.length > 0 && /* @__PURE__ */ React.createElement("div", { className: "mb-3 space-y-3" }, /* @__PURE__ */ React.createElement("p", { className: "text-white/40 text-xs uppercase tracking-wider" }, "Rewrite Examples"), s.rewrite_examples.slice(0, 2).map((ex, i) => /* @__PURE__ */ React.createElement("div", { key: i, className: "bg-black/30 rounded-xl p-3" }, /* @__PURE__ */ React.createElement("div", { className: "flex gap-2 mb-2" }, /* @__PURE__ */ React.createElement("span", { className: "text-red-400 text-xs shrink-0 mt-0.5" }, "AI:"), /* @__PURE__ */ React.createElement("p", { className: "text-red-300/70 text-xs italic" }, '"', ex.original, '"')), /* @__PURE__ */ React.createElement("div", { className: "flex gap-2 mb-1" }, /* @__PURE__ */ React.createElement("span", { className: "text-green-400 text-xs shrink-0 mt-0.5" }, "Human:"), /* @__PURE__ */ React.createElement("p", { className: "text-green-300/80 text-xs italic" }, '"', ex.rewrite, '"')), ex.why && /* @__PURE__ */ React.createElement("p", { className: "text-white/50 text-xs ml-12" }, ex.why)))), s.overall_advice && /* @__PURE__ */ React.createElement("p", { className: "text-white/40 text-xs italic bg-white/5 rounded-lg p-3" }, "\u{1F4A1} ", s.overall_advice), s.strengths?.length > 0 && /* @__PURE__ */ React.createElement("div", { className: "mt-2 space-y-1" }, s.strengths.map((st, i) => /* @__PURE__ */ React.createElement("p", { key: i, className: "text-green-400/60 text-xs flex gap-1" }, /* @__PURE__ */ React.createElement("span", null, "\u2713"), st)))), !ch.content && /* @__PURE__ */ React.createElement("p", { className: "text-white/50 text-xs" }, "Write this chapter first"));
   })), activeTab === "overused" && (() => {
     const run = () => {
       setOwAnalyzing(true);

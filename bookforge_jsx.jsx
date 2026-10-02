@@ -3918,6 +3918,32 @@ async function runManuscriptHumanCheck(book){
   try{return JSON.parse(match[0]);}catch(pe){throw{code:"PARSE",msg:"AI returned malformed JSON — please retry."};}
 }
 
+// Targeted AI rewrite of a weak chapter using its Writing Quality analysis results.
+// Keeps plot/characters/scene order; rewrites prose to pass the human-voice gate.
+async function rewriteChapterWithFeedback(ch,score,book){
+  const tells=[...(score?.ai_tells_found||[]),...(score?.structural_issues||[]),...(score?.voice_issues||[])].filter(Boolean).slice(0,10);
+  const wordCount=ch.content.split(/\s+/).length;
+  const prompt=`You are a human novelist doing a hard line-edit. Rewrite the chapter below so it reads unmistakably human. An AI detector flagged these problems:\n\n` +
+    (tells.length?tells.map((t,i)=>`${i+1}. ${t}`).join("\n"):"AI-sounding prose — flat rhythm, told emotions, generic details") +
+    (score?.overall_advice?`\n\nEDITOR NOTE: ${score.overall_advice}`:"") +
+    `\n\nREWRITE RULES — violating these fails the human-voice gate:\n` +
+    `• Fix EVERY flagged problem\n` +
+    `• NEVER state emotions directly — show them through action, dialogue, specific sensory detail\n` +
+    `• VARY sentence length violently: fragments. One-word punches. Then a long winding sentence that breathes.\n` +
+    `• Dialogue is messy — interruptions, half-said thoughts, people talking past each other\n` +
+    `• Replace generic details with specific observed ones (brands, textures, exact shades)\n` +
+    `• No "in that moment", "couldn't help but", "a wave of", no em-dash overuse\n` +
+    `• Conflict leaves residue — do NOT resolve cleanly\n` +
+    `• Keep the SAME plot events, character names, scene order, and dialogue intent\n` +
+    `• Output ONLY the rewritten chapter text — no commentary, no markdown, no headers\n\n` +
+    `Book: "${book.title}" (${book.genre})\nChapter ${ch.number}: "${ch.title}"\nTarget: ~${wordCount.toLocaleString()} words (same story, same length).\n\nCHAPTER TEXT:\n${ch.content}`;
+  const content=await callAI(prompt,0.85,{task:"creative"});
+  trackUsage();
+  const wc=(content||"").split(/\s+/).length;
+  if(!content||wc<Math.max(250,Math.round(wordCount*0.5)))throw{code:"SHORT_REWRITE",msg:"Rewrite came back too short — kept the original chapter."};
+  return content;
+}
+
 function WritingQualityPanel({book,onSettings,onApply}){
   const [chScores, setChScores] = useState(book.writing_quality||{});
   const [manuscript, setManuscript] = useState(book.manuscript_quality||null);
@@ -3931,6 +3957,11 @@ function WritingQualityPanel({book,onSettings,onApply}){
   const [owAnalyzing, setOwAnalyzing] = useState(false);
   const [aiResults, setAiResults] = useState(null);
   const [aiScanning, setAiScanning] = useState(false);
+  const [improvePhase, setImprovePhase] = useState("");
+  const [fixingCh, setFixingCh] = useState(null);
+  // Keep the panel in sync with results written elsewhere (auto-build, queue, Improve buttons)
+  useEffect(()=>{ if(book.writing_quality)setChScores(book.writing_quality); },[book.writing_quality]);
+  useEffect(()=>{ if(book.manuscript_quality)setManuscript(book.manuscript_quality); },[book.manuscript_quality]);
 
   function flashWQ(msg){setWqFlash(msg);setTimeout(()=>setWqFlash(""),5000);}
 
@@ -3938,33 +3969,117 @@ function WritingQualityPanel({book,onSettings,onApply}){
   const hasRewrites = Object.values(chScores).some(s=>s.rewrite_examples?.length>0);
   const totalRewrites = Object.values(chScores).reduce((a,s)=>a+(s.rewrite_examples?.length||0),0);
 
-  // Apply all rewrite_examples across all scored chapters, then re-run manuscript check
+  // One-click improvement loop: ensure analysis → apply rewrite quotes → AI-rewrite the
+  // weakest chapters → re-run the manuscript check. Quota-guarded at every phase.
   const improveWriting = async()=>{
-    if(!hasRewrites||improving)return;
+    if(improving)return;
     if(!hasCredentials()){onSettings();return;}
     setImproving(true);setError("");
     const oldScore=manuscript?.overall_human_score||avgHuman||0;
     try{
-      const chapters=(book.chapters||[]).map((ch,idx)=>{
-        const s=chScores[idx];
+      // Phase 1: if no chapter analysis exists yet, generate it (cap 10 chapters/click)
+      let scores={...chScores};
+      if(Object.keys(scores).length===0){
+        const all=book.chapters||[];
+        const writable=all.filter(c=>c.content);
+        const cap=Math.min(writable.length,10);
+        for(let k=0;k<cap;k++){
+          if(quotaBlocked())break;
+          const idx=all.indexOf(writable[k]);
+          setImprovePhase(`Analyzing chapter ${idx+1}…`);
+          try{
+            const res=await analyzeChapterHumanness(writable[k].content,book.title,book.genre,writable[k].title);
+            scores={...scores,[idx]:res};
+            setChScores({...scores});
+            updateBook(book.id,{writing_quality:scores});
+          }catch(e){if(e?.code==="QUOTA")break;}
+        }
+      }
+      // Phase 2: apply every exact-quote rewrite the analysis produced
+      setImprovePhase("Applying rewrite suggestions…");
+      let changed=false;
+      let chapters=(book.chapters||[]).map((ch,idx)=>{
+        const s=scores[idx];
         if(!s?.rewrite_examples?.length||!ch.content)return ch;
         let content=ch.content;
         for(const ex of s.rewrite_examples){
           if(ex.original&&ex.rewrite&&content.includes(ex.original)){
-            content=content.replace(ex.original,ex.rewrite);
+            content=content.replace(ex.original,ex.rewrite);changed=true;
           }
         }
-        return {...ch,content};
+        return content===ch.content?ch:{...withVersionSnapshot(ch,"Improve My Writing rewrites"),content};
       });
-      const updatedBook=onApply?.({chapters})||{...book,chapters};
-      // Re-run manuscript check against the improved text
-      const result=await runManuscriptHumanCheck(updatedBook);
-      setManuscript(result);
-      updateBook(book.id,{manuscript_quality:result,chapters,wq_done:true});
-      const delta=result.overall_human_score-oldScore;
-      flashWQ(delta>=0?`Improved! Score: ${oldScore} → ${result.overall_human_score} (+${delta}) 🚀`:`Re-scored: ${oldScore} → ${result.overall_human_score}`);
+      // Phase 3: AI-rewrite chapters still below the 78 gate (3 per click)
+      let budget=3;const fixed=[];
+      for(let idx=0;idx<chapters.length&&budget>0;idx++){
+        const ch=chapters[idx];
+        const s=scores[idx];
+        if(!ch?.content||!s||s.human_score>=78)continue;
+        if(quotaBlocked())break;
+        setImprovePhase(`Rewriting chapter ${idx+1} (scored ${s.human_score}/100)…`);
+        try{
+          const better=await rewriteChapterWithFeedback(ch,s,book);
+          chapters[idx]={...withVersionSnapshot(ch,"AI rewrite (Improve My Writing)"),content:better};
+          fixed.push(idx+1);budget--;changed=true;
+        }catch(e){if(e?.code==="QUOTA")break;}
+      }
+      if(changed){
+        onApply?.({chapters});
+        updateBook(book.id,{chapters});
+      }
+      // Phase 4: re-run the manuscript check and report the delta
+      if(!quotaBlocked()){
+        setImprovePhase("Re-checking the manuscript…");
+        const finalBook=getBook(book.id)||book;
+        const result=await runManuscriptHumanCheck(finalBook);
+        setManuscript(result);
+        updateBook(book.id,{manuscript_quality:result,wq_done:true});
+        const delta=result.overall_human_score-oldScore;
+        flashWQ((delta>=0?`Improved! Score: ${oldScore} → ${result.overall_human_score} (+${delta})`:`Re-scored: ${oldScore} → ${result.overall_human_score}`)+(fixed.length?` · chapters rewritten: ${fixed.join(", ")}`:"")+" 🚀");
+      }else{
+        flashWQ("Applied what quota allowed — run again after the daily reset to finish.");
+      }
     }catch(e){setError(errMsg(e));}
-    finally{setImproving(false);}
+    finally{setImproving(false);setImprovePhase("");}
+  };
+
+  // Per-chapter fix: apply that chapter's rewrites, AI-rewrite if weak, then re-score it
+  const fixChapter=async(idx)=>{
+    if(!hasCredentials()){onSettings();return;}
+    const ch=book.chapters?.[idx];
+    if(!ch?.content){setError("Write this chapter first.");return;}
+    setFixingCh(idx);setError("");
+    try{
+      const s=chScores[idx];
+      let content=ch.content;
+      if(s?.rewrite_examples?.length)for(const ex of s.rewrite_examples){
+        if(ex.original&&ex.rewrite&&content.includes(ex.original))content=content.replace(ex.original,ex.rewrite);
+      }
+      const weak=!s||s.human_score<78;
+      let aiRewrote=false;
+      if(weak&&!quotaBlocked()){
+        try{content=await rewriteChapterWithFeedback({...ch,content},s,book);aiRewrote=true;}
+        catch(e){if(e?.code==="QUOTA")throw e;}
+      }
+      if(content===ch.content){flashWQ(`Chapter ${idx+1}: no fix available — run "Check" to analyze it first.`);return;}
+      const chapters=[...(book.chapters||[])];
+      chapters[idx]={...withVersionSnapshot(ch,"Writing Quality fix"),content};
+      onApply?.({chapters});
+      updateBook(book.id,{chapters});
+      if(aiRewrote&&!quotaBlocked()){
+        try{
+          const res=await analyzeChapterHumanness(content,book.title,book.genre,ch.title);
+          const fresh=getBook(book.id);
+          const updated={...(fresh?.writing_quality||chScores),[idx]:res};
+          setChScores({...updated});
+          updateBook(book.id,{writing_quality:updated});
+          flashWQ(`✅ Chapter ${idx+1} rewritten — new score ${res.human_score}/100.`);
+        }catch(e){flashWQ(`✅ Chapter ${idx+1} rewritten (quota hit before re-score).`);}
+      }else{
+        flashWQ(`✅ Chapter ${idx+1}: rewrite suggestions applied.`);
+      }
+    }catch(e){setError(errMsg(e));}
+    finally{setFixingCh(null);}
   };
 
   const scoreChapter = async(idx) => {
@@ -4020,6 +4135,7 @@ function WritingQualityPanel({book,onSettings,onApply}){
   const scoredCount = Object.keys(chScores).length;
   const avgHuman = scoredCount > 0 ? Math.round(Object.values(chScores).reduce((a,s)=>a+(s.human_score||0),0)/scoredCount) : null;
   const msPassed = manuscript?.manuscript_verdict === "PASS";
+  const canImprove = writtenCount>0 && (hasRewrites || !msPassed || scoredCount===0);
 
   return(
     <div className="max-w-3xl mx-auto space-y-5">
@@ -4077,10 +4193,11 @@ function WritingQualityPanel({book,onSettings,onApply}){
           {writtenCount===0&&<p className="text-white/50 text-sm text-center">Write at least one chapter first.</p>}
           {manuscript&&(<>
             {wqFlash&&<div className="bg-purple-500/15 border border-purple-500/40 text-purple-200 rounded-xl p-3 text-sm text-center font-medium">{wqFlash}</div>}
-            {hasRewrites&&<button onClick={improveWriting} disabled={improving||loadingMs} className="w-full bg-gradient-to-r from-amber-500 to-orange-500 text-white py-4 rounded-xl font-bold text-lg hover:opacity-90 disabled:opacity-50 flex items-center justify-center gap-2 shadow-lg shadow-amber-900/30">
-              {improving?<><Spin/>Applying {totalRewrites} rewrites & re-scoring…</>:"🚀 Improve My Writing — Apply All Rewrites"}
+            {canImprove&&<button onClick={improveWriting} disabled={improving||loadingMs} className="w-full bg-gradient-to-r from-amber-500 to-orange-500 text-white py-4 rounded-xl font-bold text-lg hover:opacity-90 disabled:opacity-50 flex items-center justify-center gap-2 shadow-lg shadow-amber-900/30">
+              {improving?<><Spin/>{improvePhase||"Improving…"}</>:(hasRewrites?`🚀 Improve My Writing — Apply ${totalRewrites} Fix${totalRewrites===1?"":"es"} & Re-score`:"🚀 Improve My Writing — Analyze & Fix")}
             </button>}
-            {!hasRewrites&&manuscript?.manuscript_verdict!=="PASS"&&<p className="text-white/60 text-xs text-center bg-white/5 rounded-xl p-3">💡 Run Chapter-by-Chapter analysis to get specific rewrite suggestions you can auto-apply here.</p>}
+            {improvePhase&&improving&&<p className="text-amber-300/70 text-xs text-center">{improvePhase}</p>}
+            {manuscript?.manuscript_verdict!=="PASS"&&<p className="text-white/60 text-xs text-center bg-white/5 rounded-xl p-3">💡 One click: analyzes your chapters, applies every AI-detected rewrite, rewrites the weakest prose below the 78 gate (3 per pass), and re-scores the manuscript.</p>}
             {/* Dimension breakdown */}
             <Card>
               <h3 className="text-white font-semibold mb-4">Manuscript Assessment</h3>
@@ -4116,6 +4233,9 @@ function WritingQualityPanel({book,onSettings,onApply}){
             <p className="text-white/40 text-sm">{scoredCount}/{writtenCount} chapters analyzed</p>
             <button onClick={scoreAll} disabled={loadingCh!==null||writtenCount===0} className="text-xs bg-purple-500/20 text-purple-300 border border-purple-500/30 px-4 py-2 rounded-lg hover:bg-purple-500/30 disabled:opacity-40 flex items-center gap-1.5">{loadingCh!==null?<><Spin size="h-3 w-3"/>Analyzing…</>:"Analyze All Chapters"}</button>
           </div>
+          <button onClick={improveWriting} disabled={improving||loadingCh!==null} className="w-full bg-gradient-to-r from-amber-500 to-orange-500 text-white py-3.5 rounded-xl font-bold hover:opacity-90 disabled:opacity-50 flex items-center justify-center gap-2">
+            {improving?<><Spin/>{improvePhase||"Improving…"}</>:(hasRewrites?`🚀 Improve My Writing (${totalRewrites} fix${totalRewrites===1?"":"es"})`:"🚀 Improve My Writing — Analyze & Fix")}
+          </button>
           {(book.chapters||[]).map((ch,idx)=>{
             const s = chScores[idx];
             const isLoading = loadingCh===idx;
@@ -4129,6 +4249,7 @@ function WritingQualityPanel({book,onSettings,onApply}){
                   <div className="flex items-center gap-2 shrink-0">
                     {s&&<span className={`text-xl font-bold ${hc(s.human_score)}`}>{s.human_score}</span>}
                     <button onClick={()=>scoreChapter(idx)} disabled={isLoading||!ch.content} className="text-xs bg-purple-500/20 text-purple-300 border border-purple-500/30 px-3 py-1.5 rounded-lg hover:bg-purple-500/30 disabled:opacity-40 flex items-center gap-1.5">{isLoading?<><Spin size="h-3 w-3"/>…</>:s?"Re-check":"Check"}</button>
+                    <button onClick={()=>fixChapter(idx)} disabled={fixingCh!==null||!ch.content} title="Apply this chapter's rewrites, AI-rewrite weak prose, re-score" className="text-xs bg-amber-500/20 text-amber-300 border border-amber-500/30 px-3 py-1.5 rounded-lg hover:bg-amber-500/30 disabled:opacity-40 flex items-center gap-1.5">{fixingCh===idx?<><Spin size="h-3 w-3"/>Fixing…</>:"🔧 Fix"}</button>
                   </div>
                 </div>
                 {s&&(<>
