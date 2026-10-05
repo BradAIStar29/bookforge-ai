@@ -3890,6 +3890,13 @@ Manuscript verdict: "PASS" only if overall_human_score>=78. Otherwise "FAIL". Be
     throw { code: "PARSE", msg: "AI returned malformed JSON \u2014 please retry." };
   }
 }
+function cleanRewriteOutput(text) {
+  let t = (text || "").trim();
+  t = t.replace(/^```[a-z]*\s*/i, "").replace(/```\s*$/, "");
+  t = t.replace(/^(here('s| is| are)?\s+(the\s+|your\s+)?(rewritten|revised|improved|updated)\s+chapter[^\n:]*:?\s*)/i, "");
+  t = t.replace(/^((rewritten|revised|improved)\s+chapter[^\n:]*:?\s*)/i, "");
+  return t.trim();
+}
 async function rewriteChapterWithFeedback(ch, score, book) {
   const tells = [...score?.ai_tells_found || [], ...score?.structural_issues || [], ...score?.voice_issues || []].filter(Boolean).slice(0, 10);
   const wordCount = ch.content.split(/\s+/).length;
@@ -3916,7 +3923,7 @@ Target: ~${wordCount.toLocaleString()} words (same story, same length).
 
 CHAPTER TEXT:
 ${ch.content}`;
-  const content = await callAI(prompt2, 0.85, { task: "creative" });
+  const content = cleanRewriteOutput(await callAI(prompt2, 0.85, { task: "creative" }));
   trackUsage();
   const wc = (content || "").split(/\s+/).length;
   if (!content || wc < Math.max(250, Math.round(wordCount * 0.5))) throw { code: "SHORT_REWRITE", msg: "Rewrite came back too short \u2014 kept the original chapter." };
@@ -5973,6 +5980,7 @@ function EditorPage({ bookId, navigate, onSettings }) {
   const [readingMode, setReadingMode] = useState(false);
   const [showFindReplace, setShowFindReplace] = useState(false);
   const [isBuilding, setIsBuilding] = useState(false);
+  const [finishing, setFinishing] = useState(false);
   const [celebrate, setCelebrate] = useState(null);
   const [coverMode, setCoverMode] = useState("auto");
   const [customPrompt, setCustomPrompt] = useState("");
@@ -6552,6 +6560,157 @@ Respond ONLY JSON: {"opening_lines":[""],"back_cover_blurbs":[""],"tagline":"","
       buildRef.current = false;
     }
   };
+  const runFinishToCompletion = async () => {
+    if (quotaHit || isBuilding || finishing) return;
+    const fb = getBook(bookId);
+    if (!fb) return;
+    if (quotaBlocked()) {
+      setQuotaHit(true);
+      return;
+    }
+    setFinishing(true);
+    setError("");
+    try {
+      log("\u{1F3C1} Finish Book: completing the pipeline\u2026");
+      await runAutoBuild(fb);
+      for (let round = 1; round <= 3; round++) {
+        if (quotaBlocked()) {
+          log("\u23F8\uFE0F Daily quota reached \u2014 progress saved. Click Finish Book again after the reset.");
+          break;
+        }
+        const b = getBook(bookId);
+        if (!b) break;
+        const rv = b.review?.overall_score || 0;
+        const wq = b.manuscript_quality?.overall_human_score || 0;
+        if (rv >= 75 && wq >= 78) break;
+        log(`\u{1F3C1} Improvement round ${round}/3 \u2014 Review ${rv}/75 \xB7 Writing ${wq}/78`);
+        if (rv < 75 && b.review && getUsage() < DAILY_LIMIT - 2) {
+          try {
+            const rvd = b.review;
+            const fixes = {};
+            if (rvd.title_suggestions?.[0]) {
+              const parts = rvd.title_suggestions[0].split(":");
+              fixes.title = parts[0].trim();
+              const sub = parts.slice(1).join(":").trim();
+              if (sub) fixes.subtitle = sub;
+            }
+            if (rvd.subtitle_suggestion) fixes.subtitle = rvd.subtitle_suggestion;
+            if (rvd.keyword_suggestions?.length) fixes.seo_keywords = rvd.keyword_suggestions.join(", ");
+            if (rvd.seo_rewrite) fixes.seo_description = rvd.seo_rewrite;
+            if (Object.keys(fixes).length > 0) {
+              log("  \u{1F4D6} Applying Review Agent suggestions\u2026");
+              const updated = updateBook(bookId, fixes) || b;
+              setBook(getBook(bookId));
+              const reReview = await runReviewAgent({ ...b, ...fixes });
+              updateBook(bookId, { review: reReview, review_done: true });
+              setBook(getBook(bookId));
+              log(`  \u{1F4CA} Review: ${rv} \u2192 ${reReview.overall_score}/100`);
+            }
+          } catch (e) {
+            if (e?.code === "QUOTA") {
+              setQuotaHit(true);
+              break;
+            }
+            log("  \u26A0\uFE0F Review fix failed \u2014 continuing to writing fixes");
+          }
+        }
+        const b2 = getBook(bookId) || b;
+        const wq2 = b2?.manuscript_quality?.overall_human_score || 0;
+        if (wq2 < 78 && getUsage() < DAILY_LIMIT - 6) {
+          try {
+            let scores = { ...b2.writing_quality || {} };
+            const all = b2.chapters || [];
+            const written = all.map((c, i) => ({ ...c, _i: i })).filter((c) => c.content);
+            const scored = written.filter((c) => scores[c._i]).sort((x, y) => scores[x._i].human_score - scores[y._i].human_score);
+            const unscored = written.filter((c) => !scores[c._i]);
+            const targets = [...scored, ...unscored].slice(0, 3);
+            log(`  \u270D\uFE0F Targeting ${targets.map((t) => `Ch ${t._i + 1}`).join(", ")}\u2026`);
+            let analyzed = 0;
+            for (const t of targets) {
+              if (scores[t._i] || analyzed >= 2 || quotaBlocked()) continue;
+              try {
+                const res = await analyzeChapterHumanness(t.content, b2.title, b2.genre, t.title);
+                scores = { ...scores, [t._i]: res };
+                analyzed++;
+                updateBook(bookId, { writing_quality: scores });
+              } catch (e) {
+                if (e?.code === "QUOTA") break;
+              }
+            }
+            let chaps = [...getBook(bookId)?.chapters || all];
+            let changed = false;
+            for (const t of targets) {
+              const sc = scores[t._i];
+              const ch = chaps[t._i];
+              if (!sc?.rewrite_examples?.length || !ch?.content) continue;
+              let content = ch.content;
+              for (const ex of sc.rewrite_examples) {
+                if (ex.original && ex.rewrite && content.includes(ex.original)) {
+                  content = content.replace(ex.original, ex.rewrite);
+                  changed = true;
+                }
+              }
+              if (content !== ch.content) chaps[t._i] = { ...withVersionSnapshot(ch, "Finish Book rewrite"), content };
+            }
+            let budget = 2;
+            for (const t of targets) {
+              if (budget <= 0 || quotaBlocked()) break;
+              const sc = scores[t._i];
+              const ch = chaps[t._i];
+              if (!sc || sc.human_score >= 78 || !ch?.content) continue;
+              log(`  \u{1F527} Rewriting chapter ${t._i + 1} (scored ${sc.human_score}/100)\u2026`);
+              try {
+                const better = await rewriteChapterWithFeedback(ch, sc, b2);
+                chaps[t._i] = { ...withVersionSnapshot(ch, "AI rewrite (Finish Book)"), content: better };
+                changed = true;
+                budget--;
+              } catch (e) {
+                if (e?.code === "QUOTA") break;
+              }
+            }
+            if (changed) {
+              updateBook(bookId, { chapters: chaps });
+              setBook(getBook(bookId));
+            }
+            if (!quotaBlocked()) {
+              const reWQ = await runManuscriptHumanCheck(getBook(bookId) || b2);
+              updateBook(bookId, { manuscript_quality: reWQ, wq_done: true });
+              setBook(getBook(bookId));
+              log(`  \u270D\uFE0F Writing: ${wq2} \u2192 ${reWQ.overall_human_score}/100`);
+            }
+          } catch (e) {
+            if (e?.code === "QUOTA") {
+              setQuotaHit(true);
+              break;
+            }
+            log("  \u26A0\uFE0F Writing fix round failed \u2014 see Writing Quality tab");
+          }
+        }
+      }
+      const finalB = getBook(bookId);
+      if (finalB) {
+        const passed = (finalB.review?.overall_score || 0) >= 75 && (finalB.manuscript_quality?.overall_human_score || 0) >= 78;
+        upd({ build_complete: true, gates_passed: passed, status: passed ? "ready" : "writing" });
+        log(passed ? "\u2705 \u{1F3C1} FINISHED \u2014 both quality gates passed. Your book is ready to publish!" : "\u{1F3C1} This session's improvement rounds are used up \u2014 progress saved. Click Finish Book again after the quota resets, or apply manual fixes in the tabs.");
+        flash(passed ? "\u{1F389} Book finished \u2014 both gates passed, Publish Kit ready!" : "\u{1F3C1} Improvement rounds done for now \u2014 run again anytime.");
+        setTab(passed ? 10 : 8);
+        notifyDone(passed ? "\u{1F3C1} Book finished!" : "\u{1F3C1} Finish session ended", `"${finalB.title || "Your book"}" \u2014 ${passed ? "both quality gates passed \u2014 ready to publish" : "gates still short, progress saved"}`);
+        if (passed && finalB.fully_auto && !finalB.kit_downloaded) {
+          try {
+            updateBook(bookId, { kit_downloaded: true });
+            downloadPublishKit(getBook(bookId));
+          } catch (kitE) {
+            console.warn("auto-kit failed", kitE);
+          }
+        }
+        if (passed && finalB.fully_auto) setCelebrate(getBook(bookId));
+      }
+    } catch (e) {
+      handleErr(e);
+    } finally {
+      setFinishing(false);
+    }
+  };
   const genChapter = async (idx) => {
     if (quotaHit || isBuilding) return;
     const fb = getBook(bookId);
@@ -7112,7 +7271,7 @@ ${chars.map((c) => `\u2022 ${c.name}: ${c.personality || ""} \u2014 Voice: ${c.v
   };
   return /* @__PURE__ */ React.createElement("div", null, showTrailer && /* @__PURE__ */ React.createElement(TrailerStudio, { book, onClose: () => setShowTrailer(false) }), (() => {
     const j = getBookJourney(book);
-    return /* @__PURE__ */ React.createElement("div", { className: "border-b border-white/10 bg-gradient-to-r from-purple-950/40 via-slate-950/60 to-pink-950/30" }, /* @__PURE__ */ React.createElement("div", { className: "max-w-7xl mx-auto px-4 sm:px-6 py-3" }, /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-1.5 sm:gap-2 flex-wrap", "aria-label": "Book journey: Plan, Write, Polish, Improve, Publish" }, j.stages.map((s, i) => /* @__PURE__ */ React.createElement(React.Fragment, { key: s.num }, i > 0 && /* @__PURE__ */ React.createElement("span", { className: "text-white/20 text-xs", "aria-hidden": "true" }, "\u2192"), /* @__PURE__ */ React.createElement("button", { disabled: !s.done && j.next?.num !== s.num, onClick: () => setTab(s.tab), title: s.hint, "aria-label": `Stage ${s.num}: ${s.label} \u2014 ${s.hint}`, className: `flex items-center gap-1.5 px-2.5 py-1.5 rounded-full text-xs font-semibold border transition-all ${s.done ? "bg-green-500/15 border-green-500/40 text-green-300 hover:bg-green-500/25" : j.next?.num === s.num ? "bg-purple-500/25 border-purple-400 text-white shadow-lg shadow-purple-500/20" : "bg-white/5 border-white/10 text-white/35 cursor-not-allowed"}` }, /* @__PURE__ */ React.createElement("span", null, s.done ? "\u2705" : s.icon), s.num, ". ", s.label, !s.done && j.next?.num === s.num && /* @__PURE__ */ React.createElement("span", { className: "hidden md:inline text-purple-200/70 font-normal" }, "\xB7 you are here"))))), /* @__PURE__ */ React.createElement("div", { className: "mt-2 flex items-center gap-2 flex-wrap" }, /* @__PURE__ */ React.createElement("span", { className: "text-[10px] uppercase tracking-wider text-purple-300/70 font-bold shrink-0" }, j.allDone ? "Complete" : "Next step"), /* @__PURE__ */ React.createElement("span", { className: "text-white/70 text-xs" }, j.allDone ? "\u{1F389} Book complete \u2014 Publish Kit downloaded. You're ready for KDP!" : j.next.hint), !j.allDone && /* @__PURE__ */ React.createElement("button", { onClick: () => setTab(j.next.tab), className: "text-xs font-semibold bg-gradient-to-r from-purple-500 to-pink-500 text-white px-3 py-1 rounded-full hover:opacity-90 shrink-0" }, "Go to ", j.next.label, " \u2192"))));
+    return /* @__PURE__ */ React.createElement("div", { className: "border-b border-white/10 bg-gradient-to-r from-purple-950/40 via-slate-950/60 to-pink-950/30" }, /* @__PURE__ */ React.createElement("div", { className: "max-w-7xl mx-auto px-4 sm:px-6 py-3" }, /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-1.5 sm:gap-2 flex-wrap", "aria-label": "Book journey: Plan, Write, Polish, Improve, Publish" }, j.stages.map((s, i) => /* @__PURE__ */ React.createElement(React.Fragment, { key: s.num }, i > 0 && /* @__PURE__ */ React.createElement("span", { className: "text-white/20 text-xs", "aria-hidden": "true" }, "\u2192"), /* @__PURE__ */ React.createElement("button", { disabled: !s.done && j.next?.num !== s.num, onClick: () => setTab(s.tab), title: s.hint, "aria-label": `Stage ${s.num}: ${s.label} \u2014 ${s.hint}`, className: `flex items-center gap-1.5 px-2.5 py-1.5 rounded-full text-xs font-semibold border transition-all ${s.done ? "bg-green-500/15 border-green-500/40 text-green-300 hover:bg-green-500/25" : j.next?.num === s.num ? "bg-purple-500/25 border-purple-400 text-white shadow-lg shadow-purple-500/20" : "bg-white/5 border-white/10 text-white/35 cursor-not-allowed"}` }, /* @__PURE__ */ React.createElement("span", null, s.done ? "\u2705" : s.icon), s.num, ". ", s.label, !s.done && j.next?.num === s.num && /* @__PURE__ */ React.createElement("span", { className: "hidden md:inline text-purple-200/70 font-normal" }, "\xB7 you are here"))))), /* @__PURE__ */ React.createElement("div", { className: "mt-2 flex items-center gap-2 flex-wrap" }, /* @__PURE__ */ React.createElement("span", { className: "text-[10px] uppercase tracking-wider text-purple-300/70 font-bold shrink-0" }, j.allDone ? "Complete" : "Next step"), /* @__PURE__ */ React.createElement("span", { className: "text-white/70 text-xs" }, j.allDone ? "\u{1F389} Book complete \u2014 Publish Kit downloaded. You're ready for KDP!" : j.next.hint), !j.allDone && /* @__PURE__ */ React.createElement("button", { onClick: runFinishToCompletion, disabled: finishing || isBuilding || quotaHit, title: "Complete every remaining step and improve until both quality gates pass \u2014 hands-off", className: "text-xs font-bold bg-gradient-to-r from-amber-500 to-orange-500 text-white px-4 py-1.5 rounded-full hover:opacity-90 shrink-0 flex items-center gap-1.5 shadow-lg shadow-amber-900/30" }, finishing ? /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement(Spin, { size: "h-3 w-3" }), "Finishing\u2026") : "\u{1F3C1} Finish Book"), !j.allDone && /* @__PURE__ */ React.createElement("button", { onClick: () => setTab(j.next.tab), className: "text-xs font-semibold bg-gradient-to-r from-purple-500 to-pink-500 text-white px-3 py-1 rounded-full hover:opacity-90 shrink-0" }, "Go to ", j.next.label, " \u2192"))));
   })(), /* @__PURE__ */ React.createElement("div", { className: "border-b border-white/10 bg-black/10" }, /* @__PURE__ */ React.createElement("div", { className: "sm:hidden px-4 pt-3" }, /* @__PURE__ */ React.createElement("label", { htmlFor: "editor-tab-select", className: "sr-only" }, "Select tab"), /* @__PURE__ */ React.createElement("select", { id: "editor-tab-select", value: tab, onChange: (e) => setTab(Number(e.target.value)), className: "w-full bg-slate-800 border border-white/20 rounded-xl px-4 py-3 text-white text-sm font-medium focus:outline-none focus:border-purple-500 appearance-none" }, /* @__PURE__ */ React.createElement("optgroup", { label: "\u{1F4DD} Drafting" }, /* @__PURE__ */ React.createElement("option", { value: 0 }, "\u{1F4CB} Outline"), /* @__PURE__ */ React.createElement("option", { value: 1 }, "\u270D\uFE0F Chapters"), /* @__PURE__ */ React.createElement("option", { value: 9 }, "\u{1F465} Characters")), /* @__PURE__ */ React.createElement("optgroup", { label: "\u{1F4CA} Quality & Review" }, /* @__PURE__ */ React.createElement("option", { value: 4 }, "\u{1F916} Review Agent"), /* @__PURE__ */ React.createElement("option", { value: 7 }, "\u{1F4CA} Chapter Quality"), /* @__PURE__ */ React.createElement("option", { value: 8 }, "\u270D\uFE0F Writing Quality")), /* @__PURE__ */ React.createElement("optgroup", { label: "\u{1F4E6} Publishing & Marketing" }, /* @__PURE__ */ React.createElement("option", { value: 2 }, "\u{1F3A8} Cover Art"), /* @__PURE__ */ React.createElement("option", { value: 3 }, "\u{1F50D} SEO Metadata"), /* @__PURE__ */ React.createElement("option", { value: 5 }, "\u{1F50E} Market Analysis"), /* @__PURE__ */ React.createElement("option", { value: 6 }, "\u{1FA9D} Hooks & Blurbs"), /* @__PURE__ */ React.createElement("option", { value: 10 }, "\u{1F4E4} Publish Kit & Export"), /* @__PURE__ */ React.createElement("option", { value: 13 }, "\u{1F4E6} Amazon KDP")), /* @__PURE__ */ React.createElement("optgroup", { label: "\u{1F6E0}\uFE0F Studio Extras" }, /* @__PURE__ */ React.createElement("option", { value: 11 }, "\u{1F30D} Translation Studio"), /* @__PURE__ */ React.createElement("option", { value: 12 }, "\u{1F399}\uFE0F Audio Studio")))), /* @__PURE__ */ React.createElement("div", { role: "tablist", "aria-label": "Book sections", "aria-hidden": "true", onKeyDown: onTabBarKey, className: "hidden sm:flex max-w-7xl mx-auto px-4 sm:px-6 gap-1 overflow-x-auto" }, TABS.map((t, i) => /* @__PURE__ */ React.createElement("button", { key: i, role: "tab", "aria-selected": tab === i, tabIndex: tab === i ? 0 : -1, "data-tab-btn": i, onClick: () => setTab(i), className: `px-3 py-2.5 text-xs sm:text-sm font-medium whitespace-nowrap rounded-t-lg transition-all relative ${tab === i ? "bg-white/10 text-white border-b-2 border-purple-500" : "text-white/35 hover:text-white/70"}` }, t, i === 4 && book.review && /* @__PURE__ */ React.createElement("span", { className: `ml-1 text-xs font-bold ${reviewPassed ? "text-green-400" : "text-red-400"}` }, reviewScore), i === 8 && book.manuscript_quality && /* @__PURE__ */ React.createElement("span", { className: `ml-1 text-xs font-bold ${writingPassed ? "text-green-400" : "text-red-400"}` }, writingScore), i === 9 && (getCharacters(bookId) || []).length > 0 && /* @__PURE__ */ React.createElement("span", { className: "ml-1 text-xs text-purple-300" }, (getCharacters(bookId) || []).length))))), /* @__PURE__ */ React.createElement("div", { className: "max-w-7xl mx-auto px-4 sm:px-6 py-6" }, isBuilding && /* @__PURE__ */ React.createElement("div", { className: "bg-purple-500/15 border border-purple-500/40 rounded-xl p-5 mb-5" }, /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-3 mb-3" }, /* @__PURE__ */ React.createElement(Spin, null), /* @__PURE__ */ React.createElement("p", { className: "text-purple-300 font-semibold" }, "Auto-building your book\u2026")), /* @__PURE__ */ React.createElement("div", { className: "h-1.5 bg-white/10 rounded-full overflow-hidden mb-3" }, /* @__PURE__ */ React.createElement("div", { className: "h-full bg-gradient-to-r from-purple-500 to-pink-500 rounded-full pulse-a", style: { width: `${Math.min((book.chapters || []).filter((c) => c.generated).length / Math.max((book.chapters || [{ a: 1 }]).length, 1) * 70 + 5, 95)}%` } })), /* @__PURE__ */ React.createElement("div", { className: "grid grid-cols-2 sm:grid-cols-4 gap-2 mb-3" }, (() => {
     const steps = [
       ["\u{1F4CB}", "Outline", !book.needs_outline],
@@ -7143,11 +7302,11 @@ ${chars.map((c) => `\u2022 ${c.name}: ${c.personality || ""} \u2014 Voice: ${c.v
     setError("");
     upd({ auto_build: true });
     runAutoBuild(getBook(bookId));
-  }, className: "bg-cyan-500/20 border border-cyan-500/40 text-cyan-300 text-xs font-bold px-3 py-1.5 rounded-lg hover:bg-cyan-500/30" }, "\u{1F504} Retry"), /* @__PURE__ */ React.createElement("button", { onClick: () => setError(""), className: "text-red-300/60 hover:text-red-300" }, "\u2715"))), success && /* @__PURE__ */ React.createElement("div", { role: "status", "aria-live": "polite", className: "bg-green-500/20 border border-green-500/30 text-green-300 rounded-xl p-4 mb-5 text-sm" }, success), !isBuilding && !quotaHit && book && !book.build_complete && !book.auto_build && (book.needs_outline || book.chapters?.length > 0 && book.chapters.some((c) => !c.generated)) && /* @__PURE__ */ React.createElement("div", { className: "bg-cyan-500/10 border border-cyan-500/30 rounded-xl p-4 mb-5 text-sm flex items-center justify-between gap-3" }, /* @__PURE__ */ React.createElement("span", { className: "text-cyan-200" }, "\u23F8\uFE0F This book's build stopped partway \u2014 ", book.needs_outline ? "outline not generated yet" : `${book.chapters.filter((c) => c.generated).length}/${book.chapters.length} chapters done`, ". Nothing is lost."), /* @__PURE__ */ React.createElement("button", { onClick: () => {
+  }, className: "bg-cyan-500/20 border border-cyan-500/40 text-cyan-300 text-xs font-bold px-3 py-1.5 rounded-lg hover:bg-cyan-500/30" }, "\u{1F504} Retry"), /* @__PURE__ */ React.createElement("button", { onClick: () => setError(""), className: "text-red-300/60 hover:text-red-300" }, "\u2715"))), success && /* @__PURE__ */ React.createElement("div", { role: "status", "aria-live": "polite", className: "bg-green-500/20 border border-green-500/30 text-green-300 rounded-xl p-4 mb-5 text-sm" }, success), !isBuilding && !quotaHit && book && !book.build_complete && !book.auto_build && (book.needs_outline || book.chapters?.length > 0 && book.chapters.some((c) => !c.generated)) && /* @__PURE__ */ React.createElement("div", { className: "bg-cyan-500/10 border border-cyan-500/30 rounded-xl p-4 mb-5 text-sm flex items-center justify-between gap-3" }, /* @__PURE__ */ React.createElement("span", { className: "text-cyan-200" }, "\u23F8\uFE0F This book's build stopped partway \u2014 ", book.needs_outline ? "outline not generated yet" : `${book.chapters.filter((c) => c.generated).length}/${book.chapters.length} chapters done`, ". Nothing is lost."), /* @__PURE__ */ React.createElement("div", { className: "flex gap-2 shrink-0" }, /* @__PURE__ */ React.createElement("button", { onClick: () => {
     setError("");
     upd({ auto_build: true });
     runAutoBuild(getBook(bookId));
-  }, className: "bg-cyan-500 text-white text-xs font-bold px-4 py-2 rounded-lg hover:bg-cyan-400 shrink-0" }, "\u25B6 Resume Build")), book?.build_complete && !isBuilding && /* @__PURE__ */ React.createElement("div", { className: `${book.gates_passed ? "bg-green-500/10 border-green-500/30" : "bg-amber-500/10 border-amber-500/30"} border rounded-xl p-4 mb-5 text-sm flex items-center justify-between gap-3` }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("span", { className: `${book.gates_passed ? "text-green-300" : "text-amber-300"} font-semibold` }, book.gates_passed ? "\u2705 Build complete" : "\u26A0\uFE0F Pipeline finished"), /* @__PURE__ */ React.createElement("span", { className: `${book.gates_passed ? "text-green-200/60" : "text-amber-200/60"} ml-2` }, book.gates_passed ? "\u2014 all chapters written, SEO, cover, and quality checks done. Ready to publish!" : "\u2014 pipeline ran to completion. Check Review and Writing Quality tabs for what needs improving.")), /* @__PURE__ */ React.createElement("button", { onClick: () => upd({ build_complete: false, gates_passed: false, seo_done: false, cover_done: false, review_done: false, competitor_done: false, hooks_done: false, wq_done: false }), className: "text-white/60 text-xs hover:text-white/60 shrink-0", title: "Reset all completion flags to re-run the full pipeline" }, "\u21BA Re-run")), tab === 0 && /* @__PURE__ */ React.createElement("div", { className: "max-w-3xl mx-auto" }, /* @__PURE__ */ React.createElement(Card, null, book.series_name && /* @__PURE__ */ React.createElement("div", { className: "mb-3" }, /* @__PURE__ */ React.createElement(SeriesBibleInline, { bookId })), /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-3 flex-wrap mb-1" }, /* @__PURE__ */ React.createElement("h2", { className: "text-white text-xl font-bold" }, book.title), book.book_length && book.book_length !== "standard" && /* @__PURE__ */ React.createElement("span", { className: "text-xs px-2 py-0.5 rounded-full bg-purple-500/20 border border-purple-500/30 text-purple-300 font-medium" }, (BOOK_LENGTHS.find((x) => x.id === book.book_length) || { label: "Standard" }).label), book.length_words_min && book.length_words_max && /* @__PURE__ */ React.createElement("span", { className: "text-xs text-white/50" }, book.length_words_min.toLocaleString(), "\u2013", book.length_words_max.toLocaleString(), " words/ch")), book.subtitle && /* @__PURE__ */ React.createElement("p", { className: "text-purple-300 mt-1 mb-4 text-sm" }, book.subtitle), /* @__PURE__ */ React.createElement("p", { className: "text-white/60 text-sm leading-relaxed mb-6" }, book.description), book.chapters?.length > 0 && /* @__PURE__ */ React.createElement(React.Fragment, null, (() => {
+  }, disabled: finishing, className: "bg-cyan-500 text-white text-xs font-bold px-4 py-2 rounded-lg hover:bg-cyan-400 disabled:opacity-50" }, "\u25B6 Resume Build"), /* @__PURE__ */ React.createElement("button", { onClick: runFinishToCompletion, disabled: finishing || isBuilding || quotaHit, className: "bg-gradient-to-r from-amber-500 to-orange-500 text-white text-xs font-bold px-4 py-2 rounded-lg hover:opacity-90 disabled:opacity-50 flex items-center gap-1.5" }, finishing ? /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement(Spin, { size: "h-3 w-3" }), "Finishing\u2026") : "\u{1F3C1} Finish Book"))), book?.build_complete && !isBuilding && /* @__PURE__ */ React.createElement("div", { className: `${book.gates_passed ? "bg-green-500/10 border-green-500/30" : "bg-amber-500/10 border-amber-500/30"} border rounded-xl p-4 mb-5 text-sm flex items-center justify-between gap-3` }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("span", { className: `${book.gates_passed ? "text-green-300" : "text-amber-300"} font-semibold` }, book.gates_passed ? "\u2705 Build complete" : "\u26A0\uFE0F Pipeline finished"), /* @__PURE__ */ React.createElement("span", { className: `${book.gates_passed ? "text-green-200/60" : "text-amber-200/60"} ml-2` }, book.gates_passed ? "\u2014 all chapters written, SEO, cover, and quality checks done. Ready to publish!" : "\u2014 pipeline ran to completion. Check Review and Writing Quality tabs for what needs improving.")), /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-2 shrink-0" }, !book.gates_passed && /* @__PURE__ */ React.createElement("button", { onClick: runFinishToCompletion, disabled: finishing || isBuilding || quotaHit, title: "Auto-apply Review suggestions and rewrite the weakest chapters until both gates pass", className: "bg-gradient-to-r from-amber-500 to-orange-500 text-white text-xs font-bold px-4 py-2 rounded-lg hover:opacity-90 disabled:opacity-50 flex items-center gap-1.5" }, finishing ? /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement(Spin, { size: "h-3 w-3" }), "Finishing\u2026") : "\u{1F3C1} Finish Book"), /* @__PURE__ */ React.createElement("button", { onClick: () => upd({ build_complete: false, gates_passed: false, seo_done: false, cover_done: false, review_done: false, competitor_done: false, hooks_done: false, wq_done: false }), className: "text-white/60 text-xs hover:text-white/60", title: "Reset all completion flags to re-run the full pipeline" }, "\u21BA Re-run"))), tab === 0 && /* @__PURE__ */ React.createElement("div", { className: "max-w-3xl mx-auto" }, /* @__PURE__ */ React.createElement(Card, null, book.series_name && /* @__PURE__ */ React.createElement("div", { className: "mb-3" }, /* @__PURE__ */ React.createElement(SeriesBibleInline, { bookId })), /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-3 flex-wrap mb-1" }, /* @__PURE__ */ React.createElement("h2", { className: "text-white text-xl font-bold" }, book.title), book.book_length && book.book_length !== "standard" && /* @__PURE__ */ React.createElement("span", { className: "text-xs px-2 py-0.5 rounded-full bg-purple-500/20 border border-purple-500/30 text-purple-300 font-medium" }, (BOOK_LENGTHS.find((x) => x.id === book.book_length) || { label: "Standard" }).label), book.length_words_min && book.length_words_max && /* @__PURE__ */ React.createElement("span", { className: "text-xs text-white/50" }, book.length_words_min.toLocaleString(), "\u2013", book.length_words_max.toLocaleString(), " words/ch")), book.subtitle && /* @__PURE__ */ React.createElement("p", { className: "text-purple-300 mt-1 mb-4 text-sm" }, book.subtitle), /* @__PURE__ */ React.createElement("p", { className: "text-white/60 text-sm leading-relaxed mb-6" }, book.description), book.chapters?.length > 0 && /* @__PURE__ */ React.createElement(React.Fragment, null, (() => {
     const gen = book.chapters.filter((c) => c.generated);
     const totalWords = gen.reduce((s, c) => s + (c.content ? c.content.trim().split(/\s+/).length : 0), 0);
     const totalTarget = book.chapters.reduce((s, c) => s + (c.target_words || 0), 0);

@@ -3920,6 +3920,15 @@ async function runManuscriptHumanCheck(book){
 
 // Targeted AI rewrite of a weak chapter using its Writing Quality analysis results.
 // Keeps plot/characters/scene order; rewrites prose to pass the human-voice gate.
+// Strips AI-output wrappers (code fences, "Here's the rewritten chapter:" lead-ins)
+function cleanRewriteOutput(text){
+  let t=(text||"").trim();
+  t=t.replace(/^```[a-z]*\s*/i,"").replace(/```\s*$/,"");
+  t=t.replace(/^(here('s| is| are)?\s+(the\s+|your\s+)?(rewritten|revised|improved|updated)\s+chapter[^\n:]*:?\s*)/i,"");
+  t=t.replace(/^((rewritten|revised|improved)\s+chapter[^\n:]*:?\s*)/i,"");
+  return t.trim();
+}
+
 async function rewriteChapterWithFeedback(ch,score,book){
   const tells=[...(score?.ai_tells_found||[]),...(score?.structural_issues||[]),...(score?.voice_issues||[])].filter(Boolean).slice(0,10);
   const wordCount=ch.content.split(/\s+/).length;
@@ -3937,7 +3946,7 @@ async function rewriteChapterWithFeedback(ch,score,book){
     `• Keep the SAME plot events, character names, scene order, and dialogue intent\n` +
     `• Output ONLY the rewritten chapter text — no commentary, no markdown, no headers\n\n` +
     `Book: "${book.title}" (${book.genre})\nChapter ${ch.number}: "${ch.title}"\nTarget: ~${wordCount.toLocaleString()} words (same story, same length).\n\nCHAPTER TEXT:\n${ch.content}`;
-  const content=await callAI(prompt,0.85,{task:"creative"});
+  const content=cleanRewriteOutput(await callAI(prompt,0.85,{task:"creative"}));
   trackUsage();
   const wc=(content||"").split(/\s+/).length;
   if(!content||wc<Math.max(250,Math.round(wordCount*0.5)))throw{code:"SHORT_REWRITE",msg:"Rewrite came back too short — kept the original chapter."};
@@ -6186,6 +6195,7 @@ function EditorPage({bookId,navigate,onSettings}){
   const [readingMode,setReadingMode]=useState(false);
   const [showFindReplace,setShowFindReplace]=useState(false);
   const [isBuilding,setIsBuilding]=useState(false);
+  const [finishing,setFinishing]=useState(false);
   const [celebrate,setCelebrate]=useState(null);
   const [coverMode,setCoverMode]=useState("auto");
   const [customPrompt,setCustomPrompt]=useState("");
@@ -6457,6 +6467,107 @@ function EditorPage({bookId,navigate,onSettings}){
       if(chaptersIncomplete||stepsIncomplete)log("⚠️ A few items couldn't finish after auto-retries — click ▶ Resume Build anytime to try again.");
     }catch(e){handleErr(e);upd({auto_build:false,build_step:""});}
     finally{setIsBuilding(false);buildRef.current=false;}
+  };
+
+  // ══════════════════════════════════════════════════════════════════════════════
+  // 🏁 FINISH BOOK — one click: complete every pipeline step, then run improvement
+  // rounds (Review suggestions + targeted Writing fixes) until BOTH gates pass.
+  // ══════════════════════════════════════════════════════════════════════════════
+  const runFinishToCompletion=async()=>{
+    if(quotaHit||isBuilding||finishing)return;
+    const fb=getBook(bookId);if(!fb)return;
+    if(quotaBlocked()){setQuotaHit(true);return;}
+    setFinishing(true);setError("");
+    try{
+      // STAGE 1 — complete the pipeline (chapters, research, SEO, cover, review, WQ)
+      log("🏁 Finish Book: completing the pipeline…");
+      await runAutoBuild(fb);
+      // STAGE 2 — improvement rounds until both gates pass (cap 3, quota-aware)
+      for(let round=1;round<=3;round++){
+        if(quotaBlocked()){log("⏸️ Daily quota reached — progress saved. Click Finish Book again after the reset.");break;}
+        const b=getBook(bookId);if(!b)break;
+        const rv=b.review?.overall_score||0;
+        const wq=b.manuscript_quality?.overall_human_score||0;
+        if(rv>=75&&wq>=78)break;
+        log(`🏁 Improvement round ${round}/3 — Review ${rv}/75 · Writing ${wq}/78`);
+        // Round A: apply Review Agent suggestions, re-score
+        if(rv<75&&b.review&&getUsage()<DAILY_LIMIT-2){
+          try{
+            const rvd=b.review;const fixes={};
+            if(rvd.title_suggestions?.[0]){const parts=rvd.title_suggestions[0].split(":");fixes.title=parts[0].trim();const sub=parts.slice(1).join(":").trim();if(sub)fixes.subtitle=sub;}
+            if(rvd.subtitle_suggestion)fixes.subtitle=rvd.subtitle_suggestion;
+            if(rvd.keyword_suggestions?.length)fixes.seo_keywords=rvd.keyword_suggestions.join(", ");
+            if(rvd.seo_rewrite)fixes.seo_description=rvd.seo_rewrite;
+            if(Object.keys(fixes).length>0){
+              log("  📖 Applying Review Agent suggestions…");
+              const updated=updateBook(bookId,fixes)||b;setBook(getBook(bookId));
+              const reReview=await runReviewAgent({...b,...fixes});
+              updateBook(bookId,{review:reReview,review_done:true});setBook(getBook(bookId));
+              log(`  📊 Review: ${rv} → ${reReview.overall_score}/100`);
+            }
+          }catch(e){if(e?.code==="QUOTA"){setQuotaHit(true);break;}log("  ⚠️ Review fix failed — continuing to writing fixes");}
+        }
+        // Round B: targeted Writing Quality fixes on the weakest chapters
+        const b2=getBook(bookId)||b;
+        const wq2=b2?.manuscript_quality?.overall_human_score||0;
+        if(wq2<78&&getUsage()<DAILY_LIMIT-6){
+          try{
+            let scores={...(b2.writing_quality||{})};
+            const all=b2.chapters||[];
+            const written=all.map((c,i)=>({...c,_i:i})).filter(c=>c.content);
+            const scored=written.filter(c=>scores[c._i]).sort((x,y)=>scores[x._i].human_score-scores[y._i].human_score);
+            const unscored=written.filter(c=>!scores[c._i]);
+            const targets=[...scored,...unscored].slice(0,3);
+            log(`  ✍️ Targeting ${targets.map(t=>`Ch ${t._i+1}`).join(", ")}…`);
+            let analyzed=0;
+            for(const t of targets){
+              if(scores[t._i]||analyzed>=2||quotaBlocked())continue;
+              try{const res=await analyzeChapterHumanness(t.content,b2.title,b2.genre,t.title);scores={...scores,[t._i]:res};analyzed++;updateBook(bookId,{writing_quality:scores});}catch(e){if(e?.code==="QUOTA")break;}
+            }
+            let chaps=[...(getBook(bookId)?.chapters||all)];
+            let changed=false;
+            for(const t of targets){
+              const sc=scores[t._i];const ch=chaps[t._i];
+              if(!sc?.rewrite_examples?.length||!ch?.content)continue;
+              let content=ch.content;
+              for(const ex of sc.rewrite_examples){if(ex.original&&ex.rewrite&&content.includes(ex.original)){content=content.replace(ex.original,ex.rewrite);changed=true;}}
+              if(content!==ch.content)chaps[t._i]={...withVersionSnapshot(ch,"Finish Book rewrite"),content};
+            }
+            let budget=2;
+            for(const t of targets){
+              if(budget<=0||quotaBlocked())break;
+              const sc=scores[t._i];const ch=chaps[t._i];
+              if(!sc||sc.human_score>=78||!ch?.content)continue;
+              log(`  🔧 Rewriting chapter ${t._i+1} (scored ${sc.human_score}/100)…`);
+              try{
+                const better=await rewriteChapterWithFeedback(ch,sc,b2);
+                chaps[t._i]={...withVersionSnapshot(ch,"AI rewrite (Finish Book)"),content:better};
+                changed=true;budget--;
+              }catch(e){if(e?.code==="QUOTA")break;}
+            }
+            if(changed){updateBook(bookId,{chapters:chaps});setBook(getBook(bookId));}
+            if(!quotaBlocked()){
+              const reWQ=await runManuscriptHumanCheck(getBook(bookId)||b2);
+              updateBook(bookId,{manuscript_quality:reWQ,wq_done:true});setBook(getBook(bookId));
+              log(`  ✍️ Writing: ${wq2} → ${reWQ.overall_human_score}/100`);
+            }
+          }catch(e){if(e?.code==="QUOTA"){setQuotaHit(true);break;}log("  ⚠️ Writing fix round failed — see Writing Quality tab");}
+        }
+      }
+      // STAGE 3 — final stamps + report
+      const finalB=getBook(bookId);
+      if(finalB){
+        const passed=(finalB.review?.overall_score||0)>=75&&(finalB.manuscript_quality?.overall_human_score||0)>=78;
+        upd({build_complete:true,gates_passed:passed,status:passed?"ready":"writing"});
+        log(passed?"✅ 🏁 FINISHED — both quality gates passed. Your book is ready to publish!":"🏁 This session's improvement rounds are used up — progress saved. Click Finish Book again after the quota resets, or apply manual fixes in the tabs.");
+        flash(passed?"🎉 Book finished — both gates passed, Publish Kit ready!":"🏁 Improvement rounds done for now — run again anytime.");
+        setTab(passed?10:8);
+        notifyDone(passed?"🏁 Book finished!":"🏁 Finish session ended",`"${finalB.title||"Your book"}" — ${passed?"both quality gates passed — ready to publish":"gates still short, progress saved"}`);
+        if(passed&&finalB.fully_auto&&!finalB.kit_downloaded){try{updateBook(bookId,{kit_downloaded:true});downloadPublishKit(getBook(bookId));}catch(kitE){console.warn("auto-kit failed",kitE);}}
+        if(passed&&finalB.fully_auto)setCelebrate(getBook(bookId));
+      }
+    }catch(e){handleErr(e);}
+    finally{setFinishing(false);}
   };
 
   const genChapter=async(idx)=>{
@@ -6742,6 +6853,7 @@ const genCover=async()=>{if(quotaHit||isBuilding)return;setBusy(true);setError("
             <div className="mt-2 flex items-center gap-2 flex-wrap">
               <span className="text-[10px] uppercase tracking-wider text-purple-300/70 font-bold shrink-0">{j.allDone?"Complete":"Next step"}</span>
               <span className="text-white/70 text-xs">{j.allDone?"🎉 Book complete — Publish Kit downloaded. You're ready for KDP!":j.next.hint}</span>
+              {!j.allDone&&<button onClick={runFinishToCompletion} disabled={finishing||isBuilding||quotaHit} title="Complete every remaining step and improve until both quality gates pass — hands-off" className="text-xs font-bold bg-gradient-to-r from-amber-500 to-orange-500 text-white px-4 py-1.5 rounded-full hover:opacity-90 shrink-0 flex items-center gap-1.5 shadow-lg shadow-amber-900/30">{finishing?<><Spin size="h-3 w-3"/>Finishing…</>:"🏁 Finish Book"}</button>}
               {!j.allDone&&<button onClick={()=>setTab(j.next.tab)} className="text-xs font-semibold bg-gradient-to-r from-purple-500 to-pink-500 text-white px-3 py-1 rounded-full hover:opacity-90 shrink-0">Go to {j.next.label} →</button>}
             </div>
           </div>
@@ -6841,7 +6953,10 @@ const genCover=async()=>{if(quotaHit||isBuilding)return;setBusy(true);setError("
         {!isBuilding&&!quotaHit&&book&&!book.build_complete&&!book.auto_build&&(book.needs_outline||(book.chapters?.length>0&&book.chapters.some(c=>!c.generated)))&&(
           <div className="bg-cyan-500/10 border border-cyan-500/30 rounded-xl p-4 mb-5 text-sm flex items-center justify-between gap-3">
             <span className="text-cyan-200">⏸️ This book's build stopped partway — {book.needs_outline?"outline not generated yet":`${book.chapters.filter(c=>c.generated).length}/${book.chapters.length} chapters done`}. Nothing is lost.</span>
-            <button onClick={()=>{setError("");upd({auto_build:true});runAutoBuild(getBook(bookId));}} className="bg-cyan-500 text-white text-xs font-bold px-4 py-2 rounded-lg hover:bg-cyan-400 shrink-0">▶ Resume Build</button>
+            <div className="flex gap-2 shrink-0">
+              <button onClick={()=>{setError("");upd({auto_build:true});runAutoBuild(getBook(bookId));}} disabled={finishing} className="bg-cyan-500 text-white text-xs font-bold px-4 py-2 rounded-lg hover:bg-cyan-400 disabled:opacity-50">▶ Resume Build</button>
+              <button onClick={runFinishToCompletion} disabled={finishing||isBuilding||quotaHit} className="bg-gradient-to-r from-amber-500 to-orange-500 text-white text-xs font-bold px-4 py-2 rounded-lg hover:opacity-90 disabled:opacity-50 flex items-center gap-1.5">{finishing?<><Spin size="h-3 w-3"/>Finishing…</>:"🏁 Finish Book"}</button>
+            </div>
           </div>
         )}
         {book?.build_complete&&!isBuilding&&(
@@ -6854,7 +6969,10 @@ const genCover=async()=>{if(quotaHit||isBuilding)return;setBusy(true);setError("
                   :"— pipeline ran to completion. Check Review and Writing Quality tabs for what needs improving."}
               </span>
             </div>
-            <button onClick={()=>upd({build_complete:false,gates_passed:false,seo_done:false,cover_done:false,review_done:false,competitor_done:false,hooks_done:false,wq_done:false})} className="text-white/60 text-xs hover:text-white/60 shrink-0" title="Reset all completion flags to re-run the full pipeline">↺ Re-run</button>
+            <div className="flex items-center gap-2 shrink-0">
+              {!book.gates_passed&&<button onClick={runFinishToCompletion} disabled={finishing||isBuilding||quotaHit} title="Auto-apply Review suggestions and rewrite the weakest chapters until both gates pass" className="bg-gradient-to-r from-amber-500 to-orange-500 text-white text-xs font-bold px-4 py-2 rounded-lg hover:opacity-90 disabled:opacity-50 flex items-center gap-1.5">{finishing?<><Spin size="h-3 w-3"/>Finishing…</>:"🏁 Finish Book"}</button>}
+              <button onClick={()=>upd({build_complete:false,gates_passed:false,seo_done:false,cover_done:false,review_done:false,competitor_done:false,hooks_done:false,wq_done:false})} className="text-white/60 text-xs hover:text-white/60" title="Reset all completion flags to re-run the full pipeline">↺ Re-run</button>
+            </div>
           </div>
         )}
 

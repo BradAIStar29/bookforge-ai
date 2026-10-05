@@ -3,7 +3,7 @@ const src=fs.readFileSync('/app/bookforge_jsx.jsx','utf8');
 const compiled=fs.readFileSync('/app/bookforge.html','utf8');
 const tests=[];const t=(l,c)=>{tests.push([l,!!c]);console.log((c?'✅':'❌')+' '+l);};
 // — extract rewriteChapterWithFeedback and eval it with stubs —
-const a=src.indexOf('async function rewriteChapterWithFeedback');
+const a=src.indexOf('function cleanRewriteOutput');
 const b=src.indexOf('function WritingQualityPanel');
 let CALLS=[];
 global.callAI=async(prompt,temp,opts)=>{CALLS.push(prompt);if(THROW_AI)throw THROW_AI;return RET_AI;};
