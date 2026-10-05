@@ -3978,7 +3978,13 @@ ${x.p}
         const m = raw.match(new RegExp("<<<P" + (k + 1) + ">>>([\\s\\S]*?)(?:<<<END>>>|$)"));
         const rewritten = m ? cleanRewriteOutput(m[1]) : "";
         const minWords = Math.max(5, Math.round(x.p.split(/\s+/).length * 0.35));
-        if (rewritten && rewritten.split(/\s+/).length >= minWords) {
+        const tellCount = (txt) => {
+          let n = 0;
+          const low = (txt || "").toLowerCase();
+          for (const t of AI_TELLS) n += low.split(t.toLowerCase()).length - 1;
+          return n;
+        };
+        if (rewritten && rewritten.split(/\s+/).length >= minWords && tellCount(rewritten) < tellCount(x.p)) {
           out[x.i] = rewritten;
           applied++;
         }
@@ -4838,16 +4844,20 @@ Respond ONLY JSON: {"seo_title":"","seo_description":"","primary_keywords":[""]}
             try {
               const fq = getBook(id);
               if (fq) {
-                addLog(`  \u270D\uFE0F Writing Quality check + improvement rounds\u2026`);
-                const ms = await runManuscriptHumanCheck(fq);
-                updateBook(id, { manuscript_quality: ms, wq_done: true });
+                if (!fq.manuscript_quality) {
+                  addLog(`  \u270D\uFE0F Writing Quality check\u2026`);
+                  const ms = await runManuscriptHumanCheck(fq);
+                  updateBook(id, { manuscript_quality: ms, wq_done: true });
+                }
+                addLog(`  \u{1F3C1} Improvement rounds\u2026`);
                 const res = await runImprovementRounds(id, (m) => addLog(m));
                 updateBook(id, { gates_passed: res.passed });
                 addLog(res.passed ? `  \u2705 Both gates passed (Review ${res.rv}/75 \xB7 Writing ${res.wq}/78)!` : `  \u26A0\uFE0F Gates short after rounds (Review ${res.rv}/75 \xB7 Writing ${res.wq}/78) \u2014 progress saved`);
+                if (quotaBlocked()) throw { code: "QUOTA", msg: "quota reached mid-improvement" };
               }
             } catch (wqE) {
-              if (wqE?.code === "QUOTA") addLog("  \u23F3 Quota hit during writing quality \u2014 book saved, run Finish later");
-              else addLog("  \u26A0\uFE0F Writing Quality step failed: " + errMsg(wqE) + " \u2014 continuing");
+              if (wqE?.code === "QUOTA") throw wqE;
+              addLog("  \u26A0\uFE0F Writing Quality step failed: " + errMsg(wqE) + " \u2014 continuing");
             }
           }
           removeFromQueue(id);
@@ -9002,9 +9012,6 @@ async function generatePanelImage(project, scene, panelDesc) {
 function MangaHomePage({ navigate, onSettings }) {
   const [projects, setProjects] = useState(getMangaProjects());
   const [view, setView] = useState("library");
-  const [researchGenre, setResearchGenre] = useState(null);
-  const [researchData, setResearchData] = useState(null);
-  const [researchLoading, setResearchLoading] = useState(false);
   const [search, setSearch] = useState("");
   const reload = () => setProjects(getMangaProjects());
   const deleteProject = (id) => {
@@ -9033,7 +9040,6 @@ function MangaCreateWizard({ navigate, onSettings, onBack, onCreated }) {
   const [artStyle, setArtStyle] = useState("manhwa-color");
   const [userIdea, setUserIdea] = useState("");
   const [targetAudience, setTargetAudience] = useState("Young Adults (18-25)");
-  const [useResearch, setUseResearch] = useState(false);
   const [researchData, setResearchData] = useState(null);
   const [researchLoading, setResearchLoading] = useState(false);
   const [generating, setGenerating] = useState(false);

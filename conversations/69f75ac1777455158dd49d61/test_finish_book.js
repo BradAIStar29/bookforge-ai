@@ -33,6 +33,7 @@ t(`Finish Book button on all 3 surfaces (journey bar, resume banner, complete-no
 t('journey bar shows Finish before Go-to, disabled while running',src.includes('!j.allDone&&<button onClick={runFinishToCompletion}')&&src.includes('{finishing?<><Spin size="h-3 w-3"/>Finishing…</>:"🏁 Finish Book"}'));
 t('resume banner guards against concurrent runs',src.includes('disabled={finishing||isBuilding||quotaHit}'));
 // — series + queue + cloudflare integrations —
+t('queue WQ step rethrows QUOTA (pause + keep book, not drop)',src.includes('if(wqE?.code==="QUOTA")throw wqE')&&src.includes('if(quotaBlocked())throw{code:"QUOTA",msg:"quota reached mid-improvement"}')&&src.includes('if(!fq.manuscript_quality){'));
 t('queue completes the dual gate: WQ check + improvement rounds after review',src.includes('runManuscriptHumanCheck(fq)')&&src.includes('await runImprovementRounds(id,m=>addLog(m))')&&src.includes('updateBook(id,{gates_passed:res.passed})')&&src.includes('gates_passed:false}); // dual-gate'));
 t('queue review stamp no longer overstates gates_passed (review-only)',!src.includes('gates_passed:review.verdict==="PASS"'));
 t('finishSeries exists: enqueues unfinished series books in order + autostarts',src.includes('const finishSeries=async(sid)=>')&&src.includes('!bk.build_complete||!bk.gates_passed')&&src.includes('bfai_queue_autostart\",\"1\")')||src.includes("localStorage.setItem(\"bfai_queue_autostart\",\"1\");navigate(\"queue\")"));

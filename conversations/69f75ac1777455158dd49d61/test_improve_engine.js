@@ -7,7 +7,7 @@ const tests=[];const t=(l,c)=>{tests.push([l,!!c]);console.log((c?'✅':'❌')+'
 const AI_TELLS=["in that moment","couldn't help but"];
 var DAILY_LIMIT=1500;
 let RET_AI="",PROMPTS=[],CF_FAIL_ONCE=false;
-const callAI=async(p)=>{PROMPTS.push(p);return RET_AI;};
+let RET_AI_2="";const callAI=async(p)=>{PROMPTS.push(p);return(PROMPTS.length>1&&RET_AI_2)?RET_AI_2:RET_AI;};
 const trackUsage=()=>{};
 let quotaBlocked=()=>false;
 let USAGE=0;const getUsage=()=>USAGE;
@@ -46,6 +46,13 @@ eval(src.slice(a,b));
   let out3=null;
   try{out3=await rewriteChapterWithFeedback(ch3,{ai_tells_found:['"In that moment he froze."']},{title:"B",genre:"G"});}catch(e){}
   t('scene parse failure → falls back to full rewrite (2 calls, no data loss)',PROMPTS.length===2&&PROMPTS[1].includes("CHAPTER TEXT:"));
+  // ── scene rewrite rejected when it carries MORE AI tells than the original ──
+  RET_AI="<<<P1>>>\nIn that moment the rewritten passage is stuffed with in that moment tells\n<<<END>>>";
+  RET_AI_2="FULL REWRITE "+L(400);
+  PROMPTS.length=0;
+  const out4=await rewriteChapterWithFeedback(ch,{ai_tells_found:['"In that moment he froze."']},{title:"B",genre:"G"});
+  t('tell-heavy rewrite rejected → falls back to full rewrite (original preserved)',PROMPTS.length===2&&PROMPTS[1].includes("CHAPTER TEXT:")&&out4.startsWith("FULL REWRITE"));
+
   // ── runImprovementRounds: review fix + writing fix until gates pass ──
   BOOK={id:"bk",title:"Old",genre:"G",review:{overall_score:60,title_suggestions:["New Title: The Sub"],keyword_suggestions:["k1","k2"],seo_rewrite:"new desc"},manuscript_quality:{overall_human_score:60},writing_quality:{},chapters:paras.map((p,i)=>({number:i+1,title:"C"+i,content:p+" filler ".repeat(30),generated:true}))};
   REVIEW_RET={overall_score:80};ANALYZE_RET={human_score:50,ai_tells_found:[],rewrite_examples:[]};MS_RET={overall_human_score:80};

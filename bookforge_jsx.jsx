@@ -3996,7 +3996,11 @@ async function rewriteChapterWithFeedback(ch,score,book){
         const m=raw.match(new RegExp("<<<P"+(k+1)+">>>([\\s\\S]*?)(?:<<<END>>>|$)"));
         const rewritten=m?cleanRewriteOutput(m[1]):"";
         const minWords=Math.max(5,Math.round(x.p.split(/\s+/).length*0.35));
-        if(rewritten&&rewritten.split(/\s+/).length>=minWords){out[x.i]=rewritten;applied++;}
+        // free local guard: accept the rewritten passage only if it strictly reduces
+        // AI-tell occurrences (or lands at zero) — a rewrite that keeps or adds
+        // tells is discarded and the original passage survives
+        const tellCount=txt=>{let n=0;const low=(txt||"").toLowerCase();for(const t of AI_TELLS)n+=low.split(t.toLowerCase()).length-1;return n;};
+        if(rewritten&&rewritten.split(/\s+/).length>=minWords&&tellCount(rewritten)<tellCount(x.p)){out[x.i]=rewritten;applied++;}
       });
       const merged=out.join("\n\n");
       if(applied>0&&merged.split(/\s+/).length>=Math.round(wordCount*0.75))return merged;
@@ -4879,17 +4883,23 @@ function QueuePage({navigate,onSettings}){
           addLog(`  ${review.verdict==="PASS"?"✅":"⚠️"} Review: ${review.overall_score}/100 — ${review.verdict}`);notifyDone(review.verdict==="PASS"?"✅ Queue book done":"⚠️ Queue book done",`"${book.title}" — review ${review.overall_score}/100`);}catch(rvE){addLog("  ⚠️ Review step failed: "+errMsg(rvE)+" — continuing");}
         }
         if(getUsage()<DAILY_LIMIT){try{
-          // Writing Quality + improvement rounds — completes the dual gate
+          // Writing Quality + improvement rounds — completes the dual gate.
+          // QUOTA re-throws so the queue's own protocol pauses and KEEPS the book
+          // (auto-resumes after the quota reset instead of dropping it).
           const fq=getBook(id);
           if(fq){
-            addLog(`  ✍️ Writing Quality check + improvement rounds…`);
-            const ms=await runManuscriptHumanCheck(fq);
-            updateBook(id,{manuscript_quality:ms,wq_done:true});
+            if(!fq.manuscript_quality){
+              addLog(`  ✍️ Writing Quality check…`);
+              const ms=await runManuscriptHumanCheck(fq);
+              updateBook(id,{manuscript_quality:ms,wq_done:true});
+            }
+            addLog(`  🏁 Improvement rounds…`);
             const res=await runImprovementRounds(id,m=>addLog(m));
             updateBook(id,{gates_passed:res.passed});
             addLog(res.passed?`  ✅ Both gates passed (Review ${res.rv}/75 · Writing ${res.wq}/78)!`:`  ⚠️ Gates short after rounds (Review ${res.rv}/75 · Writing ${res.wq}/78) — progress saved`);
+            if(quotaBlocked())throw{code:"QUOTA",msg:"quota reached mid-improvement"};
           }
-        }catch(wqE){if(wqE?.code==="QUOTA")addLog("  ⏳ Quota hit during writing quality — book saved, run Finish later");else addLog("  ⚠️ Writing Quality step failed: "+errMsg(wqE)+" — continuing");}}
+        }catch(wqE){if(wqE?.code==="QUOTA")throw wqE;addLog("  ⚠️ Writing Quality step failed: "+errMsg(wqE)+" — continuing");}}
         // Done — remove from queue
         removeFromQueue(id);
         setBuiltSoFar(n=>n+1);
@@ -9343,9 +9353,6 @@ async function generatePanelImage(project, scene, panelDesc){
 function MangaHomePage({navigate, onSettings}){
   const [projects, setProjects] = useState(getMangaProjects());
   const [view, setView] = useState("library"); // library | create | research
-  const [researchGenre, setResearchGenre] = useState(null);
-  const [researchData, setResearchData] = useState(null);
-  const [researchLoading, setResearchLoading] = useState(false);
   const [search, setSearch] = useState("");
 
   const reload = () => setProjects(getMangaProjects());
@@ -9453,7 +9460,6 @@ function MangaCreateWizard({navigate, onSettings, onBack, onCreated}){
   const [artStyle, setArtStyle] = useState("manhwa-color");
   const [userIdea, setUserIdea] = useState("");
   const [targetAudience, setTargetAudience] = useState("Young Adults (18-25)");
-  const [useResearch, setUseResearch] = useState(false);
   const [researchData, setResearchData] = useState(null);
   const [researchLoading, setResearchLoading] = useState(false);
   const [generating, setGenerating] = useState(false);
