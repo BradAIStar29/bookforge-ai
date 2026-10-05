@@ -123,7 +123,6 @@ const test=`let pass=0,fail=0;const t=(l,c)=>{c?pass++:fail++;console.log((c?'�
   t('revert clears PUTER_LOW_BALANCE flag',backendAvailable("puter")===true);
   t('gemini still key-guarded after reverts',backendAvailable("gemini")===false);
 
-  console.log(\`\n=== \${pass} passed, \${fail} failed ===\`);
   // ── Cloudflare CORS-dead scenarios (browser-blocked gateway) ──
   BACKEND_EXHAUSTED.clear();LAST_FAILOVER_FROM.clear();
   CONFIG={backend:"cloudflare",groqKey:"gk",cerebrasKey:"",cfId:"cfid",cfTok:"cftok",gemKey:"",usage:0};
@@ -145,6 +144,7 @@ const test=`let pass=0,fail=0;const t=(l,c)=>{c?pass++:fail++;console.log((c?'�
   const cf4=await callAIStream("hi",0.8,{onStream:()=>{}});
   t('stream: cloudflare CORS-dead → groq delivers',cf4==="groq-result"&&CALLS.join(",")==="cloudflare,groq");
   CONFIG={backend:"groq",groqKey:"gk",cerebrasKey:"ck",cfId:"",cfTok:"",gemKey:"",usage:0}; // restore
+  console.log(\`\n=== \${pass} passed, \${fail} failed ===\`);
   process.exit(fail?1:0);
 })();
 `;
