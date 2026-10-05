@@ -16,6 +16,9 @@ const getCloudflareAccountId=()=>CONFIG.cfId, getCloudflareToken=()=>CONFIG.cfTo
 const getOpenRouterKey=()=>CONFIG.orKey||"", getHfToken=()=>CONFIG.hfToken||"";
 const getKey=()=>CONFIG.gemKey, getUsage=()=>CONFIG.usage;
 const kiloFailureShouldFailover=e=>e?.code==="KILO_ERROR"||e?.code==="TIMEOUT";
+let CF_SESSION_DEAD=false;
+const cfFailureShouldFailover=e=>e?.code==="CF_CORS";
+const notifyCfSwitch=()=>{};
 const notifyBackendSwitch=()=>{}, notifyPuterLowBalance=()=>{};
 const mk=b=>(prompt,temp,opts)=>{CALLS.push(b);if(FAILMAP[b])throw FAILMAP[b];const res=b+"-result";if(opts&&opts.onStream)opts.onStream(res);return res;};
 const callGroq=mk("groq"),callCerebras=mk("cerebras"),callCloudflare=mk("cloudflare");
@@ -121,6 +124,27 @@ const test=`let pass=0,fail=0;const t=(l,c)=>{c?pass++:fail++;console.log((c?'�
   t('gemini still key-guarded after reverts',backendAvailable("gemini")===false);
 
   console.log(\`\n=== \${pass} passed, \${fail} failed ===\`);
+  // ── Cloudflare CORS-dead scenarios (browser-blocked gateway) ──
+  BACKEND_EXHAUSTED.clear();LAST_FAILOVER_FROM.clear();
+  CONFIG={backend:"cloudflare",groqKey:"gk",cerebrasKey:"",cfId:"cfid",cfTok:"cftok",gemKey:"",usage:0};
+  FAILMAP={cloudflare:{code:"CF_CORS"}};
+  CALLS.length=0;
+  const cf1=await callAI("hi");
+  t('cloudflare CORS-dead → in-flight failover to groq',cf1==="groq-result"&&CALLS.join(",")==="cloudflare,groq");
+  t('cloudflare flagged session-dead + unavailable',CF_SESSION_DEAD===true&&backendAvailable("cloudflare")===false);
+  CALLS.length=0;
+  const cf2=await callAI("hi");
+  t('later calls skip cloudflare entirely',cf2==="groq-result"&&CALLS[0]==="groq"&&CALLS.length===1);
+  clearBackendFailover("cloudflare");
+  CALLS.length=0;
+  const cf3=await callAI("hi");
+  t('Revert re-tests cloudflare first (still dead → re-marked + failover)',CALLS.join(",")==="cloudflare,groq"&&CF_SESSION_DEAD===true);
+  CF_SESSION_DEAD=false;BACKEND_EXHAUSTED.clear();LAST_FAILOVER_FROM.clear();
+  FAILMAP={cloudflare:{code:"CF_CORS"}};
+  CALLS.length=0;
+  const cf4=await callAIStream("hi",0.8,{onStream:()=>{}});
+  t('stream: cloudflare CORS-dead → groq delivers',cf4==="groq-result"&&CALLS.join(",")==="cloudflare,groq");
+  CONFIG={backend:"groq",groqKey:"gk",cerebrasKey:"ck",cfId:"",cfTok:"",gemKey:"",usage:0}; // restore
   process.exit(fail?1:0);
 })();
 `;

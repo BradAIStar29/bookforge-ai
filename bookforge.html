@@ -1346,6 +1346,8 @@ async function callCloudflare(prompt2, temperature = 0.85, opts = {}) {
         throw { code: "TIMEOUT", msg: "Cloudflare request timed out (90s). Retried 2x \u2014 please try again." };
       }
       if (e?.code === "QUOTA" || e?.code === "BAD_KEY" || e?.code === "EMPTY") throw e;
+      if (e?.code === "CF_CORS") throw e;
+      if (e?.message === "Failed to fetch" || e?.name === "TypeError") throw { code: "CF_CORS", msg: "Cloudflare blocked the browser request (CORS) \u2014 no point retrying this session." };
       if (retries < 2 && (e?.message?.includes("fetch") || e?.message?.includes("network"))) {
         window.dispatchEvent(new CustomEvent("bfai:retry", { detail: { attempt: retries + 1 } }));
         playRetryChime();
@@ -1367,6 +1369,16 @@ function notifyBackendSwitch() {
 }
 function kiloFailureShouldFailover(e) {
   return e?.code === "KILO_ERROR" || e?.code === "TIMEOUT";
+}
+let CF_SESSION_DEAD = false;
+function notifyCfSwitch(next) {
+  try {
+    window.dispatchEvent(new CustomEvent("bfai:retry", { detail: { reason: "notice", msg: `\u{1F50C} Cloudflare is blocked by browser CORS right now \u2014 auto-switched to ${next || "your next backend"} for this session.` } }));
+  } catch (e) {
+  }
+}
+function cfFailureShouldFailover(e) {
+  return e?.code === "CF_CORS";
 }
 let PUTER_LOW_BALANCE = false;
 const PUTER_PENDING_REJECTS = /* @__PURE__ */ new Set();
@@ -1444,7 +1456,7 @@ function backendAvailable(b) {
   if (b === "puter") return !PUTER_LOW_BALANCE;
   if (b === "groq") return !!getGroqKey();
   if (b === "cerebras") return !!getCerebrasKey();
-  if (b === "cloudflare") return !!(getCloudflareAccountId() && getCloudflareToken());
+  if (b === "cloudflare") return !!(getCloudflareAccountId() && getCloudflareToken()) && !CF_SESSION_DEAD;
   if (b === "openrouter") return !!getOpenRouterKey();
   if (b === "huggingface") return !!getHfToken();
   if (b === "gemini") return !!getKey() && getUsage() < DAILY_LIMIT;
@@ -1469,6 +1481,7 @@ function clearBackendFailover(b) {
   LAST_FAILOVER_FROM.delete(b);
   if (b === "puter") PUTER_LOW_BALANCE = false;
   if (b === "kilo") KILO_SESSION_DEAD = false;
+  if (b === "cloudflare") CF_SESSION_DEAD = false;
 }
 function failoverStatus() {
   const orig = getBackend();
@@ -1511,6 +1524,12 @@ async function callAI(prompt2, temperature = 0.85, opts = {}, _depth = 0) {
         KILO_SESSION_DEAD = true;
         notifyBackendSwitch();
         return callAI(prompt2, temperature, opts, _depth + 1);
+      }
+      if (backend === "cloudflare" && cfFailureShouldFailover(e)) {
+        CF_SESSION_DEAD = true;
+        const next = nextAvailableBackend("cloudflare");
+        notifyCfSwitch(next);
+        if (next) return callAI(prompt2, temperature, { ...opts, __forceBackend: next }, _depth + 1);
       }
       if (backend === "puter" && e?.code === "PUTER_LOW_BALANCE") {
         const next = nextAvailableBackend("puter");
@@ -1557,6 +1576,12 @@ async function callAIStream(prompt2, temperature = 0.85, opts = {}, _depth = 0) 
         KILO_SESSION_DEAD = true;
         notifyBackendSwitch();
         return callAIStream(prompt2, temperature, opts, _depth + 1);
+      }
+      if (backend === "cloudflare" && cfFailureShouldFailover(e)) {
+        CF_SESSION_DEAD = true;
+        const next = nextAvailableBackend("cloudflare");
+        notifyCfSwitch(next);
+        if (next) return callAIStream(prompt2, temperature, { ...opts, __forceBackend: next }, _depth + 1);
       }
       if (backend === "puter" && e?.code === "PUTER_LOW_BALANCE") {
         const next = nextAvailableBackend("puter");
@@ -3900,11 +3925,7 @@ function cleanRewriteOutput(text) {
 async function rewriteChapterWithFeedback(ch, score, book) {
   const tells = [...score?.ai_tells_found || [], ...score?.structural_issues || [], ...score?.voice_issues || []].filter(Boolean).slice(0, 10);
   const wordCount = ch.content.split(/\s+/).length;
-  const prompt2 = `You are a human novelist doing a hard line-edit. Rewrite the chapter below so it reads unmistakably human. An AI detector flagged these problems:
-
-` + (tells.length ? tells.map((t, i) => `${i + 1}. ${t}`).join("\n") : "AI-sounding prose \u2014 flat rhythm, told emotions, generic details") + (score?.overall_advice ? `
-
-EDITOR NOTE: ${score.overall_advice}` : "") + `
+  const RULES = `
 
 REWRITE RULES \u2014 violating these fails the human-voice gate:
 \u2022 Fix EVERY flagged problem
@@ -3915,11 +3936,62 @@ REWRITE RULES \u2014 violating these fails the human-voice gate:
 \u2022 No "in that moment", "couldn't help but", "a wave of", no em-dash overuse
 \u2022 Conflict leaves residue \u2014 do NOT resolve cleanly
 \u2022 Keep the SAME plot events, character names, scene order, and dialogue intent
-\u2022 Output ONLY the rewritten chapter text \u2014 no commentary, no markdown, no headers
-
-Book: "${book.title}" (${book.genre})
+`;
+  const CTX = `Book: "${book.title}" (${book.genre})
 Chapter ${ch.number}: "${ch.title}"
-Target: ~${wordCount.toLocaleString()} words (same story, same length).
+`;
+  const issues = (tells.length ? tells.map((t, i) => `${i + 1}. ${t}`).join("\n") : "AI-sounding prose \u2014 flat rhythm, told emotions, generic details") + (score?.overall_advice ? `
+
+EDITOR NOTE: ${score.overall_advice}` : "");
+  const paras = ch.content.split(/\n{2,}/);
+  const quoteOf = (t) => (String(t).match(/"([^"]{4,})"/) || [])[1];
+  const flagHits = (p) => {
+    let hits = 0;
+    const low = p.toLowerCase();
+    for (const t of tells) {
+      const q = quoteOf(t);
+      if (q && low.includes(q.toLowerCase())) hits++;
+    }
+    for (const ex of score?.rewrite_examples || []) if (ex?.original && p.includes(ex.original)) hits++;
+    for (const t of AI_TELLS) if (low.includes(t.toLowerCase())) hits++;
+    return hits;
+  };
+  const flagged = paras.map((p, i) => ({ p, i, hits: flagHits(p) })).filter((x) => x.hits > 0);
+  const flaggedWords = flagged.reduce((a, x) => a + x.p.split(/\s+/).length, 0);
+  const sceneMode = flagged.length >= 2 && flagged.length < paras.length && flaggedWords > 0 && flaggedWords < wordCount * 0.6;
+  if (sceneMode) {
+    const picks = flagged.slice(0, 6);
+    const prompt3 = `You are a human novelist doing a hard line-edit. Rewrite ONLY the flagged passages below so they read unmistakably human. An AI detector flagged these problems:
+
+${issues}` + RULES + `\u2022 Output ONLY the rewritten passages, in the exact delimited format given \u2014 nothing else. Each passage must be about the same length as its original.
+
+${CTX}` + picks.map((x, k) => `
+<<<P${k + 1}>>>
+${x.p}
+<<<END>>>`).join("");
+    const raw = await callAI(prompt3, 0.85, { task: "creative" });
+    trackUsage();
+    if (raw) {
+      const out = paras.slice();
+      let applied = 0;
+      picks.forEach((x, k) => {
+        const m = raw.match(new RegExp("<<<P" + (k + 1) + ">>>([\\s\\S]*?)(?:<<<END>>>|$)"));
+        const rewritten = m ? cleanRewriteOutput(m[1]) : "";
+        const minWords = Math.max(5, Math.round(x.p.split(/\s+/).length * 0.35));
+        if (rewritten && rewritten.split(/\s+/).length >= minWords) {
+          out[x.i] = rewritten;
+          applied++;
+        }
+      });
+      const merged = out.join("\n\n");
+      if (applied > 0 && merged.split(/\s+/).length >= Math.round(wordCount * 0.75)) return merged;
+    }
+  }
+  const prompt2 = `You are a human novelist doing a hard line-edit. Rewrite the chapter below so it reads unmistakably human. An AI detector flagged these problems:
+
+${issues}` + RULES + `\u2022 Output ONLY the rewritten chapter text \u2014 no commentary, no markdown, no headers
+
+` + CTX + `Target: ~${wordCount.toLocaleString()} words (same story, same length).
 
 CHAPTER TEXT:
 ${ch.content}`;
@@ -3928,6 +4000,116 @@ ${ch.content}`;
   const wc = (content || "").split(/\s+/).length;
   if (!content || wc < Math.max(250, Math.round(wordCount * 0.5))) throw { code: "SHORT_REWRITE", msg: "Rewrite came back too short \u2014 kept the original chapter." };
   return content;
+}
+async function runImprovementRounds(bookId, logFn = () => {
+}, refresh = () => {
+}) {
+  for (let round = 1; round <= 3; round++) {
+    if (quotaBlocked()) {
+      logFn("\u23F8\uFE0F Daily quota reached \u2014 progress saved. Run again after the quota resets.");
+      break;
+    }
+    const b = getBook(bookId);
+    if (!b) break;
+    const rv = b.review?.overall_score || 0;
+    const wq = b.manuscript_quality?.overall_human_score || 0;
+    if (rv >= 75 && wq >= 78) break;
+    logFn(`\u{1F3C1} Improvement round ${round}/3 \u2014 Review ${rv}/75 \xB7 Writing ${wq}/78`);
+    if (rv < 75 && b.review && getUsage() < DAILY_LIMIT - 2) {
+      try {
+        const rvd = b.review;
+        const fixes = {};
+        if (rvd.title_suggestions?.[0]) {
+          const parts = rvd.title_suggestions[0].split(":");
+          fixes.title = parts[0].trim();
+          const sub = parts.slice(1).join(":").trim();
+          if (sub) fixes.subtitle = sub;
+        }
+        if (rvd.subtitle_suggestion) fixes.subtitle = rvd.subtitle_suggestion;
+        if (rvd.keyword_suggestions?.length) fixes.seo_keywords = rvd.keyword_suggestions.join(", ");
+        if (rvd.seo_rewrite) fixes.seo_description = rvd.seo_rewrite;
+        if (Object.keys(fixes).length > 0) {
+          logFn("  \u{1F4D6} Applying Review Agent suggestions\u2026");
+          updateBook(bookId, fixes);
+          const reReview = await runReviewAgent({ ...b, ...fixes });
+          updateBook(bookId, { review: reReview, review_done: true });
+          logFn(`  \u{1F4CA} Review: ${rv} \u2192 ${reReview.overall_score}/100`);
+        }
+      } catch (e) {
+        if (e?.code === "QUOTA") break;
+        logFn("  \u26A0\uFE0F Review fix failed \u2014 continuing to writing fixes");
+      }
+    }
+    const b2 = getBook(bookId) || b;
+    const wq2 = b2?.manuscript_quality?.overall_human_score || 0;
+    if (wq2 < 78 && getUsage() < DAILY_LIMIT - 6) {
+      try {
+        let scores = { ...b2.writing_quality || {} };
+        const all = b2.chapters || [];
+        const written = all.map((c, i) => ({ ...c, _i: i })).filter((c) => c.content);
+        const scored = written.filter((c) => scores[c._i]).sort((x, y) => scores[x._i].human_score - scores[y._i].human_score);
+        const unscored = written.filter((c) => !scores[c._i]);
+        const targets = [...scored, ...unscored].slice(0, 3);
+        logFn(`  \u270D\uFE0F Targeting ${targets.map((t) => `Ch ${t._i + 1}`).join(", ")}\u2026`);
+        let analyzed = 0;
+        for (const t of targets) {
+          if (scores[t._i] || analyzed >= 2 || quotaBlocked()) continue;
+          try {
+            const res = await analyzeChapterHumanness(t.content, b2.title, b2.genre, t.title);
+            scores = { ...scores, [t._i]: res };
+            analyzed++;
+            updateBook(bookId, { writing_quality: scores });
+          } catch (e) {
+            if (e?.code === "QUOTA") break;
+          }
+        }
+        let chaps = [...getBook(bookId)?.chapters || all];
+        let changed = false;
+        for (const t of targets) {
+          const sc = scores[t._i];
+          const ch = chaps[t._i];
+          if (!sc?.rewrite_examples?.length || !ch?.content) continue;
+          let content = ch.content;
+          for (const ex of sc.rewrite_examples) {
+            if (ex.original && ex.rewrite && content.includes(ex.original)) {
+              content = content.replace(ex.original, ex.rewrite);
+              changed = true;
+            }
+          }
+          if (content !== ch.content) chaps[t._i] = { ...withVersionSnapshot(ch, "Improvement round rewrite"), content };
+        }
+        let budget = 2;
+        for (const t of targets) {
+          if (budget <= 0 || quotaBlocked()) break;
+          const sc = scores[t._i];
+          const ch = chaps[t._i];
+          if (!sc || sc.human_score >= 78 || !ch?.content) continue;
+          logFn(`  \u{1F527} Rewriting chapter ${t._i + 1} (scored ${sc.human_score}/100)\u2026`);
+          try {
+            const better = await rewriteChapterWithFeedback(ch, sc, b2);
+            chaps[t._i] = { ...withVersionSnapshot(ch, "AI rewrite (improvement round)"), content: better };
+            changed = true;
+            budget--;
+          } catch (e) {
+            if (e?.code === "QUOTA") break;
+          }
+        }
+        if (changed) updateBook(bookId, { chapters: chaps });
+        if (!quotaBlocked()) {
+          const reWQ = await runManuscriptHumanCheck(getBook(bookId) || b2);
+          updateBook(bookId, { manuscript_quality: reWQ, wq_done: true });
+          logFn(`  \u270D\uFE0F Writing: ${wq2} \u2192 ${reWQ.overall_human_score}/100`);
+        }
+      } catch (e) {
+        if (e?.code === "QUOTA") break;
+        logFn("  \u26A0\uFE0F Writing fix round failed \u2014 see Writing Quality tab");
+      }
+    }
+    refresh();
+  }
+  const fb = getBook(bookId);
+  const passed = (fb?.review?.overall_score || 0) >= 75 && (fb?.manuscript_quality?.overall_human_score || 0) >= 78;
+  return { passed, rv: fb?.review?.overall_score || 0, wq: fb?.manuscript_quality?.overall_human_score || 0 };
 }
 function WritingQualityPanel({ book, onSettings, onApply }) {
   const [chScores, setChScores] = useState(book.writing_quality || {});
@@ -4645,11 +4827,27 @@ Respond ONLY JSON: {"seo_title":"","seo_description":"","primary_keywords":[""]}
               addLog(`  \u{1F916} Running review agent\u2026`);
               const freshBook = getBook(id);
               const review = await runReviewAgent(freshBook);
-              updateBook(id, { review, status: review.verdict === "PASS" ? "ready" : "writing", auto_build: false, build_step: "", review_done: true, build_complete: true, build_complete_date: (/* @__PURE__ */ new Date()).toISOString(), gates_passed: review.verdict === "PASS" });
+              updateBook(id, { review, status: review.verdict === "PASS" ? "ready" : "writing", auto_build: false, build_step: "", review_done: true, build_complete: true, build_complete_date: (/* @__PURE__ */ new Date()).toISOString(), gates_passed: false });
               addLog(`  ${review.verdict === "PASS" ? "\u2705" : "\u26A0\uFE0F"} Review: ${review.overall_score}/100 \u2014 ${review.verdict}`);
               notifyDone(review.verdict === "PASS" ? "\u2705 Queue book done" : "\u26A0\uFE0F Queue book done", `"${book.title}" \u2014 review ${review.overall_score}/100`);
             } catch (rvE) {
               addLog("  \u26A0\uFE0F Review step failed: " + errMsg(rvE) + " \u2014 continuing");
+            }
+          }
+          if (getUsage() < DAILY_LIMIT) {
+            try {
+              const fq = getBook(id);
+              if (fq) {
+                addLog(`  \u270D\uFE0F Writing Quality check + improvement rounds\u2026`);
+                const ms = await runManuscriptHumanCheck(fq);
+                updateBook(id, { manuscript_quality: ms, wq_done: true });
+                const res = await runImprovementRounds(id, (m) => addLog(m));
+                updateBook(id, { gates_passed: res.passed });
+                addLog(res.passed ? `  \u2705 Both gates passed (Review ${res.rv}/75 \xB7 Writing ${res.wq}/78)!` : `  \u26A0\uFE0F Gates short after rounds (Review ${res.rv}/75 \xB7 Writing ${res.wq}/78) \u2014 progress saved`);
+              }
+            } catch (wqE) {
+              if (wqE?.code === "QUOTA") addLog("  \u23F3 Quota hit during writing quality \u2014 book saved, run Finish later");
+              else addLog("  \u26A0\uFE0F Writing Quality step failed: " + errMsg(wqE) + " \u2014 continuing");
             }
           }
           removeFromQueue(id);
@@ -4834,6 +5032,30 @@ function SeriesPage({ navigate, onSettings }) {
   const [suggestingSeriesTitles, setSuggestingSeriesTitles] = useState(false);
   const [seriesTitleError, setSeriesTitleError] = useState("");
   const [writingSeries, setWritingSeries] = useState(null);
+  const finishSeries = async (sid) => {
+    const s = getSeries().find((x) => x.id === sid);
+    if (!s) return;
+    const all = getBooks().filter((bk) => bk.series_id === sid);
+    if (all.length === 0) {
+      alert("No books in this series yet \u2014 use \u{1F680} Write Series to create the planned ones.");
+      return;
+    }
+    const unfinished = all.filter((bk) => !bk.build_complete || !bk.gates_passed).sort((a, b2) => (a.series_number || 99) - (b2.series_number || 99));
+    if (unfinished.length === 0) {
+      alert("\u2705 Every book in this series is finished with both quality gates passed!");
+      return;
+    }
+    if (!confirm(`\u{1F3C1} Finish "${s.name}"?
+
+${unfinished.length} book(s) will run through the full pipeline \u2014 writing, SEO, cover, review, and improvement rounds until both quality gates pass \u2014 in series order.`)) return;
+    const q = getQueue();
+    for (const bk of unfinished) if (!q.includes(bk.id)) q.push(bk.id);
+    setQueue(q);
+    if (q.length > 0) {
+      localStorage.setItem("bfai_queue_autostart", "1");
+      navigate("queue");
+    }
+  };
   const writeSeries = async (sid) => {
     const s = getSeries().find((x) => x.id === sid);
     if (!s) return;
@@ -5084,7 +5306,7 @@ Respond ONLY with valid JSON (no markdown):
     const totalWords = seriesBooks.reduce((a, b) => a + (b.word_count || 0), 0);
     const donePct = seriesList.length ? Math.round(seriesBooks.filter((b) => b.status === "published" || b.status === "ready").length / Math.max(1, seriesList.reduce((a, s) => a + (s.book_count || 0), 0)) * 100) : 0;
     return /* @__PURE__ */ React.createElement("div", { className: "grid grid-cols-3 gap-3 mb-6" }, /* @__PURE__ */ React.createElement("div", { className: "bg-cyan-500/10 border border-cyan-500/20 rounded-xl p-3 text-center" }, /* @__PURE__ */ React.createElement("p", { className: "text-white text-xl font-bold" }, seriesList.length), /* @__PURE__ */ React.createElement("p", { className: "text-cyan-300/60 text-xs" }, "Series")), /* @__PURE__ */ React.createElement("div", { className: "bg-purple-500/10 border border-purple-500/20 rounded-xl p-3 text-center" }, /* @__PURE__ */ React.createElement("p", { className: "text-white text-xl font-bold" }, (totalWords / 1e3).toFixed(0), "k"), /* @__PURE__ */ React.createElement("p", { className: "text-purple-300/60 text-xs" }, "Total Words")), /* @__PURE__ */ React.createElement("div", { className: "bg-green-500/10 border border-green-500/20 rounded-xl p-3 text-center" }, /* @__PURE__ */ React.createElement("p", { className: "text-white text-xl font-bold" }, donePct, "%"), /* @__PURE__ */ React.createElement("p", { className: "text-green-300/60 text-xs" }, "Published")));
-  })(), seriesList.length === 0 && !showCreate ? /* @__PURE__ */ React.createElement("div", { className: "text-center py-20" }, /* @__PURE__ */ React.createElement("div", { className: "text-7xl mb-4" }, "\u{1F4D7}"), /* @__PURE__ */ React.createElement("h2", { className: "text-white text-xl font-bold mb-2" }, "No series yet"), /* @__PURE__ */ React.createElement("p", { className: "text-white/40 mb-6" }, "Build a multi-book world with shared characters, locations, and lore"), /* @__PURE__ */ React.createElement("button", { onClick: () => setShowCreate(true), className: "bg-gradient-to-r from-cyan-500 to-blue-500 text-white px-8 py-3.5 rounded-xl font-semibold text-lg hover:opacity-90" }, "+ Create Your First Series")) : /* @__PURE__ */ React.createElement("div", { className: "space-y-6" }, seriesList.map((series) => /* @__PURE__ */ React.createElement("div", { key: series.id, className: "bg-white/5 border border-white/10 rounded-2xl overflow-hidden" }, /* @__PURE__ */ React.createElement("div", { className: "p-6 border-b border-white/10" }, /* @__PURE__ */ React.createElement("div", { className: "flex items-start justify-between gap-4 flex-wrap" }, /* @__PURE__ */ React.createElement("div", { className: "flex-1 min-w-0" }, /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-2 mb-2 flex-wrap" }, /* @__PURE__ */ React.createElement("span", { className: "bg-cyan-500/20 text-cyan-300 text-xs px-2.5 py-1 rounded-full border border-cyan-500/30" }, series.book_count, " Books"), /* @__PURE__ */ React.createElement("span", { className: "bg-white/10 text-white/40 text-xs px-2.5 py-1 rounded-full" }, series.genre), series.character_roster?.length > 0 && /* @__PURE__ */ React.createElement("span", { className: "bg-purple-500/20 text-purple-300 text-xs px-2.5 py-1 rounded-full border border-purple-500/20" }, "\u{1F465} ", series.character_roster.length, " chars"), series.world_locations?.length > 0 && /* @__PURE__ */ React.createElement("span", { className: "bg-blue-500/20 text-blue-300 text-xs px-2.5 py-1 rounded-full border border-blue-500/20" }, "\u{1F4CD} ", series.world_locations.length, " locations")), /* @__PURE__ */ React.createElement("h3", { className: "text-white text-xl font-bold" }, series.name), /* @__PURE__ */ React.createElement("p", { className: "text-white/50 text-sm mt-1 line-clamp-2" }, series.plan?.series_description), series.plan?.tone_style && /* @__PURE__ */ React.createElement("p", { className: "text-cyan-300/50 text-xs mt-1 italic" }, series.plan.tone_style)), /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-2 shrink-0" }, /* @__PURE__ */ React.createElement("button", { onClick: () => setViewBible(series.id), className: "text-xs border border-cyan-500/40 text-cyan-300 px-3 py-2 rounded-lg hover:bg-cyan-500/10" }, "\u{1F4D6} View Bible"), /* @__PURE__ */ React.createElement("button", { disabled: writingSeries?.id === series.id, onClick: () => writeSeries(series.id), className: "text-xs bg-gradient-to-r from-purple-600 via-pink-600 to-purple-700 text-white font-semibold px-4 py-2 rounded-xl shadow-md shadow-purple-500/20 hover:opacity-95 transition-all disabled:opacity-60 shrink-0" }, writingSeries?.id === series.id ? writingSeries.note || "Queuing\u2026" : "\u{1F680} Write Series"), /* @__PURE__ */ React.createElement("button", { onClick: () => setContinuity(series.id), className: "text-xs border border-emerald-500/40 text-emerald-300 px-3 py-2 rounded-lg hover:bg-emerald-500/10" }, "\u{1F50D} Continuity"), /* @__PURE__ */ React.createElement("button", { onClick: (e) => deleteSeries(series.id, e), className: "text-white/50 hover:text-red-400 text-sm px-2" }, "\u{1F5D1}"))), series.plan?.series_arc && /* @__PURE__ */ React.createElement("div", { className: "mt-4 bg-white/5 rounded-xl p-3" }, /* @__PURE__ */ React.createElement("p", { className: "text-white/50 text-xs uppercase tracking-wider mb-1" }, "Series Arc"), /* @__PURE__ */ React.createElement("p", { className: "text-white/55 text-xs leading-relaxed" }, series.plan.series_arc))), /* @__PURE__ */ React.createElement("div", { className: "p-4" }, /* @__PURE__ */ React.createElement("p", { className: "text-white/60 text-xs uppercase tracking-wider mb-3 px-2" }, "Books in This Series"), /* @__PURE__ */ React.createElement("div", { className: "grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3" }, series.plan?.books?.map((bp, i) => {
+  })(), seriesList.length === 0 && !showCreate ? /* @__PURE__ */ React.createElement("div", { className: "text-center py-20" }, /* @__PURE__ */ React.createElement("div", { className: "text-7xl mb-4" }, "\u{1F4D7}"), /* @__PURE__ */ React.createElement("h2", { className: "text-white text-xl font-bold mb-2" }, "No series yet"), /* @__PURE__ */ React.createElement("p", { className: "text-white/40 mb-6" }, "Build a multi-book world with shared characters, locations, and lore"), /* @__PURE__ */ React.createElement("button", { onClick: () => setShowCreate(true), className: "bg-gradient-to-r from-cyan-500 to-blue-500 text-white px-8 py-3.5 rounded-xl font-semibold text-lg hover:opacity-90" }, "+ Create Your First Series")) : /* @__PURE__ */ React.createElement("div", { className: "space-y-6" }, seriesList.map((series) => /* @__PURE__ */ React.createElement("div", { key: series.id, className: "bg-white/5 border border-white/10 rounded-2xl overflow-hidden" }, /* @__PURE__ */ React.createElement("div", { className: "p-6 border-b border-white/10" }, /* @__PURE__ */ React.createElement("div", { className: "flex items-start justify-between gap-4 flex-wrap" }, /* @__PURE__ */ React.createElement("div", { className: "flex-1 min-w-0" }, /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-2 mb-2 flex-wrap" }, /* @__PURE__ */ React.createElement("span", { className: "bg-cyan-500/20 text-cyan-300 text-xs px-2.5 py-1 rounded-full border border-cyan-500/30" }, series.book_count, " Books"), /* @__PURE__ */ React.createElement("span", { className: "bg-white/10 text-white/40 text-xs px-2.5 py-1 rounded-full" }, series.genre), series.character_roster?.length > 0 && /* @__PURE__ */ React.createElement("span", { className: "bg-purple-500/20 text-purple-300 text-xs px-2.5 py-1 rounded-full border border-purple-500/20" }, "\u{1F465} ", series.character_roster.length, " chars"), series.world_locations?.length > 0 && /* @__PURE__ */ React.createElement("span", { className: "bg-blue-500/20 text-blue-300 text-xs px-2.5 py-1 rounded-full border border-blue-500/20" }, "\u{1F4CD} ", series.world_locations.length, " locations")), /* @__PURE__ */ React.createElement("h3", { className: "text-white text-xl font-bold" }, series.name), /* @__PURE__ */ React.createElement("p", { className: "text-white/50 text-sm mt-1 line-clamp-2" }, series.plan?.series_description), series.plan?.tone_style && /* @__PURE__ */ React.createElement("p", { className: "text-cyan-300/50 text-xs mt-1 italic" }, series.plan.tone_style)), /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-2 shrink-0" }, /* @__PURE__ */ React.createElement("button", { onClick: () => setViewBible(series.id), className: "text-xs border border-cyan-500/40 text-cyan-300 px-3 py-2 rounded-lg hover:bg-cyan-500/10" }, "\u{1F4D6} View Bible"), /* @__PURE__ */ React.createElement("button", { disabled: writingSeries?.id === series.id, onClick: () => writeSeries(series.id), className: "text-xs bg-gradient-to-r from-purple-600 via-pink-600 to-purple-700 text-white font-semibold px-4 py-2 rounded-xl shadow-md shadow-purple-500/20 hover:opacity-95 transition-all disabled:opacity-60 shrink-0" }, writingSeries?.id === series.id ? writingSeries.note || "Queuing\u2026" : "\u{1F680} Write Series"), /* @__PURE__ */ React.createElement("button", { onClick: () => finishSeries(series.id), title: "Run every unfinished book through the full pipeline + improvement rounds until both quality gates pass", className: "text-xs bg-gradient-to-r from-amber-500 to-orange-500 text-white font-bold px-4 py-2 rounded-xl hover:opacity-90 shadow-md shadow-amber-500/20" }, "\u{1F3C1} Finish Series"), /* @__PURE__ */ React.createElement("button", { onClick: () => setContinuity(series.id), className: "text-xs border border-emerald-500/40 text-emerald-300 px-3 py-2 rounded-lg hover:bg-emerald-500/10" }, "\u{1F50D} Continuity"), /* @__PURE__ */ React.createElement("button", { onClick: (e) => deleteSeries(series.id, e), className: "text-white/50 hover:text-red-400 text-sm px-2" }, "\u{1F5D1}"))), series.plan?.series_arc && /* @__PURE__ */ React.createElement("div", { className: "mt-4 bg-white/5 rounded-xl p-3" }, /* @__PURE__ */ React.createElement("p", { className: "text-white/50 text-xs uppercase tracking-wider mb-1" }, "Series Arc"), /* @__PURE__ */ React.createElement("p", { className: "text-white/55 text-xs leading-relaxed" }, series.plan.series_arc))), /* @__PURE__ */ React.createElement("div", { className: "p-4" }, /* @__PURE__ */ React.createElement("p", { className: "text-white/60 text-xs uppercase tracking-wider mb-3 px-2" }, "Books in This Series"), /* @__PURE__ */ React.createElement("div", { className: "grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3" }, series.plan?.books?.map((bp, i) => {
     const existingBook = series.book_ids?.map((id) => getBook(id)).find((b) => b && b.series_number === bp.number);
     return /* @__PURE__ */ React.createElement("div", { key: i, className: "bg-white/5 border border-white/10 rounded-xl p-4 hover:border-white/20 transition-all" }, /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-2 mb-2" }, /* @__PURE__ */ React.createElement("span", { className: "w-6 h-6 bg-gradient-to-br from-purple-500 to-pink-500 rounded-full flex items-center justify-center text-xs font-bold text-white" }, bp.number), existingBook && /* @__PURE__ */ React.createElement("span", { className: `text-xs px-2 py-0.5 rounded-full ${STATUS_COLORS[existingBook.status] || ""}` }, STATUS_ICONS[existingBook.status], " ", existingBook.status)), /* @__PURE__ */ React.createElement("h4", { className: "text-white font-semibold text-sm leading-tight mb-0.5" }, bp.title), bp.subtitle && /* @__PURE__ */ React.createElement("p", { className: "text-purple-300/70 text-xs mb-1" }, bp.subtitle), bp.character_focus && /* @__PURE__ */ React.createElement("p", { className: "text-cyan-300/50 text-xs mb-1" }, "\u{1F465} ", bp.character_focus), /* @__PURE__ */ React.createElement("p", { className: "text-white/35 text-xs leading-relaxed mb-3 line-clamp-3" }, bp.description), existingBook ? /* @__PURE__ */ React.createElement("div", { className: "space-y-2" }, /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-2 flex-wrap" }, /* @__PURE__ */ React.createElement("span", { className: `text-xs px-2 py-0.5 rounded-full border ${existingBook.status === "published" ? "bg-green-500/20 text-green-300 border-green-500/30" : existingBook.status === "ready" ? "bg-blue-500/20 text-blue-300 border-blue-500/30" : "bg-purple-500/20 text-purple-300 border-purple-500/30"}` }, existingBook.status), existingBook.word_count > 0 && /* @__PURE__ */ React.createElement("span", { className: "text-white/60 text-xs" }, (existingBook.word_count || 0).toLocaleString(), "w"), existingBook.review?.overall_score >= 70 && /* @__PURE__ */ React.createElement("span", { className: "text-xs text-amber-300/70" }, "\u2B50 ", existingBook.review.overall_score)), /* @__PURE__ */ React.createElement("button", { onClick: () => navigate("editor", existingBook.id), className: "w-full text-xs border border-white/20 text-white/50 py-2 rounded-lg hover:bg-white/5" }, "Open Editor \u2192")) : /* @__PURE__ */ React.createElement("button", { onClick: () => buildBook(series, bp), className: "w-full text-xs bg-gradient-to-r from-purple-500 to-pink-500 text-white py-2 rounded-lg hover:opacity-90" }, "\u2728 Build This Book"));
   })))))));
@@ -6573,120 +6795,7 @@ Respond ONLY JSON: {"opening_lines":[""],"back_cover_blurbs":[""],"tagline":"","
     try {
       log("\u{1F3C1} Finish Book: completing the pipeline\u2026");
       await runAutoBuild(fb);
-      for (let round = 1; round <= 3; round++) {
-        if (quotaBlocked()) {
-          log("\u23F8\uFE0F Daily quota reached \u2014 progress saved. Click Finish Book again after the reset.");
-          break;
-        }
-        const b = getBook(bookId);
-        if (!b) break;
-        const rv = b.review?.overall_score || 0;
-        const wq = b.manuscript_quality?.overall_human_score || 0;
-        if (rv >= 75 && wq >= 78) break;
-        log(`\u{1F3C1} Improvement round ${round}/3 \u2014 Review ${rv}/75 \xB7 Writing ${wq}/78`);
-        if (rv < 75 && b.review && getUsage() < DAILY_LIMIT - 2) {
-          try {
-            const rvd = b.review;
-            const fixes = {};
-            if (rvd.title_suggestions?.[0]) {
-              const parts = rvd.title_suggestions[0].split(":");
-              fixes.title = parts[0].trim();
-              const sub = parts.slice(1).join(":").trim();
-              if (sub) fixes.subtitle = sub;
-            }
-            if (rvd.subtitle_suggestion) fixes.subtitle = rvd.subtitle_suggestion;
-            if (rvd.keyword_suggestions?.length) fixes.seo_keywords = rvd.keyword_suggestions.join(", ");
-            if (rvd.seo_rewrite) fixes.seo_description = rvd.seo_rewrite;
-            if (Object.keys(fixes).length > 0) {
-              log("  \u{1F4D6} Applying Review Agent suggestions\u2026");
-              const updated = updateBook(bookId, fixes) || b;
-              setBook(getBook(bookId));
-              const reReview = await runReviewAgent({ ...b, ...fixes });
-              updateBook(bookId, { review: reReview, review_done: true });
-              setBook(getBook(bookId));
-              log(`  \u{1F4CA} Review: ${rv} \u2192 ${reReview.overall_score}/100`);
-            }
-          } catch (e) {
-            if (e?.code === "QUOTA") {
-              setQuotaHit(true);
-              break;
-            }
-            log("  \u26A0\uFE0F Review fix failed \u2014 continuing to writing fixes");
-          }
-        }
-        const b2 = getBook(bookId) || b;
-        const wq2 = b2?.manuscript_quality?.overall_human_score || 0;
-        if (wq2 < 78 && getUsage() < DAILY_LIMIT - 6) {
-          try {
-            let scores = { ...b2.writing_quality || {} };
-            const all = b2.chapters || [];
-            const written = all.map((c, i) => ({ ...c, _i: i })).filter((c) => c.content);
-            const scored = written.filter((c) => scores[c._i]).sort((x, y) => scores[x._i].human_score - scores[y._i].human_score);
-            const unscored = written.filter((c) => !scores[c._i]);
-            const targets = [...scored, ...unscored].slice(0, 3);
-            log(`  \u270D\uFE0F Targeting ${targets.map((t) => `Ch ${t._i + 1}`).join(", ")}\u2026`);
-            let analyzed = 0;
-            for (const t of targets) {
-              if (scores[t._i] || analyzed >= 2 || quotaBlocked()) continue;
-              try {
-                const res = await analyzeChapterHumanness(t.content, b2.title, b2.genre, t.title);
-                scores = { ...scores, [t._i]: res };
-                analyzed++;
-                updateBook(bookId, { writing_quality: scores });
-              } catch (e) {
-                if (e?.code === "QUOTA") break;
-              }
-            }
-            let chaps = [...getBook(bookId)?.chapters || all];
-            let changed = false;
-            for (const t of targets) {
-              const sc = scores[t._i];
-              const ch = chaps[t._i];
-              if (!sc?.rewrite_examples?.length || !ch?.content) continue;
-              let content = ch.content;
-              for (const ex of sc.rewrite_examples) {
-                if (ex.original && ex.rewrite && content.includes(ex.original)) {
-                  content = content.replace(ex.original, ex.rewrite);
-                  changed = true;
-                }
-              }
-              if (content !== ch.content) chaps[t._i] = { ...withVersionSnapshot(ch, "Finish Book rewrite"), content };
-            }
-            let budget = 2;
-            for (const t of targets) {
-              if (budget <= 0 || quotaBlocked()) break;
-              const sc = scores[t._i];
-              const ch = chaps[t._i];
-              if (!sc || sc.human_score >= 78 || !ch?.content) continue;
-              log(`  \u{1F527} Rewriting chapter ${t._i + 1} (scored ${sc.human_score}/100)\u2026`);
-              try {
-                const better = await rewriteChapterWithFeedback(ch, sc, b2);
-                chaps[t._i] = { ...withVersionSnapshot(ch, "AI rewrite (Finish Book)"), content: better };
-                changed = true;
-                budget--;
-              } catch (e) {
-                if (e?.code === "QUOTA") break;
-              }
-            }
-            if (changed) {
-              updateBook(bookId, { chapters: chaps });
-              setBook(getBook(bookId));
-            }
-            if (!quotaBlocked()) {
-              const reWQ = await runManuscriptHumanCheck(getBook(bookId) || b2);
-              updateBook(bookId, { manuscript_quality: reWQ, wq_done: true });
-              setBook(getBook(bookId));
-              log(`  \u270D\uFE0F Writing: ${wq2} \u2192 ${reWQ.overall_human_score}/100`);
-            }
-          } catch (e) {
-            if (e?.code === "QUOTA") {
-              setQuotaHit(true);
-              break;
-            }
-            log("  \u26A0\uFE0F Writing fix round failed \u2014 see Writing Quality tab");
-          }
-        }
-      }
+      await runImprovementRounds(bookId, log, () => setBook(getBook(bookId)));
       const finalB = getBook(bookId);
       if (finalB) {
         const passed = (finalB.review?.overall_score || 0) >= 75 && (finalB.manuscript_quality?.overall_human_score || 0) >= 78;

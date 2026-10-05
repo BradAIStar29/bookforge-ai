@@ -1173,6 +1173,8 @@ async function callCloudflare(prompt,temperature=0.85,opts={}){
         throw{code:"TIMEOUT",msg:"Cloudflare request timed out (90s). Retried 2x — please try again."};
       }
       if(e?.code==="QUOTA"||e?.code==="BAD_KEY"||e?.code==="EMPTY")throw e;
+      if(e?.code==="CF_CORS")throw e;
+      if(e?.message==="Failed to fetch"||e?.name==="TypeError")throw{code:"CF_CORS",msg:"Cloudflare blocked the browser request (CORS) — no point retrying this session."};
       if(retries<2&&(e?.message?.includes("fetch")||e?.message?.includes("network"))){
         window.dispatchEvent(new CustomEvent("bfai:retry",{detail:{attempt:retries+1}}));
         playRetryChime();
@@ -1196,6 +1198,19 @@ function notifyBackendSwitch(){
 }
 function kiloFailureShouldFailover(e){
   return e?.code==="KILO_ERROR"||e?.code==="TIMEOUT"; // NOT QUOTA (rate-limit = alive, just busy)
+}
+
+// Cloudflare's API gateway serves no CORS headers for browser calls (verified
+// 2026-09-28: OPTIONS preflight → 405, no access-control-allow-origin), so
+// every fetch from the app rejects instantly with "Failed to fetch". Retrying
+// is pointless for the whole session — flag it dead and route around it, the
+// same pattern as Kilo. "Revert now" in Settings clears the flag to re-test.
+let CF_SESSION_DEAD=false;
+function notifyCfSwitch(next){
+  try{window.dispatchEvent(new CustomEvent("bfai:retry",{detail:{reason:"notice",msg:`🔌 Cloudflare is blocked by browser CORS right now — auto-switched to ${next||"your next backend"} for this session.`}}));}catch(e){}
+}
+function cfFailureShouldFailover(e){
+  return e?.code==="CF_CORS"; // pure network/CORS block — NOT CF_ERROR (that can be a live 5xx) or QUOTA
 }
 
 // ── Puter "Low Balance" trap ────────────────────────────────────────────────
@@ -1262,7 +1277,7 @@ function backendAvailable(b){
   if(b==="puter")return!PUTER_LOW_BALANCE;
   if(b==="groq")return!!getGroqKey();
   if(b==="cerebras")return!!getCerebrasKey();
-  if(b==="cloudflare")return!!(getCloudflareAccountId()&&getCloudflareToken());
+  if(b==="cloudflare")return!!(getCloudflareAccountId()&&getCloudflareToken())&&!CF_SESSION_DEAD;
   if(b==="openrouter")return!!getOpenRouterKey();
   if(b==="huggingface")return!!getHfToken();
   if(b==="gemini")return!!getKey()&&getUsage()<DAILY_LIMIT;
@@ -1281,6 +1296,7 @@ function clearBackendFailover(b){
   LAST_FAILOVER_FROM.delete(b);
   if(b==="puter")PUTER_LOW_BALANCE=false; // try again — the low-balance watcher re-protects instantly if the balance is still empty
   if(b==="kilo")KILO_SESSION_DEAD=false;  // try again — a hard failure re-marks it immediately
+  if(b==="cloudflare")CF_SESSION_DEAD=false; // re-test CORS — it may come back like Kilo's endpoint did
 }
 function failoverStatus(){
   const orig=getBackend();
@@ -1317,6 +1333,7 @@ async function callAI(prompt,temperature=0.85,opts={},_depth=0){
   }catch(e){
     if(_depth<5){
       if(backend==="kilo"&&kiloFailureShouldFailover(e)){KILO_SESSION_DEAD=true;notifyBackendSwitch();return callAI(prompt,temperature,opts,_depth+1);}
+      if(backend==="cloudflare"&&cfFailureShouldFailover(e)){CF_SESSION_DEAD=true;const next=nextAvailableBackend("cloudflare");notifyCfSwitch(next);if(next)return callAI(prompt,temperature,{...opts,__forceBackend:next},_depth+1);}
       if(backend==="puter"&&e?.code==="PUTER_LOW_BALANCE"){
         const next=nextAvailableBackend("puter");
         if(next){notifyPuterLowBalance(next);return callAI(prompt,temperature,{...opts,__forceBackend:next},_depth+1);}
@@ -1356,6 +1373,7 @@ async function callAIStream(prompt,temperature=0.85,opts={},_depth=0){
   }catch(e){
     if(_depth<5){
       if(backend==="kilo"&&kiloFailureShouldFailover(e)){KILO_SESSION_DEAD=true;notifyBackendSwitch();return callAIStream(prompt,temperature,opts,_depth+1);}
+      if(backend==="cloudflare"&&cfFailureShouldFailover(e)){CF_SESSION_DEAD=true;const next=nextAvailableBackend("cloudflare");notifyCfSwitch(next);if(next)return callAIStream(prompt,temperature,{...opts,__forceBackend:next},_depth+1);}
       if(backend==="puter"&&e?.code==="PUTER_LOW_BALANCE"){
         const next=nextAvailableBackend("puter");
         if(next){notifyPuterLowBalance(next);return callAIStream(prompt,temperature,{...opts,__forceBackend:next},_depth+1);}
@@ -3929,12 +3947,15 @@ function cleanRewriteOutput(text){
   return t.trim();
 }
 
+// Targeted AI rewrite of a weak chapter using its Writing Quality analysis results.
+// FAST PATH (scene mode): when only a few passages carry the AI tells, rewrite
+// ONLY those passages in a single small call (~2-3x faster + less drift than
+// regenerating the whole chapter) and splice them back in. Falls back to a
+// full-chapter rewrite when the tells are everywhere.
 async function rewriteChapterWithFeedback(ch,score,book){
   const tells=[...(score?.ai_tells_found||[]),...(score?.structural_issues||[]),...(score?.voice_issues||[])].filter(Boolean).slice(0,10);
   const wordCount=ch.content.split(/\s+/).length;
-  const prompt=`You are a human novelist doing a hard line-edit. Rewrite the chapter below so it reads unmistakably human. An AI detector flagged these problems:\n\n` +
-    (tells.length?tells.map((t,i)=>`${i+1}. ${t}`).join("\n"):"AI-sounding prose — flat rhythm, told emotions, generic details") +
-    (score?.overall_advice?`\n\nEDITOR NOTE: ${score.overall_advice}`:"") +
+  const RULES=
     `\n\nREWRITE RULES — violating these fails the human-voice gate:\n` +
     `• Fix EVERY flagged problem\n` +
     `• NEVER state emotions directly — show them through action, dialogue, specific sensory detail\n` +
@@ -3943,14 +3964,138 @@ async function rewriteChapterWithFeedback(ch,score,book){
     `• Replace generic details with specific observed ones (brands, textures, exact shades)\n` +
     `• No "in that moment", "couldn't help but", "a wave of", no em-dash overuse\n` +
     `• Conflict leaves residue — do NOT resolve cleanly\n` +
-    `• Keep the SAME plot events, character names, scene order, and dialogue intent\n` +
+    `• Keep the SAME plot events, character names, scene order, and dialogue intent\n`;
+  const CTX=`Book: "${book.title}" (${book.genre})\nChapter ${ch.number}: "${ch.title}"\n`;
+  const issues=(tells.length?tells.map((t,i)=>`${i+1}. ${t}`).join("\n"):"AI-sounding prose — flat rhythm, told emotions, generic details")+(score?.overall_advice?`\n\nEDITOR NOTE: ${score.overall_advice}`:"");
+
+  // ── Scene mode: score paragraphs, rewrite only the flagged ones ──
+  const paras=ch.content.split(/\n{2,}/);
+  const quoteOf=t=>(String(t).match(/"([^"]{4,})"/)||[])[1];
+  const flagHits=p=>{
+    let hits=0;const low=p.toLowerCase();
+    for(const t of tells){const q=quoteOf(t);if(q&&low.includes(q.toLowerCase()))hits++;}
+    for(const ex of (score?.rewrite_examples||[]))if(ex?.original&&p.includes(ex.original))hits++;
+    for(const t of AI_TELLS)if(low.includes(t.toLowerCase()))hits++;
+    return hits;
+  };
+  const flagged=paras.map((p,i)=>({p,i,hits:flagHits(p)})).filter(x=>x.hits>0);
+  const flaggedWords=flagged.reduce((a,x)=>a+x.p.split(/\s+/).length,0);
+  const sceneMode=flagged.length>=2&&flagged.length<paras.length&&flaggedWords>0&&flaggedWords<wordCount*0.6;
+  if(sceneMode){
+    const picks=flagged.slice(0,6);
+    const prompt=`You are a human novelist doing a hard line-edit. Rewrite ONLY the flagged passages below so they read unmistakably human. An AI detector flagged these problems:\n\n${issues}` +
+      RULES +
+      `• Output ONLY the rewritten passages, in the exact delimited format given — nothing else. Each passage must be about the same length as its original.\n\n${CTX}` +
+      picks.map((x,k)=>`\n<<<P${k+1}>>>\n${x.p}\n<<<END>>>`).join("");
+    const raw=await callAI(prompt,0.85,{task:"creative"});
+    trackUsage();
+    if(raw){
+      const out=paras.slice();
+      let applied=0;
+      picks.forEach((x,k)=>{
+        const m=raw.match(new RegExp("<<<P"+(k+1)+">>>([\\s\\S]*?)(?:<<<END>>>|$)"));
+        const rewritten=m?cleanRewriteOutput(m[1]):"";
+        const minWords=Math.max(5,Math.round(x.p.split(/\s+/).length*0.35));
+        if(rewritten&&rewritten.split(/\s+/).length>=minWords){out[x.i]=rewritten;applied++;}
+      });
+      const merged=out.join("\n\n");
+      if(applied>0&&merged.split(/\s+/).length>=Math.round(wordCount*0.75))return merged;
+    }
+    // scene parse failed → fall through to the full rewrite below
+  }
+
+  // ── Full-chapter rewrite (tells everywhere, or scene parse failed) ──
+  const prompt=`You are a human novelist doing a hard line-edit. Rewrite the chapter below so it reads unmistakably human. An AI detector flagged these problems:\n\n${issues}` +
+    RULES +
     `• Output ONLY the rewritten chapter text — no commentary, no markdown, no headers\n\n` +
-    `Book: "${book.title}" (${book.genre})\nChapter ${ch.number}: "${ch.title}"\nTarget: ~${wordCount.toLocaleString()} words (same story, same length).\n\nCHAPTER TEXT:\n${ch.content}`;
+    CTX + `Target: ~${wordCount.toLocaleString()} words (same story, same length).\n\nCHAPTER TEXT:\n${ch.content}`;
   const content=cleanRewriteOutput(await callAI(prompt,0.85,{task:"creative"}));
   trackUsage();
   const wc=(content||"").split(/\s+/).length;
   if(!content||wc<Math.max(250,Math.round(wordCount*0.5)))throw{code:"SHORT_REWRITE",msg:"Rewrite came back too short — kept the original chapter."};
   return content;
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// SHARED IMPROVEMENT ENGINE — used by the EditorPage 🏁 Finish button AND the
+// Build Queue. Up to 3 rounds of Review suggestion fixes + targeted Writing
+// Quality fixes on the 3 weakest chapters, until BOTH gates pass (75/78).
+// Pure data layer (getBook/updateBook) — callers pass a log + refresh callback.
+// ══════════════════════════════════════════════════════════════════════════════
+async function runImprovementRounds(bookId,logFn=()=>{},refresh=()=>{}){
+  for(let round=1;round<=3;round++){
+    if(quotaBlocked()){logFn("⏸️ Daily quota reached — progress saved. Run again after the quota resets.");break;}
+    const b=getBook(bookId);if(!b)break;
+    const rv=b.review?.overall_score||0;
+    const wq=b.manuscript_quality?.overall_human_score||0;
+    if(rv>=75&&wq>=78)break;
+    logFn(`🏁 Improvement round ${round}/3 — Review ${rv}/75 · Writing ${wq}/78`);
+    if(rv<75&&b.review&&getUsage()<DAILY_LIMIT-2){
+      try{
+        const rvd=b.review;const fixes={};
+        if(rvd.title_suggestions?.[0]){const parts=rvd.title_suggestions[0].split(":");fixes.title=parts[0].trim();const sub=parts.slice(1).join(":").trim();if(sub)fixes.subtitle=sub;}
+        if(rvd.subtitle_suggestion)fixes.subtitle=rvd.subtitle_suggestion;
+        if(rvd.keyword_suggestions?.length)fixes.seo_keywords=rvd.keyword_suggestions.join(", ");
+        if(rvd.seo_rewrite)fixes.seo_description=rvd.seo_rewrite;
+        if(Object.keys(fixes).length>0){
+          logFn("  📖 Applying Review Agent suggestions…");
+          updateBook(bookId,fixes);
+          const reReview=await runReviewAgent({...b,...fixes});
+          updateBook(bookId,{review:reReview,review_done:true});
+          logFn(`  📊 Review: ${rv} → ${reReview.overall_score}/100`);
+        }
+      }catch(e){if(e?.code==="QUOTA")break;logFn("  ⚠️ Review fix failed — continuing to writing fixes");}
+    }
+    const b2=getBook(bookId)||b;
+    const wq2=b2?.manuscript_quality?.overall_human_score||0;
+    if(wq2<78&&getUsage()<DAILY_LIMIT-6){
+      try{
+        let scores={...(b2.writing_quality||{})};
+        const all=b2.chapters||[];
+        const written=all.map((c,i)=>({...c,_i:i})).filter(c=>c.content);
+        const scored=written.filter(c=>scores[c._i]).sort((x,y)=>scores[x._i].human_score-scores[y._i].human_score);
+        const unscored=written.filter(c=>!scores[c._i]);
+        const targets=[...scored,...unscored].slice(0,3);
+        logFn(`  ✍️ Targeting ${targets.map(t=>`Ch ${t._i+1}`).join(", ")}…`);
+        let analyzed=0;
+        for(const t of targets){
+          if(scores[t._i]||analyzed>=2||quotaBlocked())continue;
+          try{const res=await analyzeChapterHumanness(t.content,b2.title,b2.genre,t.title);scores={...scores,[t._i]:res};analyzed++;updateBook(bookId,{writing_quality:scores});}catch(e){if(e?.code==="QUOTA")break;}
+        }
+        let chaps=[...(getBook(bookId)?.chapters||all)];
+        let changed=false;
+        for(const t of targets){
+          const sc=scores[t._i];const ch=chaps[t._i];
+          if(!sc?.rewrite_examples?.length||!ch?.content)continue;
+          let content=ch.content;
+          for(const ex of sc.rewrite_examples){if(ex.original&&ex.rewrite&&content.includes(ex.original)){content=content.replace(ex.original,ex.rewrite);changed=true;}}
+          if(content!==ch.content)chaps[t._i]={...withVersionSnapshot(ch,"Improvement round rewrite"),content};
+        }
+        let budget=2;
+        for(const t of targets){
+          if(budget<=0||quotaBlocked())break;
+          const sc=scores[t._i];const ch=chaps[t._i];
+          if(!sc||sc.human_score>=78||!ch?.content)continue;
+          logFn(`  🔧 Rewriting chapter ${t._i+1} (scored ${sc.human_score}/100)…`);
+          try{
+            const better=await rewriteChapterWithFeedback(ch,sc,b2);
+            chaps[t._i]={...withVersionSnapshot(ch,"AI rewrite (improvement round)"),content:better};
+            changed=true;budget--;
+          }catch(e){if(e?.code==="QUOTA")break;}
+        }
+        if(changed)updateBook(bookId,{chapters:chaps});
+        if(!quotaBlocked()){
+          const reWQ=await runManuscriptHumanCheck(getBook(bookId)||b2);
+          updateBook(bookId,{manuscript_quality:reWQ,wq_done:true});
+          logFn(`  ✍️ Writing: ${wq2} → ${reWQ.overall_human_score}/100`);
+        }
+      }catch(e){if(e?.code==="QUOTA")break;logFn("  ⚠️ Writing fix round failed — see Writing Quality tab");}
+    }
+    refresh();
+  }
+  const fb=getBook(bookId);
+  const passed=(fb?.review?.overall_score||0)>=75&&(fb?.manuscript_quality?.overall_human_score||0)>=78;
+  return {passed,rv:fb?.review?.overall_score||0,wq:fb?.manuscript_quality?.overall_human_score||0};
 }
 
 function WritingQualityPanel({book,onSettings,onApply}){
@@ -4730,9 +4875,21 @@ function QueuePage({navigate,onSettings}){
           addLog(`  🤖 Running review agent…`);
           const freshBook=getBook(id);
           const review=await runReviewAgent(freshBook);
-          updateBook(id,{review,status:review.verdict==="PASS"?"ready":"writing",auto_build:false,build_step:"",review_done:true,build_complete:true,build_complete_date:new Date().toISOString(),gates_passed:review.verdict==="PASS"});
+          updateBook(id,{review,status:review.verdict==="PASS"?"ready":"writing",auto_build:false,build_step:"",review_done:true,build_complete:true,build_complete_date:new Date().toISOString(),gates_passed:false}); // dual-gate: writing check below sets the real value
           addLog(`  ${review.verdict==="PASS"?"✅":"⚠️"} Review: ${review.overall_score}/100 — ${review.verdict}`);notifyDone(review.verdict==="PASS"?"✅ Queue book done":"⚠️ Queue book done",`"${book.title}" — review ${review.overall_score}/100`);}catch(rvE){addLog("  ⚠️ Review step failed: "+errMsg(rvE)+" — continuing");}
         }
+        if(getUsage()<DAILY_LIMIT){try{
+          // Writing Quality + improvement rounds — completes the dual gate
+          const fq=getBook(id);
+          if(fq){
+            addLog(`  ✍️ Writing Quality check + improvement rounds…`);
+            const ms=await runManuscriptHumanCheck(fq);
+            updateBook(id,{manuscript_quality:ms,wq_done:true});
+            const res=await runImprovementRounds(id,m=>addLog(m));
+            updateBook(id,{gates_passed:res.passed});
+            addLog(res.passed?`  ✅ Both gates passed (Review ${res.rv}/75 · Writing ${res.wq}/78)!`:`  ⚠️ Gates short after rounds (Review ${res.rv}/75 · Writing ${res.wq}/78) — progress saved`);
+          }
+        }catch(wqE){if(wqE?.code==="QUOTA")addLog("  ⏳ Quota hit during writing quality — book saved, run Finish later");else addLog("  ⚠️ Writing Quality step failed: "+errMsg(wqE)+" — continuing");}}
         // Done — remove from queue
         removeFromQueue(id);
         setBuiltSoFar(n=>n+1);
@@ -5011,6 +5168,23 @@ function SeriesPage({navigate,onSettings}){
   const [suggestingSeriesTitles,setSuggestingSeriesTitles]=useState(false);
   const [seriesTitleError,setSeriesTitleError]=useState("");
   const [writingSeries,setWritingSeries]=useState(null);
+  // 🏁 Finish Series — drive every unfinished/unpassed book in the series to
+  // full completion via the queue (chapters → SEO → cover → review → writing
+  // quality + improvement rounds), in series order.
+  const finishSeries=async(sid)=>{
+    const s=getSeries().find(x=>x.id===sid);
+    if(!s)return;
+    const all=getBooks().filter(bk=>bk.series_id===sid);
+    if(all.length===0){alert("No books in this series yet — use 🚀 Write Series to create the planned ones.");return;}
+    const unfinished=all.filter(bk=>!bk.build_complete||!bk.gates_passed).sort((a,b2)=>(a.series_number||99)-(b2.series_number||99));
+    if(unfinished.length===0){alert("✅ Every book in this series is finished with both quality gates passed!");return;}
+    if(!confirm(`🏁 Finish "${s.name}"?\n\n${unfinished.length} book(s) will run through the full pipeline — writing, SEO, cover, review, and improvement rounds until both quality gates pass — in series order.`))return;
+    const q=getQueue();
+    for(const bk of unfinished)if(!q.includes(bk.id))q.push(bk.id);
+    setQueue(q);
+    if(q.length>0){localStorage.setItem("bfai_queue_autostart","1");navigate("queue");}
+  };
+
   // 🚀 Write Series — fully auto production: create any missing planned books,
   // outline them, enqueue every unfinished book in series order, auto-start the queue
   const writeSeries=async(sid)=>{
@@ -5250,6 +5424,7 @@ function SeriesPage({navigate,onSettings}){
                   <div className="flex items-center gap-2 shrink-0">
                     <button onClick={()=>setViewBible(series.id)} className="text-xs border border-cyan-500/40 text-cyan-300 px-3 py-2 rounded-lg hover:bg-cyan-500/10">📖 View Bible</button>
                     <button disabled={writingSeries?.id===series.id} onClick={()=>writeSeries(series.id)} className="text-xs bg-gradient-to-r from-purple-600 via-pink-600 to-purple-700 text-white font-semibold px-4 py-2 rounded-xl shadow-md shadow-purple-500/20 hover:opacity-95 transition-all disabled:opacity-60 shrink-0">{writingSeries?.id===series.id?(writingSeries.note||"Queuing…"):"🚀 Write Series"}</button>
+            <button onClick={()=>finishSeries(series.id)} title="Run every unfinished book through the full pipeline + improvement rounds until both quality gates pass" className="text-xs bg-gradient-to-r from-amber-500 to-orange-500 text-white font-bold px-4 py-2 rounded-xl hover:opacity-90 shadow-md shadow-amber-500/20">🏁 Finish Series</button>
             <button onClick={()=>setContinuity(series.id)} className="text-xs border border-emerald-500/40 text-emerald-300 px-3 py-2 rounded-lg hover:bg-emerald-500/10">🔍 Continuity</button>
                     <button onClick={e=>deleteSeries(series.id,e)} className="text-white/50 hover:text-red-400 text-sm px-2">🗑</button>
                   </div>
@@ -6482,78 +6657,8 @@ function EditorPage({bookId,navigate,onSettings}){
       // STAGE 1 — complete the pipeline (chapters, research, SEO, cover, review, WQ)
       log("🏁 Finish Book: completing the pipeline…");
       await runAutoBuild(fb);
-      // STAGE 2 — improvement rounds until both gates pass (cap 3, quota-aware)
-      for(let round=1;round<=3;round++){
-        if(quotaBlocked()){log("⏸️ Daily quota reached — progress saved. Click Finish Book again after the reset.");break;}
-        const b=getBook(bookId);if(!b)break;
-        const rv=b.review?.overall_score||0;
-        const wq=b.manuscript_quality?.overall_human_score||0;
-        if(rv>=75&&wq>=78)break;
-        log(`🏁 Improvement round ${round}/3 — Review ${rv}/75 · Writing ${wq}/78`);
-        // Round A: apply Review Agent suggestions, re-score
-        if(rv<75&&b.review&&getUsage()<DAILY_LIMIT-2){
-          try{
-            const rvd=b.review;const fixes={};
-            if(rvd.title_suggestions?.[0]){const parts=rvd.title_suggestions[0].split(":");fixes.title=parts[0].trim();const sub=parts.slice(1).join(":").trim();if(sub)fixes.subtitle=sub;}
-            if(rvd.subtitle_suggestion)fixes.subtitle=rvd.subtitle_suggestion;
-            if(rvd.keyword_suggestions?.length)fixes.seo_keywords=rvd.keyword_suggestions.join(", ");
-            if(rvd.seo_rewrite)fixes.seo_description=rvd.seo_rewrite;
-            if(Object.keys(fixes).length>0){
-              log("  📖 Applying Review Agent suggestions…");
-              const updated=updateBook(bookId,fixes)||b;setBook(getBook(bookId));
-              const reReview=await runReviewAgent({...b,...fixes});
-              updateBook(bookId,{review:reReview,review_done:true});setBook(getBook(bookId));
-              log(`  📊 Review: ${rv} → ${reReview.overall_score}/100`);
-            }
-          }catch(e){if(e?.code==="QUOTA"){setQuotaHit(true);break;}log("  ⚠️ Review fix failed — continuing to writing fixes");}
-        }
-        // Round B: targeted Writing Quality fixes on the weakest chapters
-        const b2=getBook(bookId)||b;
-        const wq2=b2?.manuscript_quality?.overall_human_score||0;
-        if(wq2<78&&getUsage()<DAILY_LIMIT-6){
-          try{
-            let scores={...(b2.writing_quality||{})};
-            const all=b2.chapters||[];
-            const written=all.map((c,i)=>({...c,_i:i})).filter(c=>c.content);
-            const scored=written.filter(c=>scores[c._i]).sort((x,y)=>scores[x._i].human_score-scores[y._i].human_score);
-            const unscored=written.filter(c=>!scores[c._i]);
-            const targets=[...scored,...unscored].slice(0,3);
-            log(`  ✍️ Targeting ${targets.map(t=>`Ch ${t._i+1}`).join(", ")}…`);
-            let analyzed=0;
-            for(const t of targets){
-              if(scores[t._i]||analyzed>=2||quotaBlocked())continue;
-              try{const res=await analyzeChapterHumanness(t.content,b2.title,b2.genre,t.title);scores={...scores,[t._i]:res};analyzed++;updateBook(bookId,{writing_quality:scores});}catch(e){if(e?.code==="QUOTA")break;}
-            }
-            let chaps=[...(getBook(bookId)?.chapters||all)];
-            let changed=false;
-            for(const t of targets){
-              const sc=scores[t._i];const ch=chaps[t._i];
-              if(!sc?.rewrite_examples?.length||!ch?.content)continue;
-              let content=ch.content;
-              for(const ex of sc.rewrite_examples){if(ex.original&&ex.rewrite&&content.includes(ex.original)){content=content.replace(ex.original,ex.rewrite);changed=true;}}
-              if(content!==ch.content)chaps[t._i]={...withVersionSnapshot(ch,"Finish Book rewrite"),content};
-            }
-            let budget=2;
-            for(const t of targets){
-              if(budget<=0||quotaBlocked())break;
-              const sc=scores[t._i];const ch=chaps[t._i];
-              if(!sc||sc.human_score>=78||!ch?.content)continue;
-              log(`  🔧 Rewriting chapter ${t._i+1} (scored ${sc.human_score}/100)…`);
-              try{
-                const better=await rewriteChapterWithFeedback(ch,sc,b2);
-                chaps[t._i]={...withVersionSnapshot(ch,"AI rewrite (Finish Book)"),content:better};
-                changed=true;budget--;
-              }catch(e){if(e?.code==="QUOTA")break;}
-            }
-            if(changed){updateBook(bookId,{chapters:chaps});setBook(getBook(bookId));}
-            if(!quotaBlocked()){
-              const reWQ=await runManuscriptHumanCheck(getBook(bookId)||b2);
-              updateBook(bookId,{manuscript_quality:reWQ,wq_done:true});setBook(getBook(bookId));
-              log(`  ✍️ Writing: ${wq2} → ${reWQ.overall_human_score}/100`);
-            }
-          }catch(e){if(e?.code==="QUOTA"){setQuotaHit(true);break;}log("  ⚠️ Writing fix round failed — see Writing Quality tab");}
-        }
-      }
+      // STAGE 2 — improvement rounds until both gates pass (shared engine)
+      await runImprovementRounds(bookId,log,()=>setBook(getBook(bookId)));
       // STAGE 3 — final stamps + report
       const finalB=getBook(bookId);
       if(finalB){
