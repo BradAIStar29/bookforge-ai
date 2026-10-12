@@ -290,6 +290,107 @@ async function puterTTS(text) {
     return await puter.ai.txt2speech(text, voice);
   }
 }
+const GEMINI_TTS_MODELS = [
+  { id: "gemini-3.8-flash-tts", label: "Gemini 3.8 Flash TTS (best quality)" },
+  { id: "gemini-3.8-flash-lite-tts", label: "Gemini 3.8 Flash-Lite TTS (faster)" }
+];
+const GEMINI_TTS_VOICES = ["Kore", "Puck", "Zephyr", "Charon", "Fenrir", "Leda", "Orus", "Aoede", "Callirrhoe", "Autonoe", "Enceladus", "Iapetus", "Umbriel", "Algieba", "Despina", "Erinome", "Algenib", "Rasalgethi", "Laomedeia", "Achernar", "Alnilam", "Schedar", "Gacrux", "Pulcherrima", "Achird"];
+const getGeminiTTSModel = () => {
+  const v = localStorage.getItem("bfai_gemini_tts_model");
+  return GEMINI_TTS_MODELS.some((m) => m.id === v) ? v : GEMINI_TTS_MODELS[0].id;
+};
+const setGeminiTTSModel = (m) => {
+  if (GEMINI_TTS_MODELS.some((x) => x.id === m)) safeLS("bfai_gemini_tts_model", m);
+};
+const getGeminiTTSVoice = () => {
+  const v = localStorage.getItem("bfai_gemini_tts_voice");
+  return GEMINI_TTS_VOICES.includes(v) ? v : "Kore";
+};
+const setGeminiTTSVoice = (v) => {
+  if (GEMINI_TTS_VOICES.includes(v)) safeLS("bfai_gemini_tts_voice", v);
+};
+function pcmToWavUrl(b64, rate) {
+  const bin = atob(b64);
+  const n = bin.length;
+  const buf = new ArrayBuffer(44 + n);
+  const dv = new DataView(buf);
+  const wstr = (o, str) => {
+    for (let i = 0; i < str.length; i++) dv.setUint8(o + i, str.charCodeAt(i));
+  };
+  wstr(0, "RIFF");
+  dv.setUint32(4, 36 + n, true);
+  wstr(8, "WAVE");
+  wstr(12, "fmt ");
+  dv.setUint32(16, 16, true);
+  dv.setUint16(20, 1, true);
+  dv.setUint16(22, 1, true);
+  dv.setUint32(24, rate, true);
+  dv.setUint32(28, rate * 2, true);
+  dv.setUint16(32, 2, true);
+  dv.setUint16(34, 16, true);
+  wstr(36, "data");
+  dv.setUint32(40, n, true);
+  for (let i = 0; i < n; i++) dv.setUint8(44 + i, bin.charCodeAt(i));
+  const bytes = new Uint8Array(buf);
+  let binStr = "";
+  const CH = 32768;
+  for (let i = 0; i < bytes.length; i += CH) binStr += String.fromCharCode.apply(null, bytes.subarray(i, i + CH));
+  return "data:audio/wav;base64," + btoa(binStr);
+}
+async function geminiTTS(text) {
+  if (getUsage() >= DAILY_LIMIT) throw { code: "QUOTA" };
+  const key = getKey();
+  if (!key) throw { code: "NO_KEY", msg: "Add your Gemini API key in Settings to use Gemini TTS" };
+  const model = getGeminiTTSModel(), voice = getGeminiTTSVoice();
+  const res = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        contents: [{ parts: [{ text }] }],
+        generationConfig: { responseModalities: ["AUDIO"], speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: voice } } } }
+      })
+    }
+  );
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw { code: "GEMINI_TTS_FAIL", msg: data?.error?.message || `Gemini TTS failed (${res.status})` };
+  const parts = data?.candidates?.[0]?.content?.parts || [];
+  const audioPart = parts.find((p) => p.inlineData?.data);
+  if (!audioPart) throw { code: "GEMINI_TTS_FAIL", msg: "Gemini returned no audio" };
+  const mime = audioPart.inlineData.mimeType || "";
+  const rateMatch = mime.match(/rate=(\d+)/);
+  const rate = rateMatch ? Number(rateMatch[1]) : 24e3;
+  trackUsage();
+  return pcmToWavUrl(audioPart.inlineData.data, rate);
+}
+async function geminiImageGen(prompt2) {
+  if (getUsage() >= DAILY_LIMIT) throw { code: "QUOTA" };
+  const key = getKey();
+  if (!key) throw { code: "NO_KEY", msg: "Nano Banana 2.1 needs your Gemini API key \u2014 add it in Settings" };
+  const call = async (withCfg) => {
+    const body = {
+      contents: [{ parts: [{ text: prompt2 }] }],
+      generationConfig: { responseModalities: ["TEXT", "IMAGE"], ...withCfg ? { imageConfig: { aspectRatio: "2:3" } } : {} }
+    };
+    const res2 = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-nano-banana-2.1:generateContent?key=${key}`,
+      { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }
+    );
+    const data2 = await res2.json().catch(() => ({}));
+    return { res: res2, data: data2 };
+  };
+  let { res, data } = await call(true);
+  if (!res.ok && res.status === 400) {
+    ({ res, data } = await call(false));
+  }
+  if (!res.ok) throw { code: "GEMINI_IMG_FAIL", msg: data?.error?.message || `Nano Banana 2.1 failed (${res.status})` };
+  const parts = data?.candidates?.[0]?.content?.parts || [];
+  const img = parts.find((p) => p.inlineData?.data && (p.inlineData.mimeType || "").startsWith("image/"));
+  if (!img) throw { code: "GEMINI_IMG_FAIL", msg: "Nano Banana returned no image" };
+  trackUsage();
+  return `data:${img.inlineData.mimeType};base64,${img.inlineData.data}`;
+}
 const PUTER_IMAGE_MODELS = [
   { id: "black-forest-labs/flux-2-pro", label: "FLUX.2 Pro", desc: "Best overall quality for book covers" },
   { id: "openai/gpt-image-2", label: "GPT Image 2", desc: "OpenAI \u2014 great text rendering" },
@@ -302,6 +403,7 @@ const PUTER_IMAGE_MODELS = [
   { id: "bytedance-seed/seedream-4.5", label: "Seedream 4.5", desc: "ByteDance \u2014 strong artistic quality" },
   { id: "bytedance-seed/seedream-4.0", label: "Seedream 4.0", desc: "ByteDance \u2014 artistic styles" },
   { id: "ideogram/ideogram-3.0", label: "Ideogram 3.0", desc: "Best at rendering text on images" },
+  { id: "gemini-nano-banana-2.1", label: "Nano Banana 2.1 (Gemini Key)", desc: "Google \u2014 newest image gen, runs on YOUR Gemini API key, not Puter" },
   { id: "pollinations", label: "Pollinations.ai (No Sign-in)", desc: "Free fallback \u2014 no account, slower queue" }
 ];
 const getPuterImageModel = () => {
@@ -5835,7 +5937,15 @@ const coverFailoverNotice = (msg) => {
 async function genCoverImage(prompt2, opts = {}) {
   const imgModel = getPuterImageModel();
   const w = opts.width || 832, h = opts.height || 1216;
-  if (imgModel !== "pollinations" && typeof puter !== "undefined" && !PUTER_LOW_BALANCE) {
+  if (imgModel === "gemini-nano-banana-2.1") {
+    try {
+      return { url: await geminiImageGen(prompt2), method: "gemini" };
+    } catch (e) {
+      if (e?.code === "QUOTA") throw e;
+      coverFailoverNotice("\u{1F34C} Nano Banana 2.1 unavailable (" + errMsg(e) + ") \u2014 fell back to Pollinations.ai");
+    }
+  }
+  if (imgModel !== "pollinations" && imgModel !== "gemini-nano-banana-2.1" && typeof puter !== "undefined" && !PUTER_LOW_BALANCE) {
     try {
       const imgEl = await puterTxt2ImgGuarded(prompt2, imgModel);
       return { url: await puterImageToUrl(imgEl, w, h), method: "puter" };
@@ -7970,7 +8080,25 @@ function AudioStudioPanel({ book, bookId, onSettings, flash }) {
     speechSynthesis.speak(utt);
     flash("\u{1F50A} Preview playing \u2014 click again to stop");
   };
-  return /* @__PURE__ */ React.createElement("div", { className: "space-y-5 max-w-4xl mx-auto" }, /* @__PURE__ */ React.createElement(Card, null, /* @__PURE__ */ React.createElement("div", { className: "flex items-start gap-4 mb-4" }, /* @__PURE__ */ React.createElement("div", { className: "w-12 h-12 bg-gradient-to-br from-green-500 to-emerald-500 rounded-2xl flex items-center justify-center text-2xl shrink-0" }, "\u{1F50A}"), /* @__PURE__ */ React.createElement("div", { className: "flex-1" }, /* @__PURE__ */ React.createElement("h2", { className: "text-white text-xl font-bold" }, "Instant Audio Preview"), /* @__PURE__ */ React.createElement("p", { className: "text-white/40 text-sm mt-1" }, "Browser built-in TTS \u2014 ", /* @__PURE__ */ React.createElement("strong", { className: "text-green-400/70" }, "no download, no API key, instant"), ". Quick narration preview using your OS voices.")), /* @__PURE__ */ React.createElement("div", { className: `text-xs px-3 py-1 rounded-full border font-semibold shrink-0 ${browserPlaying ? "bg-green-500/20 text-green-300 border-green-500/30" : "bg-white/10 text-white/40 border-white/10"}` }, browserPlaying ? "\u25B6 Playing" : "Ready")), typeof speechSynthesis !== "undefined" && browserVoices.length > 0 ? /* @__PURE__ */ React.createElement("div", { className: "space-y-3" }, /* @__PURE__ */ React.createElement("div", { className: "grid grid-cols-1 sm:grid-cols-3 gap-3" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("label", { className: "text-white/50 text-xs uppercase tracking-wider block mb-1.5" }, "Chapter"), /* @__PURE__ */ React.createElement("select", { value: browserChIdx, onChange: (e) => setBrowserChIdx(Number(e.target.value)), className: "w-full bg-white/10 border border-white/20 rounded-xl px-3 py-2.5 text-white text-sm focus:outline-none focus:border-green-500" }, chapters.map((ch, i) => /* @__PURE__ */ React.createElement("option", { key: i, value: i, className: "bg-gray-800" }, "Ch.", ch.number, ": ", ch.title)))), /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("label", { className: "text-white/50 text-xs uppercase tracking-wider block mb-1.5" }, "Voice (", browserVoices.length, " available)"), /* @__PURE__ */ React.createElement("select", { value: browserVoiceId, onChange: (e) => setBrowserVoiceId(e.target.value), className: "w-full bg-white/10 border border-white/20 rounded-xl px-3 py-2.5 text-white text-sm focus:outline-none focus:border-green-500" }, browserVoices.map((v) => /* @__PURE__ */ React.createElement("option", { key: v.name, value: v.name, className: "bg-gray-800" }, v.name, " (", v.lang, ")")))), /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("label", { className: "text-white/50 text-xs uppercase tracking-wider block mb-1.5" }, "Speed: ", browserRate.toFixed(2), "\xD7"), /* @__PURE__ */ React.createElement("input", { type: "range", min: "0.7", max: "1.5", step: "0.05", value: browserRate, onChange: (e) => setBrowserRate(Number(e.target.value)), className: "w-full accent-green-500 mt-2" }))), /* @__PURE__ */ React.createElement("button", { onClick: playBrowserTTS, disabled: chapters.length === 0, className: "w-full bg-gradient-to-r from-green-500 to-emerald-500 text-white py-3.5 rounded-xl font-semibold hover:opacity-90 disabled:opacity-40 flex items-center justify-center gap-2" }, browserPlaying ? "\u23F9 Stop Playback" : "\u25B6 Play Preview (first 5000 chars)"), chapters.length === 0 && /* @__PURE__ */ React.createElement("p", { className: "text-white/50 text-xs text-center" }, "Write chapters first to preview audio.")) : /* @__PURE__ */ React.createElement("p", { className: "text-white/60 text-sm text-center py-4" }, "Browser TTS not available \u2014 try Chrome, Edge, or Safari.")), /* @__PURE__ */ React.createElement(Card, null, /* @__PURE__ */ React.createElement("div", { className: "flex items-start gap-4 mb-4" }, /* @__PURE__ */ React.createElement("div", { className: "w-12 h-12 bg-gradient-to-br from-violet-500 to-indigo-500 rounded-2xl flex items-center justify-center text-2xl shrink-0" }, "\u{1F3AD}"), /* @__PURE__ */ React.createElement("div", { className: "flex-1" }, /* @__PURE__ */ React.createElement("h2", { className: "text-white text-xl font-bold" }, "Premium Neural TTS (Puter.js)"), /* @__PURE__ */ React.createElement("p", { className: "text-white/40 text-sm mt-1" }, "OpenAI TTS, AWS Polly & ElevenLabs \u2014 ", /* @__PURE__ */ React.createElement("strong", { className: "text-violet-400/70" }, "natural human-like voices"), ". Requires Puter.js backend. User-pays model \u2014 you pay nothing.")), /* @__PURE__ */ React.createElement("div", { className: `text-xs px-3 py-1 rounded-full border font-semibold shrink-0 ${typeof puter !== "undefined" ? "bg-green-500/20 text-green-300 border-green-500/30" : "bg-white/10 text-white/60 border-white/10"}` }, typeof puter !== "undefined" ? "Available" : "Puter.js Required")), typeof puter !== "undefined" ? /* @__PURE__ */ React.createElement("div", { className: "space-y-3" }, /* @__PURE__ */ React.createElement("div", { className: "grid grid-cols-1 sm:grid-cols-3 gap-3" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("label", { className: "text-white/50 text-xs uppercase tracking-wider block mb-1.5" }, "Provider"), /* @__PURE__ */ React.createElement("select", { value: getPuterTTSProvider(), onChange: (e) => {
+  return /* @__PURE__ */ React.createElement("div", { className: "space-y-5 max-w-4xl mx-auto" }, /* @__PURE__ */ React.createElement(Card, null, /* @__PURE__ */ React.createElement("div", { className: "flex items-start gap-4 mb-4" }, /* @__PURE__ */ React.createElement("div", { className: "w-12 h-12 bg-gradient-to-br from-green-500 to-emerald-500 rounded-2xl flex items-center justify-center text-2xl shrink-0" }, "\u{1F50A}"), /* @__PURE__ */ React.createElement("div", { className: "flex-1" }, /* @__PURE__ */ React.createElement("h2", { className: "text-white text-xl font-bold" }, "Instant Audio Preview"), /* @__PURE__ */ React.createElement("p", { className: "text-white/40 text-sm mt-1" }, "Browser built-in TTS \u2014 ", /* @__PURE__ */ React.createElement("strong", { className: "text-green-400/70" }, "no download, no API key, instant"), ". Quick narration preview using your OS voices.")), /* @__PURE__ */ React.createElement("div", { className: `text-xs px-3 py-1 rounded-full border font-semibold shrink-0 ${browserPlaying ? "bg-green-500/20 text-green-300 border-green-500/30" : "bg-white/10 text-white/40 border-white/10"}` }, browserPlaying ? "\u25B6 Playing" : "Ready")), typeof speechSynthesis !== "undefined" && browserVoices.length > 0 ? /* @__PURE__ */ React.createElement("div", { className: "space-y-3" }, /* @__PURE__ */ React.createElement("div", { className: "grid grid-cols-1 sm:grid-cols-3 gap-3" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("label", { className: "text-white/50 text-xs uppercase tracking-wider block mb-1.5" }, "Chapter"), /* @__PURE__ */ React.createElement("select", { value: browserChIdx, onChange: (e) => setBrowserChIdx(Number(e.target.value)), className: "w-full bg-white/10 border border-white/20 rounded-xl px-3 py-2.5 text-white text-sm focus:outline-none focus:border-green-500" }, chapters.map((ch, i) => /* @__PURE__ */ React.createElement("option", { key: i, value: i, className: "bg-gray-800" }, "Ch.", ch.number, ": ", ch.title)))), /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("label", { className: "text-white/50 text-xs uppercase tracking-wider block mb-1.5" }, "Voice (", browserVoices.length, " available)"), /* @__PURE__ */ React.createElement("select", { value: browserVoiceId, onChange: (e) => setBrowserVoiceId(e.target.value), className: "w-full bg-white/10 border border-white/20 rounded-xl px-3 py-2.5 text-white text-sm focus:outline-none focus:border-green-500" }, browserVoices.map((v) => /* @__PURE__ */ React.createElement("option", { key: v.name, value: v.name, className: "bg-gray-800" }, v.name, " (", v.lang, ")")))), /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("label", { className: "text-white/50 text-xs uppercase tracking-wider block mb-1.5" }, "Speed: ", browserRate.toFixed(2), "\xD7"), /* @__PURE__ */ React.createElement("input", { type: "range", min: "0.7", max: "1.5", step: "0.05", value: browserRate, onChange: (e) => setBrowserRate(Number(e.target.value)), className: "w-full accent-green-500 mt-2" }))), /* @__PURE__ */ React.createElement("button", { onClick: playBrowserTTS, disabled: chapters.length === 0, className: "w-full bg-gradient-to-r from-green-500 to-emerald-500 text-white py-3.5 rounded-xl font-semibold hover:opacity-90 disabled:opacity-40 flex items-center justify-center gap-2" }, browserPlaying ? "\u23F9 Stop Playback" : "\u25B6 Play Preview (first 5000 chars)"), chapters.length === 0 && /* @__PURE__ */ React.createElement("p", { className: "text-white/50 text-xs text-center" }, "Write chapters first to preview audio.")) : /* @__PURE__ */ React.createElement("p", { className: "text-white/60 text-sm text-center py-4" }, "Browser TTS not available \u2014 try Chrome, Edge, or Safari.")), /* @__PURE__ */ React.createElement(Card, null, /* @__PURE__ */ React.createElement("div", { className: "flex items-start gap-4 mb-4" }, /* @__PURE__ */ React.createElement("div", { className: "w-12 h-12 bg-gradient-to-br from-blue-500 to-cyan-400 rounded-2xl flex items-center justify-center text-2xl shrink-0" }, "\u{1F399}\uFE0F"), /* @__PURE__ */ React.createElement("div", { className: "flex-1" }, /* @__PURE__ */ React.createElement("h2", { className: "text-white text-xl font-bold" }, "Gemini Native TTS (your API key)"), /* @__PURE__ */ React.createElement("p", { className: "text-white/40 text-sm mt-1" }, "Gemini 3.8 Flash TTS \u2014 ", /* @__PURE__ */ React.createElement("strong", { className: "text-blue-300/80" }, "studio-grade narration voices"), ", 100+ languages, runs on the same Gemini key as your text generation. Counts toward your daily quota.")), /* @__PURE__ */ React.createElement("div", { className: `text-xs px-3 py-1 rounded-full border font-semibold shrink-0 ${getKey() ? "bg-green-500/20 text-green-300 border-green-500/30" : "bg-amber-500/20 text-amber-300 border-amber-500/30"}` }, getKey() ? "Key Active" : "Add Gemini Key")), getKey() ? /* @__PURE__ */ React.createElement("div", { className: "space-y-3" }, /* @__PURE__ */ React.createElement("div", { className: "grid grid-cols-1 sm:grid-cols-3 gap-3" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("label", { className: "text-white/50 text-xs uppercase tracking-wider block mb-1.5" }, "Model"), /* @__PURE__ */ React.createElement("select", { value: getGeminiTTSModel(), onChange: (e) => setGeminiTTSModel(e.target.value), className: "w-full bg-white/10 border border-white/20 rounded-xl px-3 py-2.5 text-white text-sm focus:outline-none focus:border-blue-500" }, GEMINI_TTS_MODELS.map((m) => /* @__PURE__ */ React.createElement("option", { key: m.id, value: m.id, className: "bg-gray-800" }, m.label)))), /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("label", { className: "text-white/50 text-xs uppercase tracking-wider block mb-1.5" }, "Voice"), /* @__PURE__ */ React.createElement("select", { value: getGeminiTTSVoice(), onChange: (e) => setGeminiTTSVoice(e.target.value), className: "w-full bg-white/10 border border-white/20 rounded-xl px-3 py-2.5 text-white text-sm focus:outline-none focus:border-blue-500" }, GEMINI_TTS_VOICES.map((v) => /* @__PURE__ */ React.createElement("option", { key: v, value: v, className: "bg-gray-800" }, v)))), /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("label", { className: "text-white/50 text-xs uppercase tracking-wider block mb-1.5" }, "Chapter"), /* @__PURE__ */ React.createElement("select", { value: browserChIdx, onChange: (e) => setBrowserChIdx(Number(e.target.value)), className: "w-full bg-white/10 border border-white/20 rounded-xl px-3 py-2.5 text-white text-sm focus:outline-none focus:border-blue-500" }, chapters.map((ch, i) => /* @__PURE__ */ React.createElement("option", { key: i, value: i, className: "bg-gray-800" }, "Ch.", ch.number, ": ", ch.title))))), /* @__PURE__ */ React.createElement("button", { onClick: async () => {
+    if (!chapters[browserChIdx]) {
+      flash("No chapter selected");
+      return;
+    }
+    if (quotaBlocked()) {
+      flash("\u23F3 Daily quota reached \u2014 TTS resumes after the reset.");
+      return;
+    }
+    try {
+      flash("\u{1F399}\uFE0F Generating Gemini narration\u2026");
+      const text = chapters[browserChIdx].content.replace(/[#*_`]/g, "").slice(0, 4e3);
+      const url = await geminiTTS(text);
+      new Audio(url).play();
+      flash("\u25B6 Playing Gemini TTS preview");
+    } catch (e) {
+      flash("\u26A0\uFE0F " + errMsg(e));
+    }
+  }, disabled: chapters.length === 0, className: "w-full bg-gradient-to-r from-blue-500 to-cyan-400 text-white py-3.5 rounded-xl font-semibold hover:opacity-90 disabled:opacity-40 flex items-center justify-center gap-2" }, "\u25B6 Play Gemini Preview (first 4000 chars)"), /* @__PURE__ */ React.createElement("p", { className: "text-white/60 text-xs" }, "Uses your existing Gemini API key and counts against the same daily quota as text generation. Nano Banana covers use it too when selected as the Cover Image Model.")) : /* @__PURE__ */ React.createElement("div", { className: "bg-white/5 rounded-xl p-4 text-center" }, /* @__PURE__ */ React.createElement("p", { className: "text-white/60 text-sm" }, "Add your Gemini API key in Settings \u2192 AI Backends to unlock native TTS narration."))), /* @__PURE__ */ React.createElement(Card, null, /* @__PURE__ */ React.createElement("div", { className: "flex items-start gap-4 mb-4" }, /* @__PURE__ */ React.createElement("div", { className: "w-12 h-12 bg-gradient-to-br from-violet-500 to-indigo-500 rounded-2xl flex items-center justify-center text-2xl shrink-0" }, "\u{1F3AD}"), /* @__PURE__ */ React.createElement("div", { className: "flex-1" }, /* @__PURE__ */ React.createElement("h2", { className: "text-white text-xl font-bold" }, "Premium Neural TTS (Puter.js)"), /* @__PURE__ */ React.createElement("p", { className: "text-white/40 text-sm mt-1" }, "OpenAI TTS, AWS Polly & ElevenLabs \u2014 ", /* @__PURE__ */ React.createElement("strong", { className: "text-violet-400/70" }, "natural human-like voices"), ". Requires Puter.js backend. User-pays model \u2014 you pay nothing.")), /* @__PURE__ */ React.createElement("div", { className: `text-xs px-3 py-1 rounded-full border font-semibold shrink-0 ${typeof puter !== "undefined" ? "bg-green-500/20 text-green-300 border-green-500/30" : "bg-white/10 text-white/60 border-white/10"}` }, typeof puter !== "undefined" ? "Available" : "Puter.js Required")), typeof puter !== "undefined" ? /* @__PURE__ */ React.createElement("div", { className: "space-y-3" }, /* @__PURE__ */ React.createElement("div", { className: "grid grid-cols-1 sm:grid-cols-3 gap-3" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("label", { className: "text-white/50 text-xs uppercase tracking-wider block mb-1.5" }, "Provider"), /* @__PURE__ */ React.createElement("select", { value: getPuterTTSProvider(), onChange: (e) => {
     setPuterTTSProvider(e.target.value);
     const p = PUTER_TTS_PROVIDERS.find((x) => x.id === e.target.value);
     if (p) setPuterTTSVoice(p.voices[0]);

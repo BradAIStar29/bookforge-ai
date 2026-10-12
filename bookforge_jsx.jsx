@@ -222,6 +222,76 @@ async function puterTTS(text){
   }
 }
 
+// ── Google Gemini native TTS (uses the same Gemini API key as text gen) ──
+const GEMINI_TTS_MODELS=[
+  {id:"gemini-3.8-flash-tts",label:"Gemini 3.8 Flash TTS (best quality)"},
+  {id:"gemini-3.8-flash-lite-tts",label:"Gemini 3.8 Flash-Lite TTS (faster)"}
+];
+const GEMINI_TTS_VOICES=["Kore","Puck","Zephyr","Charon","Fenrir","Leda","Orus","Aoede","Callirrhoe","Autonoe","Enceladus","Iapetus","Umbriel","Algieba","Despina","Erinome","Algenib","Rasalgethi","Laomedeia","Achernar","Alnilam","Schedar","Gacrux","Pulcherrima","Achird"];
+const getGeminiTTSModel=()=>{const v=localStorage.getItem("bfai_gemini_tts_model");return GEMINI_TTS_MODELS.some(m=>m.id===v)?v:GEMINI_TTS_MODELS[0].id;};
+const setGeminiTTSModel=m=>{if(GEMINI_TTS_MODELS.some(x=>x.id===m))safeLS("bfai_gemini_tts_model",m);};
+const getGeminiTTSVoice=()=>{const v=localStorage.getItem("bfai_gemini_tts_voice");return GEMINI_TTS_VOICES.includes(v)?v:"Kore";};
+const setGeminiTTSVoice=v=>{if(GEMINI_TTS_VOICES.includes(v))safeLS("bfai_gemini_tts_voice",v);};
+
+// Wrap raw signed 16-bit PCM in a 44-byte WAV header so browsers can play it.
+function pcmToWavUrl(b64,rate){
+  const bin=atob(b64);const n=bin.length;const buf=new ArrayBuffer(44+n);const dv=new DataView(buf);
+  const wstr=(o,str)=>{for(let i=0;i<str.length;i++)dv.setUint8(o+i,str.charCodeAt(i));};
+  wstr(0,"RIFF");dv.setUint32(4,36+n,true);wstr(8,"WAVE");wstr(12,"fmt ");
+  dv.setUint32(16,16,true);dv.setUint16(20,1,true);dv.setUint16(22,1,true); // PCM, mono
+  dv.setUint32(24,rate,true);dv.setUint32(28,rate*2,true);dv.setUint16(32,2,true);dv.setUint16(34,16,true);
+  wstr(36,"data");dv.setUint32(40,n,true);
+  for(let i=0;i<n;i++)dv.setUint8(44+i,bin.charCodeAt(i));
+  const bytes=new Uint8Array(buf);let binStr="";const CH=32768;
+  for(let i=0;i<bytes.length;i+=CH)binStr+=String.fromCharCode.apply(null,bytes.subarray(i,i+CH));
+  return "data:audio/wav;base64,"+btoa(binStr);
+}
+
+// Gemini native TTS — same key + quota discipline as text generation.
+async function geminiTTS(text){
+  if(getUsage()>=DAILY_LIMIT)throw{code:"QUOTA"};
+  const key=getKey();
+  if(!key)throw{code:"NO_KEY",msg:"Add your Gemini API key in Settings to use Gemini TTS"};
+  const model=getGeminiTTSModel(),voice=getGeminiTTSVoice();
+  const res=await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`,
+    {method:"POST",headers:{"Content-Type":"application/json"},
+     body:JSON.stringify({contents:[{parts:[{text}]}],
+       generationConfig:{responseModalities:["AUDIO"],speechConfig:{voiceConfig:{prebuiltVoiceConfig:{voiceName:voice}}}}})});
+  const data=await res.json().catch(()=>({}));
+  if(!res.ok)throw{code:"GEMINI_TTS_FAIL",msg:data?.error?.message||`Gemini TTS failed (${res.status})`};
+  const parts=data?.candidates?.[0]?.content?.parts||[];
+  const audioPart=parts.find(p=>p.inlineData?.data);
+  if(!audioPart)throw{code:"GEMINI_TTS_FAIL",msg:"Gemini returned no audio"};
+  const mime=audioPart.inlineData.mimeType||"";
+  const rateMatch=mime.match(/rate=(\d+)/);
+  const rate=rateMatch?Number(rateMatch[1]):24000;
+  trackUsage();
+  return pcmToWavUrl(audioPart.inlineData.data,rate);
+}
+
+// ── Nano Banana 2.1: Google's image gen via the user's Gemini key ──
+async function geminiImageGen(prompt){
+  if(getUsage()>=DAILY_LIMIT)throw{code:"QUOTA"};
+  const key=getKey();
+  if(!key)throw{code:"NO_KEY",msg:"Nano Banana 2.1 needs your Gemini API key — add it in Settings"};
+  const call=async withCfg=>{
+    const body={contents:[{parts:[{text:prompt}]}],
+      generationConfig:{responseModalities:["TEXT","IMAGE"],...(withCfg?{imageConfig:{aspectRatio:"2:3"}}:{})}};
+    const res=await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-nano-banana-2.1:generateContent?key=${key}`,
+      {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+    const data=await res.json().catch(()=>({}));
+    return {res,data};
+  };
+  let {res,data}=await call(true);
+  if(!res.ok&&res.status===400){({res,data}=await call(false));} // older shape: no imageConfig
+  if(!res.ok)throw{code:"GEMINI_IMG_FAIL",msg:data?.error?.message||`Nano Banana 2.1 failed (${res.status})`};
+  const parts=data?.candidates?.[0]?.content?.parts||[];
+  const img=parts.find(p=>p.inlineData?.data&&(p.inlineData.mimeType||"").startsWith("image/"));
+  if(!img)throw{code:"GEMINI_IMG_FAIL",msg:"Nano Banana returned no image"};
+  trackUsage();
+  return `data:${img.inlineData.mimeType};base64,${img.inlineData.data}`;
+}
+
 const PUTER_IMAGE_MODELS=[
   {id:"black-forest-labs/flux-2-pro",label:"FLUX.2 Pro",desc:"Best overall quality for book covers"},
   {id:"openai/gpt-image-2",label:"GPT Image 2",desc:"OpenAI — great text rendering"},
@@ -234,6 +304,7 @@ const PUTER_IMAGE_MODELS=[
   {id:"bytedance-seed/seedream-4.5",label:"Seedream 4.5",desc:"ByteDance — strong artistic quality"},
   {id:"bytedance-seed/seedream-4.0",label:"Seedream 4.0",desc:"ByteDance — artistic styles"},
   {id:"ideogram/ideogram-3.0",label:"Ideogram 3.0",desc:"Best at rendering text on images"},
+  {id:"gemini-nano-banana-2.1",label:"Nano Banana 2.1 (Gemini Key)",desc:"Google — newest image gen, runs on YOUR Gemini API key, not Puter"},
   {id:"pollinations",label:"Pollinations.ai (No Sign-in)",desc:"Free fallback — no account, slower queue"}
 ];
 const getPuterImageModel=()=>{
@@ -6013,7 +6084,17 @@ async function genCoverImage(prompt,opts={}){
   // The chosen Cover Image Model is authoritative on EVERY text backend —
   // Puter.js image models work regardless of which AI engine writes the text.
   // Session low-balance? Skip Puter images entirely and go straight to Pollinations.
-  if(imgModel!=="pollinations"&&typeof puter!=="undefined"&&!PUTER_LOW_BALANCE){
+  if(imgModel==="gemini-nano-banana-2.1"){
+    // Native Gemini image gen — uses the Gemini API key, not Puter. Any failure
+    // (no key, quota, API error) falls through to the Pollinations chain below.
+    try{
+      return {url:await geminiImageGen(prompt),method:"gemini"};
+    }catch(e){
+      if(e?.code==="QUOTA")throw e; // honest stop — quota is the only legitimate wall
+      coverFailoverNotice("🍌 Nano Banana 2.1 unavailable ("+errMsg(e)+") — fell back to Pollinations.ai");
+    }
+  }
+  if(imgModel!=="pollinations"&&imgModel!=="gemini-nano-banana-2.1"&&typeof puter!=="undefined"&&!PUTER_LOW_BALANCE){
     try{
       const imgEl=await puterTxt2ImgGuarded(prompt,imgModel);
       return {url:await puterImageToUrl(imgEl,w,h),method:"puter"};
@@ -7957,6 +8038,58 @@ function AudioStudioPanel({book,bookId,onSettings,flash}){
           </div>
         ):(
           <p className="text-white/60 text-sm text-center py-4">Browser TTS not available — try Chrome, Edge, or Safari.</p>
+        )}
+      </Card>
+
+      {/* Google Gemini native TTS — uses the user's own Gemini API key */}
+      <Card>
+        <div className="flex items-start gap-4 mb-4">
+          <div className="w-12 h-12 bg-gradient-to-br from-blue-500 to-cyan-400 rounded-2xl flex items-center justify-center text-2xl shrink-0">🎙️</div>
+          <div className="flex-1">
+            <h2 className="text-white text-xl font-bold">Gemini Native TTS (your API key)</h2>
+            <p className="text-white/40 text-sm mt-1">Gemini 3.8 Flash TTS — <strong className="text-blue-300/80">studio-grade narration voices</strong>, 100+ languages, runs on the same Gemini key as your text generation. Counts toward your daily quota.</p>
+          </div>
+          <div className={`text-xs px-3 py-1 rounded-full border font-semibold shrink-0 ${getKey()?"bg-green-500/20 text-green-300 border-green-500/30":"bg-amber-500/20 text-amber-300 border-amber-500/30"}`}>{getKey()?"Key Active":"Add Gemini Key"}</div>
+        </div>
+        {getKey()?(
+          <div className="space-y-3">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <div>
+                <label className="text-white/50 text-xs uppercase tracking-wider block mb-1.5">Model</label>
+                <select value={getGeminiTTSModel()} onChange={e=>setGeminiTTSModel(e.target.value)} className="w-full bg-white/10 border border-white/20 rounded-xl px-3 py-2.5 text-white text-sm focus:outline-none focus:border-blue-500">
+                  {GEMINI_TTS_MODELS.map(m=><option key={m.id} value={m.id} className="bg-gray-800">{m.label}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="text-white/50 text-xs uppercase tracking-wider block mb-1.5">Voice</label>
+                <select value={getGeminiTTSVoice()} onChange={e=>setGeminiTTSVoice(e.target.value)} className="w-full bg-white/10 border border-white/20 rounded-xl px-3 py-2.5 text-white text-sm focus:outline-none focus:border-blue-500">
+                  {GEMINI_TTS_VOICES.map(v=><option key={v} value={v} className="bg-gray-800">{v}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="text-white/50 text-xs uppercase tracking-wider block mb-1.5">Chapter</label>
+                <select value={browserChIdx} onChange={e=>setBrowserChIdx(Number(e.target.value))} className="w-full bg-white/10 border border-white/20 rounded-xl px-3 py-2.5 text-white text-sm focus:outline-none focus:border-blue-500">
+                  {chapters.map((ch,i)=><option key={i} value={i} className="bg-gray-800">Ch.{ch.number}: {ch.title}</option>)}
+                </select>
+              </div>
+            </div>
+            <button onClick={async()=>{
+              if(!chapters[browserChIdx]){flash("No chapter selected");return;}
+              if(quotaBlocked()){flash("⏳ Daily quota reached — TTS resumes after the reset.");return;}
+              try{
+                flash("🎙️ Generating Gemini narration…");
+                const text=chapters[browserChIdx].content.replace(/[#*_`]/g,"").slice(0,4000);
+                const url=await geminiTTS(text);
+                new Audio(url).play();
+                flash("▶ Playing Gemini TTS preview");
+              }catch(e){flash("⚠️ "+errMsg(e));}
+            }} disabled={chapters.length===0} className="w-full bg-gradient-to-r from-blue-500 to-cyan-400 text-white py-3.5 rounded-xl font-semibold hover:opacity-90 disabled:opacity-40 flex items-center justify-center gap-2">▶ Play Gemini Preview (first 4000 chars)</button>
+            <p className="text-white/60 text-xs">Uses your existing Gemini API key and counts against the same daily quota as text generation. Nano Banana covers use it too when selected as the Cover Image Model.</p>
+          </div>
+        ):(
+          <div className="bg-white/5 rounded-xl p-4 text-center">
+            <p className="text-white/60 text-sm">Add your Gemini API key in Settings → AI Backends to unlock native TTS narration.</p>
+          </div>
         )}
       </Card>
 

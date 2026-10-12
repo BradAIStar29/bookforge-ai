@@ -23,9 +23,13 @@ function makeEnv(opts){
   const puterWithTimeout=async fn=>fn();
   // envs IS opts (live object) so puterAvail/imgFail flips apply mid-run
   const envs=opts;
+  envs.geminiImageGen=opts.geminiImageGen;
   Object.assign(envs,{localStorage,safeLS,Image,btoa,setTimeout,clearTimeout,puterWithTimeout,PUTER_PENDING_REJECTS:new Set()});
   const api=new Function('envs',`
     const {localStorage,safeLS,Image,btoa,setTimeout,clearTimeout,puterWithTimeout}=envs;
+    const errMsg=e=>e?.msg||e?.message||'err';
+    const coverFailoverNotice=m=>{envs.notices=(envs.notices||[]).concat([m]);};
+    const geminiImageGen=envs.geminiImageGen||(()=>Promise.reject({code:'GEMINI_IMG_FAIL',msg:'no stub'}));
     let PUTER_LOW_BALANCE=envs.PUTER_LOW_BALANCE;
     const PUTER_PENDING_REJECTS=envs.PUTER_PENDING_REJECTS;
     Object.defineProperty(globalThis,'puter',{get:()=>envs.puterAvail?envs.puterObj:null,configurable:true});
@@ -86,6 +90,40 @@ function makeEnv(opts){
   const r8=await r8p;
   t('hung txt2img + registry rejection → instant Pollinations fallback',r8.method==='url');
   opts.puterObj={ai:{txt2img:async(prompt,o)=>{opts.calls.push(o.model);return{src:'data:image/jpeg;base64,AAAA'}}}};
+
+  // ── Nano Banana 2.1 (Gemini-key) cover branch ──
+  {
+    // compiled model list carries the new entry
+    T.push(['Nano Banana 2.1 present in cover model list',compiled.includes('gemini-nano-banana-2.1')&&compiled.includes('Nano Banana 2.1 (Gemini Key)')]);
+    // success: routes to geminiImageGen, never touches puter
+    const st={};const s2={store:st,puterAvail:true,imgFail:false,calls:[],PUTER_LOW_BALANCE:false,
+      geminiImageGen:async(p)=>{st.geminiCall=(st.geminiCall||0)+1;return 'data:image/png;base64,GOOD';},
+      puterObj:{ai:{txt2img:async(p,o)=>{st.puterCalled=true;return{src:'data:image/jpeg;base64,AAAA'}}}}};
+    const api2=makeEnv(s2);st['bfai_puter_image_model']='gemini-nano-banana-2.1';
+    const r=await api2.genCoverImage('a nano banana cover');
+    T.push(['nano model: gemini path used, puter untouched',r.method==='gemini'&&r.url==='data:image/png;base64,GOOD'&&st.geminiCall===1&&!st.puterCalled]);
+    // quota rethrow (honest stop)
+    const s3={store:{},puterAvail:true,imgFail:false,calls:[],PUTER_LOW_BALANCE:false,
+      geminiImageGen:async()=>{throw{code:'QUOTA'};},
+      puterObj:{ai:{txt2img:async()=>{return{src:'data:image/jpeg;base64,AAAA'}}}}};
+    const api3=makeEnv(s3);s3.store['bfai_puter_image_model']='gemini-nano-banana-2.1';
+    let q=null;try{await api3.genCoverImage('x');}catch(e){q=e;}
+    T.push(['nano model: QUOTA rethrown (no silent pollinations spend)',q?.code==='QUOTA']);
+    // non-quota failure → pollinations fallback + notice
+    const s4={store:{},puterAvail:true,imgFail:false,calls:[],PUTER_LOW_BALANCE:false,
+      geminiImageGen:async()=>{throw{code:'GEMINI_IMG_FAIL',msg:'no key'};},
+      puterObj:{ai:{txt2img:async(p,o)=>{return{src:'data:image/jpeg;base64,AAAA'}}}}};
+    const api4=makeEnv(s4);s4.store['bfai_puter_image_model']='gemini-nano-banana-2.1';
+    const r4=await api4.genCoverImage('x');
+    T.push(['nano model: failure falls to Pollinations + notice',r4.method==='url'&&(s4.notices||[]).some(n=>n.includes('Nano Banana'))]);
+    // nano selected + puter low balance: gemini still tried (it is not puter)
+    const s5={store:{},puterAvail:true,imgFail:false,calls:[],PUTER_LOW_BALANCE:true,
+      geminiImageGen:async()=>{return 'data:image/png;base64,OK';},
+      puterObj:{ai:{txt2img:async()=>{return{src:'data:image/jpeg;base64,AAAA'}}}}};
+    const api5=makeEnv(s5);s5.store['bfai_puter_image_model']='gemini-nano-banana-2.1';
+    const r5=await api5.genCoverImage('x');
+    T.push(['nano model: works even under Puter low-balance',r5.method==='gemini'&&r5.url==='data:image/png;base64,OK']);
+  }
 
   let pass=0,fail=0;
   for(const[name,ok]of T){console.log((ok?'✅ ':'❌ ')+name);ok?pass++:fail++;}
