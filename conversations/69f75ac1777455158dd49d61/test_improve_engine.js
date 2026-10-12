@@ -7,7 +7,7 @@ const tests=[];const t=(l,c)=>{tests.push([l,!!c]);console.log((c?'✅':'❌')+'
 const AI_TELLS=["in that moment","couldn't help but"];
 var DAILY_LIMIT=1500;
 let RET_AI="",PROMPTS=[],CF_FAIL_ONCE=false;
-let RET_AI_2="";const callAI=async(p)=>{PROMPTS.push(p);return(PROMPTS.length>1&&RET_AI_2)?RET_AI_2:RET_AI;};
+let RET_AI_2="";const callAI=async(p)=>{PROMPTS.push(p);return(PROMPTS.length>1&&RET_AI_2)?RET_AI_2:RET_AI;};const callAIEdit=(p,t,o)=>callAI(p,t,o);
 const trackUsage=()=>{};
 let quotaBlocked=()=>false;
 let USAGE=0;const getUsage=()=>USAGE;

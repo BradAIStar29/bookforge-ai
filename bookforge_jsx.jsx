@@ -1423,6 +1423,24 @@ async function callAI(prompt,temperature=0.85,opts={},_depth=0){
 
 // Streaming version — Groq/Puter/Cerebras/Kilo/Cloudflare stream; Gemini
 // generates in one shot then delivers. Same quota-aware failover chain.
+// ── QUOTA SAVER: edit/analyze/rewrite ops prefer free non-Gemini backends ──
+// Long-form creative generation stays on the user's configured backend, but
+// analysis, review, and rewrite traffic (the improvement engine's hot loop)
+// routes to a free backend first when one is configured. This keeps the
+// Gemini 1,500/day budget for writing and makes edit capability effectively
+// unlimited with a free Groq/OpenRouter/HuggingFace/Cloudflare key.
+const EDIT_FREE_ORDER=["groq","openrouter","huggingface","cloudflare"];
+function freeEditBackend(){
+  if(EDIT_FREE_ORDER.includes(getBackend()))return null; // configured backend is already free — use it
+  for(const b of EDIT_FREE_ORDER){if(b!==getBackend()&&backendAvailable(b))return b;}
+  return null;
+}
+async function callAIEdit(prompt,temperature=0.85,opts={}){
+  const fb=freeEditBackend();
+  if(fb)return callAI(prompt,temperature,{...opts,__forceBackend:fb});
+  return callAI(prompt,temperature,opts);
+}
+
 async function callAIStream(prompt,temperature=0.85,opts={},_depth=0){
   let backend=opts.__forceBackend||getBackend();
   if(backend==="kilo"&&KILO_SESSION_DEAD)backend="puter";
@@ -1709,6 +1727,27 @@ function reorderChapters(book,fromIdx,toIdx){
   chaps.splice(toIdx,0,moved);
   chaps.forEach((ch,i)=>{ch.number=i+1;});
   return {...book,chapters:chaps};
+}
+
+// ── ZERO-API CHAPTER/BOOK MOVES — pure localStorage ops, no quota touched ──
+const chaptersWordCount=chs=>chs.reduce((a,c)=>a+((c.content||"").trim()?c.content.trim().split(/\s+/).length:0),0);
+function moveChapterToBook(bookId,fromIdx,targetId,copy){
+  const src=getBook(bookId),tgt=getBook(targetId);
+  if(!src||!tgt)return{ok:false,msg:"Book not found"};
+  if(bookId===targetId)return{ok:false,msg:"Pick a different book"};
+  if(!src.chapters?.[fromIdx])return{ok:false,msg:"Chapter not found"};
+  const ch=JSON.parse(JSON.stringify(src.chapters[fromIdx]));
+  delete ch.versions; // fresh version history in the destination
+  const newCh={...ch,number:(tgt.chapters?.length||0)+1,generated:true};
+  const srcCh=(copy?src.chapters.slice():src.chapters.filter((_,i)=>i!==fromIdx)).map((c,i)=>({...c,number:i+1}));
+  const tgtCh=[...(tgt.chapters||[]),newCh];
+  updateBook(bookId,{chapters:srcCh,word_count:chaptersWordCount(srcCh)});
+  updateBook(targetId,{chapters:tgtCh,word_count:chaptersWordCount(tgtCh)});
+  return{ok:true,target:tgt.title,chapterTitle:ch.title,copy};
+}
+function moveBookToSeries(bookId,seriesId){
+  const updated=updateBook(bookId,{series_id:seriesId||null,series_name:seriesId?(getSeries().find(x=>x.id===seriesId)?.name||""):""});
+  return updated;
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -3159,7 +3198,7 @@ const researchCtxFor=(book)=>{
 };
 async function runReviewAgent(book){
   const outline=(()=>{try{return JSON.parse(book.outline||"{}");}catch{return {};}})();
-  const raw=await callAI(
+  const raw=await callAIEdit(
     `You are a professional book publishing strategist and Amazon KDP expert with deep knowledge of what makes books bestsellers.\n\n`+
     `Review this book for market-readiness and discoverability. Be critical, specific, and commercially minded.\n\n`+journeyCtx(3,"Your verdict directly gates this book's path to publish — a PASS unlocks the Improve and Publish stages.")+
     `Book Details:\nTitle: ${book.title}\nSubtitle: ${book.subtitle||"(none)"}\nGenre: ${book.genre}\n`+
@@ -3472,6 +3511,10 @@ function SettingsModal({onClose}){
                   </select>
                 </div>
               )}
+              {/* 💚 Quota Saver note */}
+              <div className="mt-4 bg-green-500/10 border border-green-500/25 rounded-xl p-3">
+                <p className="text-green-200/80 text-xs leading-relaxed">💚 <strong>Quota Saver:</strong> analysis, review, and rewrite calls automatically route to your free backends first (Groq → OpenRouter → HuggingFace → Cloudflare) whenever their keys are configured — your Gemini budget is reserved for writing new chapters.</p>
+              </div>
               {/* 🔌 Test Connection — available for EVERY backend */}
               <div className="mt-6 pt-5 border-t border-white/10">
                 <div className="bg-white/5 border border-white/10 rounded-xl p-4 mb-4">
@@ -3715,7 +3758,7 @@ function CompetitorPanel({book,onSettings}){
     if(!hasCredentials()){onSettings();return;}
     setLoading(true);setError("");
     try{
-      const raw=await callAI(
+      const raw=await callAIEdit(
         `You are an Amazon KDP market research expert. Analyze the competitive landscape for this book.\n\n`+
         `Title: ${book.title}\nGenre: ${book.genre}\nAudience: ${book.target_audience}\nDescription: ${book.description}\n\n`+
         `Provide a detailed competitive analysis to help this book become a bestseller.\n\n`+
@@ -3780,7 +3823,7 @@ function HookPanel({book,onSettings}){
     setLoading(true);setError("");
     try{
       const outline=(()=>{try{return JSON.parse(book.outline||"{}");}catch{return {};}})();
-      const raw=await callAI(
+      const raw=await callAIEdit(
         `You are a bestselling author and master of book marketing copy. Generate high-converting hooks for this book.\n\n`+
         `Title: ${book.title}\nSubtitle: ${book.subtitle||""}\nGenre: ${book.genre}\nAudience: ${book.target_audience}\n`+
         `Description: ${outline.description||book.description}\nSEO Keywords: ${book.seo_keywords||""}\n\n`+
@@ -3926,7 +3969,7 @@ async function analyzeChapterHumanness(chapterText, bookTitle, genre, chapterTit
   // Local AI-tell scan
   const localTells = AI_TELLS.filter(t => chapterText.toLowerCase().includes(t.toLowerCase()));
 
-  const raw = await callAI(
+  const raw = await callAIEdit(
     `You are a senior literary editor at a major publishing house with 20 years of experience spotting AI-generated fiction. You have read thousands of manuscripts and know exactly what separates authentic human prose from machine-generated text. You are RUTHLESS and STRICT — your job is to catch every AI tell before this book goes to market. A false PASS is a career-ending mistake.\n\n` +
     `Book: "${bookTitle}" (${genre})\nChapter: "${chapterTitle}"\n\n` +
     `CHAPTER SAMPLE:\n${sample}\n\n` +
@@ -3976,7 +4019,7 @@ async function runManuscriptHumanCheck(book){
   const sample = written.length <= 3 ? written : [written[0], written[Math.floor(written.length/2)], written[written.length-1]];
   const samples = sample.map(c=>c.content.slice(0,800)).join("\n\n---CHAPTER BREAK---\n\n");
 
-  const raw = await callAI(
+  const raw = await callAIEdit(
     `You are a senior literary editor at a major publishing house. You have 20 years of experience and you are STRICT about AI-generated writing. You know every pattern. Your reputation depends on catching AI prose before it reaches readers.\n\n` + journeyCtx(4,"Your verdict decides whether this book proceeds to the Publish stage — catch AI patterns ruthlessly.") +
     `Book: "${book.title}" (${book.genre})\n\n` +
     `MANUSCRIPT SAMPLES (${sample.length} chapters sampled):\n${samples}\n\n` +
@@ -4058,7 +4101,7 @@ async function rewriteChapterWithFeedback(ch,score,book){
       RULES +
       `• Output ONLY the rewritten passages, in the exact delimited format given — nothing else. Each passage must be about the same length as its original.\n\n${CTX}` +
       picks.map((x,k)=>`\n<<<P${k+1}>>>\n${x.p}\n<<<END>>>`).join("");
-    const raw=await callAI(prompt,0.85,{task:"creative"});
+    const raw=await callAIEdit(prompt,0.85,{task:"creative"});
     trackUsage();
     if(raw){
       const out=paras.slice();
@@ -4084,7 +4127,7 @@ async function rewriteChapterWithFeedback(ch,score,book){
     RULES +
     `• Output ONLY the rewritten chapter text — no commentary, no markdown, no headers\n\n` +
     CTX + `Target: ~${wordCount.toLocaleString()} words (same story, same length).\n\nCHAPTER TEXT:\n${ch.content}`;
-  const content=cleanRewriteOutput(await callAI(prompt,0.85,{task:"creative"}));
+  const content=cleanRewriteOutput(await callAIEdit(prompt,0.85,{task:"creative"}));
   trackUsage();
   const wc=(content||"").split(/\s+/).length;
   if(!content||wc<Math.max(250,Math.round(wordCount*0.5)))throw{code:"SHORT_REWRITE",msg:"Rewrite came back too short — kept the original chapter."};
@@ -6460,6 +6503,8 @@ function EditorPage({bookId,navigate,onSettings}){
   const [buildLog,setBuildLog]=useState([]);
   const [readingMode,setReadingMode]=useState(false);
   const [showFindReplace,setShowFindReplace]=useState(false);
+  const [moveChIdx,setMoveChIdx]=useState(null); // chapter Move/Copy modal
+  const [showMoveBook,setShowMoveBook]=useState(false); // book-to-series modal
   const [isBuilding,setIsBuilding]=useState(false);
   const [finishing,setFinishing]=useState(false);
   const [celebrate,setCelebrate]=useState(null);
@@ -7223,10 +7268,10 @@ const genCover=async()=>{if(quotaHit||isBuilding)return;setBusy(true);setError("
     {isShort
       ?<span className="text-amber-400/70 text-xs">⚠️ Short ({wc.toLocaleString()}/{tw.toLocaleString()})</span>
       :<span className="text-green-400/50 text-xs">✅ Done</span>}
-    <button onClick={e=>{e.stopPropagation();downloadChapterTxt(book,i);}} className="text-white/60 hover:text-white/60 text-xs">📄 Export TXT</button>
+    <button onClick={e=>{e.stopPropagation();downloadChapterTxt(book,i);}} className="text-white/60 hover:text-white/60 text-xs">📄 Export TXT</button><button onClick={e=>{e.stopPropagation();setMoveChIdx(i);}} className="text-white/60 hover:text-purple-300 text-xs">↗ Move/Copy</button>
   </div>;
 })():<span className="text-white/50 text-xs shrink-0">Pending</span>}</div>)}</div><div className="mt-5"><ChapterPacingChart book={book}/></div>
-            <div className="mt-3 bg-white/5 rounded-xl p-4"><div className="flex justify-between text-xs text-white/40 mb-2"><span>Progress</span><span>{book.chapters.filter(c=>c.generated).length}/{book.chapters.length} chapters</span></div><div className="h-2 bg-white/10 rounded-full overflow-hidden"><div className="h-full bg-gradient-to-r from-purple-500 to-pink-500 rounded-full" style={{width:`${(book.chapters.filter(c=>c.generated).length/book.chapters.length)*100}%`}}/></div></div></>}{(!book.chapters||book.chapters.length===0)&&isBuilding&&<div className="text-center py-8 text-white/60"><Spin/><p className="mt-3 text-sm">Generating outline…</p></div>}<div className="mt-5 flex items-center gap-3 pt-4 border-t border-white/10"><button onClick={()=>setReadingMode(true)} disabled={!book.chapters?.some(c=>c.generated)} className="text-xs px-3 py-2 rounded-lg bg-purple-500/20 border border-purple-500/30 text-purple-300 hover:bg-purple-500/30 hover:text-purple-200 transition-all flex items-center gap-2 disabled:opacity-40">📖 Read Book</button><button onClick={()=>downloadPDF(book)} className="text-xs px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-white/60 hover:bg-white/10 hover:text-white/90 transition-all flex items-center gap-2">📄 Export PDF</button><button onClick={()=>downloadMarkdown(book)} className="text-xs px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-white/60 hover:bg-white/10 hover:text-white/90 transition-all flex items-center gap-2">📝 Export Markdown</button><button onClick={()=>downloadBookJSON(book)} className="text-xs px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-white/60 hover:bg-white/10 hover:text-white/90 transition-all flex items-center gap-2">💾 Export Backup (JSON)</button><label className="text-xs px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-white/60 hover:bg-white/10 hover:text-white/90 transition-all flex items-center gap-2 cursor-pointer">📥 Import Backup<input type="file" accept=".json" className="hidden" onChange={async(e)=>{const file=e.target.files?.[0];if(!file)return;try{const imported=await importBookJSON(file);const books=getBooks();books.unshift(imported);setBooks(books);await flushDB();alert("Imported \""+imported.title+"\" successfully!");window.location.reload();}catch(err){alert("Import failed: "+(err?.msg||err?.message||"unknown error"));}}}/></label></div></Card></div>}
+            <div className="mt-3 bg-white/5 rounded-xl p-4"><div className="flex justify-between text-xs text-white/40 mb-2"><span>Progress</span><span>{book.chapters.filter(c=>c.generated).length}/{book.chapters.length} chapters</span></div><div className="h-2 bg-white/10 rounded-full overflow-hidden"><div className="h-full bg-gradient-to-r from-purple-500 to-pink-500 rounded-full" style={{width:`${(book.chapters.filter(c=>c.generated).length/book.chapters.length)*100}%`}}/></div></div></>}{(!book.chapters||book.chapters.length===0)&&isBuilding&&<div className="text-center py-8 text-white/60"><Spin/><p className="mt-3 text-sm">Generating outline…</p></div>}<div className="mt-5 flex items-center gap-3 pt-4 border-t border-white/10"><button onClick={()=>setReadingMode(true)} disabled={!book.chapters?.some(c=>c.generated)} className="text-xs px-3 py-2 rounded-lg bg-purple-500/20 border border-purple-500/30 text-purple-300 hover:bg-purple-500/30 hover:text-purple-200 transition-all flex items-center gap-2 disabled:opacity-40">📖 Read Book</button><button onClick={()=>downloadPDF(book)} className="text-xs px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-white/60 hover:bg-white/10 hover:text-white/90 transition-all flex items-center gap-2">📄 Export PDF</button><button onClick={()=>downloadMarkdown(book)} className="text-xs px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-white/60 hover:bg-white/10 hover:text-white/90 transition-all flex items-center gap-2">📝 Export Markdown</button><button onClick={()=>setShowMoveBook(true)} className="text-xs px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-white/60 hover:bg-white/10 hover:text-white/90 transition-all flex items-center gap-2">🗂 Move Book to Series…</button><button onClick={()=>downloadBookJSON(book)} className="text-xs px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-white/60 hover:bg-white/10 hover:text-white/90 transition-all flex items-center gap-2">💾 Export Backup (JSON)</button><label className="text-xs px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-white/60 hover:bg-white/10 hover:text-white/90 transition-all flex items-center gap-2 cursor-pointer">📥 Import Backup<input type="file" accept=".json" className="hidden" onChange={async(e)=>{const file=e.target.files?.[0];if(!file)return;try{const imported=await importBookJSON(file);const books=getBooks();books.unshift(imported);setBooks(books);await flushDB();alert("Imported \""+imported.title+"\" successfully!");window.location.reload();}catch(err){alert("Import failed: "+(err?.msg||err?.message||"unknown error"));}}}/></label></div></Card></div>}
 
         {/* CHAPTERS */}
         {tab===1&&<div className="grid grid-cols-1 lg:grid-cols-3 gap-5"><div className="lg:col-span-1"><div className="bg-white/5 border border-white/10 rounded-2xl p-4 sticky top-24"><div className="flex items-center justify-between mb-3"><h3 className="text-white font-semibold text-sm">Chapters</h3><div className="flex gap-1.5"><button onClick={()=>setReadingMode(true)} disabled={!book.chapters?.some(c=>c.generated)} className="text-xs text-purple-300 hover:text-purple-200 disabled:opacity-30 px-2 py-1 rounded bg-purple-500/10">📖 Read</button><button onClick={()=>setShowFindReplace(true)} className="text-xs text-purple-300 hover:text-purple-200 disabled:opacity-30 px-2 py-1 rounded bg-purple-500/10 flex items-center gap-1">🔍 Find & Replace</button>{!isBuilding&&<button onClick={async()=>{
@@ -7408,6 +7453,78 @@ Respond ONLY valid JSON: {"needs_improvement":false,"score":85,"issues":["short 
         </div>
       {readingMode&&<BookReader book={book} onClose={()=>setReadingMode(false)}/>}
       {showFindReplace&&<FindReplaceModal book={book} onClose={()=>setShowFindReplace(false)} onUpdateBook={upd} flash={flash}/>}
+      {moveChIdx!==null&&(()=>{
+        const ch=book.chapters?.[moveChIdx];
+        const others=getBooks().filter(b=>b.id!==book.id);
+        return <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4 bf-modal" role="dialog" aria-modal="true" aria-label="Move or copy chapter">
+          <div className="bg-slate-800 border border-fuchsia-500/30 rounded-2xl max-w-md w-full shadow-2xl p-6">
+            <h3 className="text-white font-bold text-lg mb-1">↗ Move / Copy Chapter</h3>
+            <p className="text-white/50 text-xs mb-4">Ch.{ch?.number}: {ch?.title} — zero API calls, instant.</p>
+            {others.length===0?(
+              <p className="text-white/60 text-sm bg-white/5 rounded-xl p-4">No other books yet. Create or import another book first.</p>
+            ):(
+              <div className="space-y-3">
+                <div>
+                  <label className="text-white/50 text-xs uppercase tracking-wider block mb-1.5">Destination book</label>
+                  <select id="moveChTarget" className="w-full bg-white/10 border border-white/20 rounded-xl px-3 py-2.5 text-white text-sm focus:outline-none focus:border-purple-500">
+                    {others.map(b=><option key={b.id} value={b.id} className="bg-gray-800">{b.title} ({b.chapters?.length||0} ch)</option>)}
+                  </select>
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <button onClick={()=>{
+                    const tgt=document.getElementById("moveChTarget")?.value;if(!tgt)return;
+                    const r=moveChapterToBook(book.id,moveChIdx,tgt,false);
+                    if(!r.ok){flash("⚠️ "+r.msg);return;}
+                    setBook(getBook(book.id));setMoveChIdx(null);
+                    flash(`✅ "${r.chapterTitle}" moved to "${r.target}"`);
+                  }} className="bg-gradient-to-r from-purple-500 to-pink-500 text-white py-2.5 rounded-xl font-semibold text-sm hover:opacity-90">Move (remove here)</button>
+                  <button onClick={()=>{
+                    const tgt=document.getElementById("moveChTarget")?.value;if(!tgt)return;
+                    const r=moveChapterToBook(book.id,moveChIdx,tgt,true);
+                    if(!r.ok){flash("⚠️ "+r.msg);return;}
+                    setMoveChIdx(null);
+                    flash(`📄 "${r.chapterTitle}" copied to "${r.target}"`);
+                  }} className="bg-white/10 border border-white/20 text-white py-2.5 rounded-xl font-semibold text-sm hover:bg-white/20">Copy (keep both)</button>
+                </div>
+              </div>
+            )}
+            <button onClick={()=>setMoveChIdx(null)} className="w-full mt-3 text-white/60 text-xs py-2 hover:text-white">Cancel</button>
+          </div>
+        </div>;
+      })()}
+      {showMoveBook&&(()=>{
+        const series=getSeries();
+        return <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4 bf-modal" role="dialog" aria-modal="true" aria-label="Move book to series">
+          <div className="bg-slate-800 border border-fuchsia-500/30 rounded-2xl max-w-md w-full shadow-2xl p-6">
+            <h3 className="text-white font-bold text-lg mb-1">🗂 Move Book to a Series</h3>
+            <p className="text-white/50 text-xs mb-4">Current: {book.series_name||"No series"} — zero API calls, instant.</p>
+            {series.length===0?(
+              <p className="text-white/60 text-sm bg-white/5 rounded-xl p-4">No series exist yet. Create one in the Series tab first.</p>
+            ):(
+              <div className="space-y-3">
+                <select id="moveBookTarget" className="w-full bg-white/10 border border-white/20 rounded-xl px-3 py-2.5 text-white text-sm focus:outline-none focus:border-purple-500">
+                  {series.map(sr=><option key={sr.id} value={sr.id} className="bg-gray-800">{sr.name}</option>)}
+                </select>
+                <div className="grid grid-cols-2 gap-3">
+                  <button onClick={()=>{
+                    const tgt=document.getElementById("moveBookTarget")?.value;if(!tgt)return;
+                    const b=moveBookToSeries(book.id,tgt);
+                    setBook(b);setShowMoveBook(false);
+                    flash(`✅ "${b.title}" moved to "${b.series_name}"`);
+                  }} className="bg-gradient-to-r from-purple-500 to-pink-500 text-white py-2.5 rounded-xl font-semibold text-sm hover:opacity-90">Move to Series</button>
+                  <button onClick={()=>{
+                    if(!book.series_id){flash("⚠️ Book isn't in a series");return;}
+                    const b=moveBookToSeries(book.id,null);
+                    setBook(b);setShowMoveBook(false);
+                    flash(`✅ "${b.title}" removed from series`);
+                  }} className="bg-white/10 border border-white/20 text-white py-2.5 rounded-xl font-semibold text-sm hover:bg-white/20">Remove from Series</button>
+                </div>
+              </div>
+            )}
+            <button onClick={()=>setShowMoveBook(false)} className="w-full mt-3 text-white/60 text-xs py-2 hover:text-white">Cancel</button>
+          </div>
+        </div>;
+      })()}
     </div>
   );
 }

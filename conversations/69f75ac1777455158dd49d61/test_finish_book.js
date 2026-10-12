@@ -13,7 +13,7 @@ t('strips "Rewritten Chapter 3:" header',cleanRewriteOutput('Rewritten Chapter 3
 t('leaves clean text untouched',cleanRewriteOutput('word word')==='word word');
 t('tolerates null/empty',cleanRewriteOutput(null)===''&&cleanRewriteOutput("")==="" );
 // — rewriteChapterWithFeedback uses the cleaner —
-t('rewriteChapterWithFeedback pipes output through cleanRewriteOutput',src.slice(src.indexOf('async function rewriteChapterWithFeedback'),src.indexOf('function WritingQualityPanel')).includes('cleanRewriteOutput(await callAI'));
+t('rewriteChapterWithFeedback pipes output through cleanRewriteOutput',src.slice(src.indexOf('async function rewriteChapterWithFeedback'),src.indexOf('function WritingQualityPanel')).includes('cleanRewriteOutput(await callAIEdit'));
 // — runFinishToCompletion source wiring —
 const fi=src.indexOf('const runFinishToCompletion');
 const fe=src.indexOf('const genChapter=async(idx)=>{');

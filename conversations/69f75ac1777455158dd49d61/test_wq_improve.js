@@ -6,7 +6,7 @@ const tests=[];const t=(l,c)=>{tests.push([l,!!c]);console.log((c?'✅':'❌')+'
 const a=src.indexOf('function cleanRewriteOutput');
 const b=src.indexOf('function WritingQualityPanel');
 let CALLS=[];
-global.callAI=async(prompt,temp,opts)=>{CALLS.push(prompt);if(THROW_AI)throw THROW_AI;return RET_AI;};
+global.callAI=async(prompt,temp,opts)=>{CALLS.push(prompt);if(THROW_AI)throw THROW_AI;return RET_AI;};global.callAIEdit=(p,t,o)=>global.callAI(p,t,o);
 global.AI_TELLS=["in that moment"];
 let RET_AI="",THROW_AI=null,usage=0;
 global.trackUsage=()=>{usage++;if(usage>=DAILY_LIMIT_U)throw{code:"QUOTA"};};
