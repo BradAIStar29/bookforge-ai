@@ -1267,6 +1267,10 @@ let KILO_SESSION_DEAD=false;
 function notifyBackendSwitch(){
   try{window.dispatchEvent(new CustomEvent("bfai:retry",{detail:{reason:"notice",msg:"🔌 Kilo Code is unreachable from browsers right now — auto-switched to Puter.js for this session."}}));}catch(e){}
 }
+function notifyOutageSwitch(backend,next){
+  const label=id=>{const b=BACKENDS.find(x=>x.id===id);return b?b.label.split(" (")[0]:id;};
+  try{window.dispatchEvent(new CustomEvent("bfai:retry",{detail:{reason:"notice",msg:`⚡ ${label(backend)} returned a server error — auto-switched to ${label(next)}. Your work continues.`}}));}catch(e){}
+}
 function kiloFailureShouldFailover(e){
   return e?.code==="KILO_ERROR"||e?.code==="TIMEOUT"; // NOT QUOTA (rate-limit = alive, just busy)
 }
@@ -1416,6 +1420,21 @@ async function callAI(prompt,temperature=0.85,opts={},_depth=0){
         const next=nextAvailableBackend(backend);
         if(next){notifyQuotaSwitch(backend,next);return callAI(prompt,temperature,{...opts,__forceBackend:next},_depth+1);}
       }
+      // 5xx / empty / timeout after all in-caller retries → provider outage, not our bug:
+      // route to the next configured backend instead of killing the user's run
+      if(e?.code==="SERVER"||e?.code==="EMPTY"||e?.code==="TIMEOUT"){
+        markBackendExhausted(backend); // short-lived (10min default) — transient outage
+        const next=nextAvailableBackend(backend);
+        if(next){notifyOutageSwitch(backend,next);return callAI(prompt,temperature,{...opts,__forceBackend:next},_depth+1);}
+        // nothing else configured → surface the raw error below
+      }
+      // Stale/invalid key on a backend we ROUTED to (quota saver or failover):
+      // fall through to the next backend rather than dead-ending the whole task
+      if(e?.code==="BAD_KEY"){
+        markBackendExhausted(backend,12*3600e3);
+        const next=nextAvailableBackend(backend);
+        if(next){notifyOutageSwitch(backend,next);return callAI(prompt,temperature,{...opts,__forceBackend:next},_depth+1);}
+      }
     }
     throw e;
   }
@@ -1473,6 +1492,16 @@ async function callAIStream(prompt,temperature=0.85,opts={},_depth=0){
         markBackendExhausted(backend);
         const next=nextAvailableBackend(backend);
         if(next){notifyQuotaSwitch(backend,next);return callAIStream(prompt,temperature,{...opts,__forceBackend:next},_depth+1);}
+      }
+      if(e?.code==="SERVER"||e?.code==="EMPTY"||e?.code==="TIMEOUT"){
+        markBackendExhausted(backend);
+        const next=nextAvailableBackend(backend);
+        if(next){notifyOutageSwitch(backend,next);return callAIStream(prompt,temperature,{...opts,__forceBackend:next},_depth+1);}
+      }
+      if(e?.code==="BAD_KEY"){
+        markBackendExhausted(backend,12*3600e3);
+        const next=nextAvailableBackend(backend);
+        if(next){notifyOutageSwitch(backend,next);return callAIStream(prompt,temperature,{...opts,__forceBackend:next},_depth+1);}
       }
     }
     throw e;

@@ -1469,6 +1469,16 @@ function notifyBackendSwitch() {
   } catch (e) {
   }
 }
+function notifyOutageSwitch(backend, next) {
+  const label = (id) => {
+    const b = BACKENDS.find((x) => x.id === id);
+    return b ? b.label.split(" (")[0] : id;
+  };
+  try {
+    window.dispatchEvent(new CustomEvent("bfai:retry", { detail: { reason: "notice", msg: `\u26A1 ${label(backend)} returned a server error \u2014 auto-switched to ${label(next)}. Your work continues.` } }));
+  } catch (e) {
+  }
+}
 function kiloFailureShouldFailover(e) {
   return e?.code === "KILO_ERROR" || e?.code === "TIMEOUT";
 }
@@ -1650,6 +1660,22 @@ async function callAI(prompt2, temperature = 0.85, opts = {}, _depth = 0) {
           return callAI(prompt2, temperature, { ...opts, __forceBackend: next }, _depth + 1);
         }
       }
+      if (e?.code === "SERVER" || e?.code === "EMPTY" || e?.code === "TIMEOUT") {
+        markBackendExhausted(backend);
+        const next = nextAvailableBackend(backend);
+        if (next) {
+          notifyOutageSwitch(backend, next);
+          return callAI(prompt2, temperature, { ...opts, __forceBackend: next }, _depth + 1);
+        }
+      }
+      if (e?.code === "BAD_KEY") {
+        markBackendExhausted(backend, 12 * 36e5);
+        const next = nextAvailableBackend(backend);
+        if (next) {
+          notifyOutageSwitch(backend, next);
+          return callAI(prompt2, temperature, { ...opts, __forceBackend: next }, _depth + 1);
+        }
+      }
     }
     throw e;
   }
@@ -1712,6 +1738,22 @@ async function callAIStream(prompt2, temperature = 0.85, opts = {}, _depth = 0) 
         const next = nextAvailableBackend(backend);
         if (next) {
           notifyQuotaSwitch(backend, next);
+          return callAIStream(prompt2, temperature, { ...opts, __forceBackend: next }, _depth + 1);
+        }
+      }
+      if (e?.code === "SERVER" || e?.code === "EMPTY" || e?.code === "TIMEOUT") {
+        markBackendExhausted(backend);
+        const next = nextAvailableBackend(backend);
+        if (next) {
+          notifyOutageSwitch(backend, next);
+          return callAIStream(prompt2, temperature, { ...opts, __forceBackend: next }, _depth + 1);
+        }
+      }
+      if (e?.code === "BAD_KEY") {
+        markBackendExhausted(backend, 12 * 36e5);
+        const next = nextAvailableBackend(backend);
+        if (next) {
+          notifyOutageSwitch(backend, next);
           return callAIStream(prompt2, temperature, { ...opts, __forceBackend: next }, _depth + 1);
         }
       }

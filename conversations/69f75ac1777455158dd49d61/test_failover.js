@@ -19,7 +19,7 @@ const kiloFailureShouldFailover=e=>e?.code==="KILO_ERROR"||e?.code==="TIMEOUT";
 let CF_SESSION_DEAD=false;
 const cfFailureShouldFailover=e=>e?.code==="CF_CORS";
 const notifyCfSwitch=()=>{};
-const notifyBackendSwitch=()=>{}, notifyPuterLowBalance=()=>{};
+const notifyBackendSwitch=()=>{}, notifyPuterLowBalance=()=>{};const notifyOutageSwitch=()=>{};const BACKENDS=[{id:'groq',label:'Groq Turbo (x)'},{id:'openrouter',label:'OpenRouter (x)'},{id:'huggingface',label:'HuggingFace (x)'},{id:'cloudflare',label:'Cloudflare (x)'},{id:'cerebras',label:'Cerebras (x)'},{id:'gemini',label:'Gemini (x)'}];
 const mk=b=>(prompt,temp,opts)=>{CALLS.push(b);if(FAILMAP[b])throw FAILMAP[b];const res=b+"-result";if(opts&&opts.onStream)opts.onStream(res);return res;};
 const callGroq=mk("groq"),callCerebras=mk("cerebras"),callCloudflare=mk("cloudflare");
 const callGemini=mk("gemini"),callPuter=mk("puter"),callKilo=mk("kilo"),callOpenRouter=mk("openrouter"),callHuggingFace=mk("huggingface");
@@ -145,6 +145,49 @@ const test=`let pass=0,fail=0;const t=(l,c)=>{c?pass++:fail++;console.log((c?'�
   t('stream: cloudflare CORS-dead → groq delivers',cf4==="groq-result"&&CALLS.join(",")==="cloudflare,groq");
   CONFIG={backend:"groq",groqKey:"gk",cerebrasKey:"ck",cfId:"",cfTok:"",gemKey:"",usage:0}; // restore
   console.log(\`\n=== \${pass} passed, \${fail} failed ===\`);
+  // ── Outage failover: 5xx / EMPTY / BAD_KEY no longer kill runs ──
+  BACKEND_EXHAUSTED.clear();LAST_FAILOVER_FROM.clear();
+  CONFIG={backend:"gemini",groqKey:"gk",cerebrasKey:"ck",cfId:"",cfTok:"",gemKey:"gk1",usage:0};
+  FAILMAP={groq:{code:"SERVER",msg:"Server error 503"}};
+  CALLS.length=0;
+  const oc1=await callAIEdit("edit op"); // quota saver forces groq first
+  t('5xx on routed free backend → auto-switches (Finish Book path)',oc1==="gemini-result"&&CALLS.join(",")==="groq,gemini");
+  t('outaged backend marked exhausted',backendExhausted("groq")===true);
+  CALLS.length=0;
+  const oc2=await callAIEdit("edit op"); // groq exhausted → no free key left → configured gemini
+  t('after outage: falls back to configured backend gracefully',oc2==="gemini-result"&&CALLS.join(",")==="gemini");
+  // EMPTY also fails over
+  BACKEND_EXHAUSTED.clear();
+  FAILMAP={groq:{code:"EMPTY",msg:"Empty response."}};
+  CALLS.length=0;
+  const oc3=await callAI("x");
+  t('EMPTY response fails over too',oc3==="gemini-result");
+  // BAD_KEY (stale key on a routed backend) → next
+  BACKEND_EXHAUSTED.clear();
+  FAILMAP={groq:{code:"BAD_KEY",msg:"Invalid API key"}};
+  CALLS.length=0;
+  const oc4=await callAI("x");
+  t('stale key on routed backend → next backend, run survives',oc4==="gemini-result");
+  // nothing else available → error surfaces honestly
+  BACKEND_EXHAUSTED.clear();
+  CONFIG={backend:"gemini",groqKey:"gk",cerebrasKey:"",cfId:"",cfTok:"",gemKey:"",usage:0};
+  FAILMAP={groq:{code:"SERVER",msg:"Server error 503"}};
+  PUTER_LOW_BALANCE=true; // puter out too — truly nothing left
+  let oc5=null;try{oc5=await callAIEdit("x");}catch(e){oc5=e;}
+  t('sole backend down + no fallback → clear error surfaces',oc5?.code==="SERVER"||oc5?.code==="PUTER_LOW_BALANCE");
+  PUTER_LOW_BALANCE=false;
+  // stream path
+  BACKEND_EXHAUSTED.clear();LAST_FAILOVER_FROM.clear();
+  CONFIG={backend:"groq",groqKey:"gk",cerebrasKey:"ck",cfId:"",cfTok:"",gemKey:"",usage:0};
+  FAILMAP={groq:{code:"SERVER",msg:"Server error 502"}};
+  CALLS.length=0;
+  let sStream=[];
+  const oc6=await callAIStream("hi",0.8,{onStream:txt=>sStream.push(txt)});
+  t('stream: 5xx → next backend delivers the stream',oc6==="puter-result"&&CALLS.join(",")==="groq,puter");
+  // config restore
+  CONFIG={backend:"groq",groqKey:"gk",cerebrasKey:"ck",cfId:"",cfTok:"",gemKey:"",usage:0};
+  BACKEND_EXHAUSTED.clear();LAST_FAILOVER_FROM.clear();FAILMAP={};
+
   process.exit(fail?1:0);
 })();
 `;
