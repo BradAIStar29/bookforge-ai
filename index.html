@@ -4190,7 +4190,8 @@ ${ch.content}`;
 async function runImprovementRounds(bookId, logFn = () => {
 }, refresh = () => {
 }) {
-  for (let round = 1; round <= 3; round++) {
+  const alreadyRewritten = /* @__PURE__ */ new Set();
+  for (let round = 1; round <= 4; round++) {
     if (quotaBlocked()) {
       logFn("\u23F8\uFE0F Daily quota reached \u2014 progress saved. Run again after the quota resets.");
       break;
@@ -4200,7 +4201,8 @@ async function runImprovementRounds(bookId, logFn = () => {
     const rv = b.review?.overall_score || 0;
     const wq = b.manuscript_quality?.overall_human_score || 0;
     if (rv >= 75 && wq >= 78) break;
-    logFn(`\u{1F3C1} Improvement round ${round}/3 \u2014 Review ${rv}/75 \xB7 Writing ${wq}/78`);
+    logFn(`\u{1F3C1} Improvement round ${round} \u2014 Review ${rv}/75 \xB7 Writing ${wq}/78`);
+    let acted = false;
     if (rv < 75 && b.review && getUsage() < DAILY_LIMIT - 2) {
       try {
         const rvd = b.review;
@@ -4220,6 +4222,7 @@ async function runImprovementRounds(bookId, logFn = () => {
           const reReview = await runReviewAgent({ ...b, ...fixes });
           updateBook(bookId, { review: reReview, review_done: true });
           logFn(`  \u{1F4CA} Review: ${rv} \u2192 ${reReview.overall_score}/100`);
+          acted = true;
         }
       } catch (e) {
         if (e?.code === "QUOTA") break;
@@ -4235,7 +4238,8 @@ async function runImprovementRounds(bookId, logFn = () => {
         const written = all.map((c, i) => ({ ...c, _i: i })).filter((c) => c.content);
         const scored = written.filter((c) => scores[c._i]).sort((x, y) => scores[x._i].human_score - scores[y._i].human_score);
         const unscored = written.filter((c) => !scores[c._i]);
-        const targets = [...scored, ...unscored].slice(0, 3);
+        const weak = scored.filter((c) => scores[c._i].human_score < 78);
+        const targets = [...weak.filter((c) => !alreadyRewritten.has(c._i)), ...unscored, ...weak.filter((c) => alreadyRewritten.has(c._i))].slice(0, 4);
         logFn(`  \u270D\uFE0F Targeting ${targets.map((t) => `Ch ${t._i + 1}`).join(", ")}\u2026`);
         let analyzed = 0;
         for (const t of targets) {
@@ -4264,18 +4268,27 @@ async function runImprovementRounds(bookId, logFn = () => {
           }
           if (content !== ch.content) chaps[t._i] = { ...withVersionSnapshot(ch, "Improvement round rewrite"), content };
         }
-        let budget = 2;
+        let budget = 3;
         for (const t of targets) {
           if (budget <= 0 || quotaBlocked()) break;
           const sc = scores[t._i];
           const ch = chaps[t._i];
-          if (!sc || sc.human_score >= 78 || !ch?.content) continue;
+          if (!sc || sc.human_score >= 78 || !ch?.content || alreadyRewritten.has(t._i)) continue;
           logFn(`  \u{1F527} Rewriting chapter ${t._i + 1} (scored ${sc.human_score}/100)\u2026`);
           try {
             const better = await rewriteChapterWithFeedback(ch, sc, b2);
             chaps[t._i] = { ...withVersionSnapshot(ch, "AI rewrite (improvement round)"), content: better };
+            alreadyRewritten.add(t._i);
             changed = true;
+            acted = true;
             budget--;
+            try {
+              const resc = await analyzeChapterHumanness(better, b2.title, b2.genre, ch.title);
+              scores = { ...scores, [t._i]: resc };
+              updateBook(bookId, { writing_quality: scores });
+              logFn(`  \u{1F4C8} Chapter ${t._i + 1}: ${sc.human_score} \u2192 ${resc.human_score}/100${resc.human_score >= 78 ? " \u2705" : ""}`);
+            } catch (re) {
+            }
           } catch (e) {
             if (e?.code === "QUOTA") break;
           }
@@ -4290,6 +4303,10 @@ async function runImprovementRounds(bookId, logFn = () => {
         if (e?.code === "QUOTA") break;
         logFn("  \u26A0\uFE0F Writing fix round failed \u2014 see Writing Quality tab");
       }
+    }
+    if (!acted) {
+      logFn(alreadyRewritten.size > 0 ? `  \u2714\uFE0F ${alreadyRewritten.size} chapter(s) rewritten this pass \u2014 run \u{1F3C1} Finish again to improve the next batch, or apply manual fixes in the tabs.` : "  \u2714\uFE0F No further auto-improvements found this pass \u2014 remaining fixes need a manual look (Review / Writing Quality tabs).");
+      break;
     }
     refresh();
   }

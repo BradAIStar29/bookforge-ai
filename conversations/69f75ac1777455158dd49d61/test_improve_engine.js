@@ -67,5 +67,18 @@ eval(src.slice(a,b));
   const res2=await runImprovementRounds("bk2",()=>{});
   quotaBlocked=()=>false;
   t('quota reached → rounds stop, passed=false honestly',res2.passed===false&&res2.rv===60&&res2.wq===60);
+  // ── Loop-proofing: gate never passes → rotation + honest exit, no chapter rewritten twice ──
+  const chapters6=[];for(let i=0;i<6;i++)chapters6.push({number:i+1,title:"Ch"+i,content:"para text for chapter "+i+" "+("word ".repeat(60)),generated:true});
+  BOOK={id:"bk3",title:"T3",genre:"G",review:{overall_score:80},manuscript_quality:{overall_human_score:60},writing_quality:{},chapters:chapters6};
+  REVIEW_RET={overall_score:80};ANALYZE_RET={human_score:50,ai_tells_found:[],rewrite_examples:[]};MS_RET={overall_human_score:70};
+  USAGE=0;PROMPTS.length=0;RET_AI_2="FULL REWRITE "+L(400);RET_AI="FULL REWRITE "+L(300);
+  const logs3=[];
+  const res3=await runImprovementRounds("bk3",m=>logs3.push(m));
+  const rewriteLines=logs3.filter(l=>l.includes("🔧 Rewriting chapter"));
+  const perCh={};rewriteLines.forEach(l=>{const m=l.match(/chapter (\d+)/);if(m)perCh[m[1]]=(perCh[m[1]]||0)+1;});
+  t('loop-proof: no chapter AI-rewritten more than once per run',Object.values(perCh).every(v=>v===1));
+  t('loop-proof: ≥4 distinct chapters improved before honest exit',new Set(Object.keys(perCh)).size>=4);
+  t('loop-proof: honest exit message, no endless rounds',logs3.some(l=>l.includes("run 🏁 Finish again to improve the next batch"))&&!logs3.some(l=>l.includes("Improvement round 5")));
+  t('loop-proof: progress visible via re-scored chapters',logs3.filter(l=>l.includes("📈 Chapter")).length>=4&&res3.passed===false&&res3.wq===70);
   let bad=tests.filter(x=>!x[1]).length;console.log(`=== ${tests.length-bad}/${tests.length} passed ===`);if(bad)process.exitCode=1;
 })().catch(e=>{console.error('HARNESS FAIL',e);process.exitCode=1;});

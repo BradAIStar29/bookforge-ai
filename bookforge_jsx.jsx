@@ -4171,14 +4171,24 @@ async function rewriteChapterWithFeedback(ch,score,book){
 // Quality fixes on the 3 weakest chapters, until BOTH gates pass (75/78).
 // Pure data layer (getBook/updateBook) — callers pass a log + refresh callback.
 // ══════════════════════════════════════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════════════════════════
+// SHARED IMPROVEMENT ENGINE — used by the EditorPage 🏁 Finish button AND the
+// Build Queue. Rounds of Review suggestion fixes + targeted Writing Quality
+// fixes until BOTH gates pass (Review 75 / Writing 78).
+// Loop-proofing: chapters AI-rewritten THIS run are never re-targeted (we
+// rotate to the next weakest batch), every rewrite is followed by a fresh
+// humanness re-score so progress is visible and the next round moves on,
+// and a round that changes nothing exits honestly instead of spinning.
 async function runImprovementRounds(bookId,logFn=()=>{},refresh=()=>{}){
-  for(let round=1;round<=3;round++){
+  const alreadyRewritten=new Set(); // chapter indexes AI-rewritten this run
+  for(let round=1;round<=4;round++){
     if(quotaBlocked()){logFn("⏸️ Daily quota reached — progress saved. Run again after the quota resets.");break;}
     const b=getBook(bookId);if(!b)break;
     const rv=b.review?.overall_score||0;
     const wq=b.manuscript_quality?.overall_human_score||0;
     if(rv>=75&&wq>=78)break;
-    logFn(`🏁 Improvement round ${round}/3 — Review ${rv}/75 · Writing ${wq}/78`);
+    logFn(`🏁 Improvement round ${round} — Review ${rv}/75 · Writing ${wq}/78`);
+    let acted=false; // did this round change anything? (loop-feel guard)
     if(rv<75&&b.review&&getUsage()<DAILY_LIMIT-2){
       try{
         const rvd=b.review;const fixes={};
@@ -4192,6 +4202,7 @@ async function runImprovementRounds(bookId,logFn=()=>{},refresh=()=>{}){
           const reReview=await runReviewAgent({...b,...fixes});
           updateBook(bookId,{review:reReview,review_done:true});
           logFn(`  📊 Review: ${rv} → ${reReview.overall_score}/100`);
+          acted=true;
         }
       }catch(e){if(e?.code==="QUOTA")break;logFn("  ⚠️ Review fix failed — continuing to writing fixes");}
     }
@@ -4204,7 +4215,10 @@ async function runImprovementRounds(bookId,logFn=()=>{},refresh=()=>{}){
         const written=all.map((c,i)=>({...c,_i:i})).filter(c=>c.content);
         const scored=written.filter(c=>scores[c._i]).sort((x,y)=>scores[x._i].human_score-scores[y._i].human_score);
         const unscored=written.filter(c=>!scores[c._i]);
-        const targets=[...scored,...unscored].slice(0,3);
+        // rotation: weak chapters NOT yet rewritten this run come first, so
+        // each round (and each Finish click) improves a NEW batch of chapters
+        const weak=scored.filter(c=>scores[c._i].human_score<78);
+        const targets=[...weak.filter(c=>!alreadyRewritten.has(c._i)),...unscored,...weak.filter(c=>alreadyRewritten.has(c._i))].slice(0,4);
         logFn(`  ✍️ Targeting ${targets.map(t=>`Ch ${t._i+1}`).join(", ")}…`);
         let analyzed=0;
         for(const t of targets){
@@ -4220,16 +4234,24 @@ async function runImprovementRounds(bookId,logFn=()=>{},refresh=()=>{}){
           for(const ex of sc.rewrite_examples){if(ex.original&&ex.rewrite&&content.includes(ex.original)){content=content.replace(ex.original,ex.rewrite);changed=true;}}
           if(content!==ch.content)chaps[t._i]={...withVersionSnapshot(ch,"Improvement round rewrite"),content};
         }
-        let budget=2;
+        let budget=3;
         for(const t of targets){
           if(budget<=0||quotaBlocked())break;
           const sc=scores[t._i];const ch=chaps[t._i];
-          if(!sc||sc.human_score>=78||!ch?.content)continue;
+          if(!sc||sc.human_score>=78||!ch?.content||alreadyRewritten.has(t._i))continue;
           logFn(`  🔧 Rewriting chapter ${t._i+1} (scored ${sc.human_score}/100)…`);
           try{
             const better=await rewriteChapterWithFeedback(ch,sc,b2);
             chaps[t._i]={...withVersionSnapshot(ch,"AI rewrite (improvement round)"),content:better};
-            changed=true;budget--;
+            alreadyRewritten.add(t._i);
+            changed=true;acted=true;budget--;
+            // fresh re-score after the rewrite: shows the gain, and next
+            // rounds rotate to the next-weakest chapters instead of this one
+            try{
+              const resc=await analyzeChapterHumanness(better,b2.title,b2.genre,ch.title);
+              scores={...scores,[t._i]:resc};updateBook(bookId,{writing_quality:scores});
+              logFn(`  📈 Chapter ${t._i+1}: ${sc.human_score} → ${resc.human_score}/100${resc.human_score>=78?" ✅":""}`);
+            }catch(re){/* re-score is nice-to-have; rewrite itself already landed */}
           }catch(e){if(e?.code==="QUOTA")break;}
         }
         if(changed)updateBook(bookId,{chapters:chaps});
@@ -4239,6 +4261,12 @@ async function runImprovementRounds(bookId,logFn=()=>{},refresh=()=>{}){
           logFn(`  ✍️ Writing: ${wq2} → ${reWQ.overall_human_score}/100`);
         }
       }catch(e){if(e?.code==="QUOTA")break;logFn("  ⚠️ Writing fix round failed — see Writing Quality tab");}
+    }
+    if(!acted){
+      logFn(alreadyRewritten.size>0
+        ?`  ✔️ ${alreadyRewritten.size} chapter(s) rewritten this pass — run 🏁 Finish again to improve the next batch, or apply manual fixes in the tabs.`
+        :"  ✔️ No further auto-improvements found this pass — remaining fixes need a manual look (Review / Writing Quality tabs).");
+      break;
     }
     refresh();
   }

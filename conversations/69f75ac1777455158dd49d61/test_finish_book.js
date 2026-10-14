@@ -22,9 +22,9 @@ const ei=src.indexOf('async function runImprovementRounds');
 const ee=src.indexOf('function WritingQualityPanel');
 const engine=src.slice(ei,ee);
 t('finisher exists with finishing state + guards',src.includes('const [finishing,setFinishing]=useState(false);')&&slice.includes('if(quotaHit||isBuilding||finishing)return;')&&slice.includes('finally{setFinishing(false);}'));
-t('stage 1 reuses runAutoBuild, stage 2 delegates to shared runImprovementRounds',slice.includes('await runAutoBuild(fb);')&&slice.includes('await runImprovementRounds(bookId,log,()=>setBook(getBook(bookId)))')&&engine.includes('for(let round=1;round<=3;round++)'));
+t('stage 1 reuses runAutoBuild, stage 2 delegates to shared runImprovementRounds',slice.includes('await runAutoBuild(fb);')&&slice.includes('await runImprovementRounds(bookId,log,()=>setBook(getBook(bookId)))')&&engine.includes('for(let round=1;round<=4;round++)'));
 t('gate thresholds 75 Review / 78 Writing enforced (engine + finisher stamps)',engine.includes('rv>=75&&wq>=78')&&slice.includes('(finalB.review?.overall_score||0)>=75&&(finalB.manuscript_quality?.overall_human_score||0)>=78')&&engine.includes('passed=(fb?.review?.overall_score||0)>=75&&(fb?.manuscript_quality?.overall_human_score||0)>=78'));
-t('engine targets ≤3 weakest chapters, ≤2 AI rewrites, ≤2 analyses per round',engine.includes('.slice(0,3)')&&engine.includes('let budget=2;')&&engine.includes('analyzed>=2'));
+t('engine: rotation set + ≤4 targets + ≤3 rewrites/round + ≤2 analyses + re-score after rewrite',engine.includes('alreadyRewritten')&&engine.includes('.slice(0,4)')&&engine.includes('let budget=3;')&&engine.includes('analyzed>=2')&&engine.includes('await analyzeChapterHumanness(better'));
 t('finisher quota-guards every round + stamps final state',(engine.match(/quotaBlocked/g)||[]).length>=4&&engine.includes('getUsage()<DAILY_LIMIT-2')&&engine.includes('getUsage()<DAILY_LIMIT-6')&&slice.includes('upd({build_complete:true,gates_passed:passed')&&slice.includes('notifyDone('));
 t('engine snapshots every chapter overwrite',(engine.match(/withVersionSnapshot/g)||[]).length>=2);
 // — button wiring (3 surfaces) —
