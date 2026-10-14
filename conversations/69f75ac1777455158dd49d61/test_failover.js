@@ -174,7 +174,28 @@ const test=`let pass=0,fail=0;const t=(l,c)=>{c?pass++:fail++;console.log((c?'�
   FAILMAP={groq:{code:"SERVER",msg:"Server error 503"}};
   PUTER_LOW_BALANCE=true; // puter out too — truly nothing left
   let oc5=null;try{oc5=await callAIEdit("x");}catch(e){oc5=e;}
-  t('sole backend down + no fallback → clear error surfaces',oc5?.code==="SERVER"||oc5?.code==="PUTER_LOW_BALANCE");
+  t('retry toasts labeled with reason + backend',src.includes('notifyRetry(retries+1,3,"rate","Groq")')&&src.includes('notifyRetry(retries+1,3,"rate","Cloudflare")')&&src.includes('Rate limit — backing off')&&src.includes('backend?" · "+backend:""'));
+t('sole backend down + no fallback → clear error surfaces',oc5?.code==="SERVER"||oc5?.code==="PUTER_LOW_BALANCE");
+  // provider hard-errors (GROQ_ERROR / API_ERROR etc.) now fail over instead of dying
+  BACKEND_EXHAUSTED.clear();LAST_FAILOVER_FROM.clear();
+  CONFIG={backend:"gemini",groqKey:"gk",cerebrasKey:"ck",cfId:"",cfTok:"",gemKey:"gk1",usage:0};
+  FAILMAP={groq:{code:"GROQ_ERROR",msg:"Groq API error (503)"}};
+  CALLS.length=0;
+  const oc7=await callAIEdit("edit op");
+  t('GROQ_ERROR on routed backend → auto-switches to next',oc7==="gemini-result"&&CALLS.join(",")==="groq,gemini");
+  BACKEND_EXHAUSTED.clear();
+  FAILMAP={groq:{code:"API_ERROR",msg:"API error (404): model not found"}};
+  CALLS.length=0;
+  const oc8=await callAIEdit("edit op");
+  t('API_ERROR (model missing on provider) → switches instead of dying',oc8==="gemini-result"&&CALLS.join(",")==="groq,gemini");
+  BACKEND_EXHAUSTED.clear();
+  FAILMAP={puter:{code:"PUTER_ERROR",msg:"puter hard fail"}};
+  CALLS.length=0;
+  PUTER_LOW_BALANCE=false;
+  CONFIG={backend:"puter",groqKey:"gk",cerebrasKey:"",cfId:"",cfTok:"",gemKey:"gk1",usage:0};
+  let oc9=null;try{oc9=await callAI("x");}catch(e){oc9=e;}
+  t('PUTER_ERROR on configured backend → switches to groq',oc9==="groq-result"&&CALLS[0]==="puter"&&CALLS[1]==="groq");
+
   PUTER_LOW_BALANCE=false;
   // stream path
   BACKEND_EXHAUSTED.clear();LAST_FAILOVER_FROM.clear();

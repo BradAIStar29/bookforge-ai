@@ -719,8 +719,8 @@ async function finalizeCoverImage(rawArtUrl,title,authorName,subtitle){
   }
 }
 
-function notifyRetry(attempt,totalAttempts,reason){
-  try{window.dispatchEvent(new CustomEvent("bfai:retry",{detail:{attempt,totalAttempts,reason}}));}catch(e){}
+function notifyRetry(attempt,totalAttempts,reason,backend){
+  try{window.dispatchEvent(new CustomEvent("bfai:retry",{detail:{attempt,totalAttempts,reason,backend}}));}catch(e){}
   playRetryChime();
 }
 
@@ -940,8 +940,7 @@ async function callGroq(prompt,temperature=0.85,opts={}){
         if(resp.status===429){
           // Rate limited — wait and retry
           if(retries<2){
-            window.dispatchEvent(new CustomEvent("bfai:retry",{detail:{attempt:retries+1}}));
-            playRetryChime();
+            notifyRetry(retries+1,3,"rate","Groq");
             await sleep(RETRY_DELAYS_MS[retries]||5000);
             retries++;
             continue;
@@ -960,8 +959,7 @@ async function callGroq(prompt,temperature=0.85,opts={}){
       if(timeout)clearTimeout(timeout);
       if(e?.name==="AbortError"){
         if(retries<2){
-          window.dispatchEvent(new CustomEvent("bfai:retry",{detail:{attempt:retries+1}}));
-          playRetryChime();
+          notifyRetry(retries+1,3,"timeout","Groq");
           await sleep(RETRY_DELAYS_MS[retries]||5000);
           retries++;
           continue;
@@ -971,8 +969,7 @@ async function callGroq(prompt,temperature=0.85,opts={}){
       if(e?.code==="QUOTA"||e?.code==="BAD_KEY"||e?.code==="EMPTY")throw e;
       // Network errors — retry
       if(retries<2&&(e?.message?.includes("fetch")||e?.message?.includes("network"))){
-        window.dispatchEvent(new CustomEvent("bfai:retry",{detail:{attempt:retries+1}}));
-        playRetryChime();
+        notifyRetry(retries+1,3,"network","Groq");
         await sleep(RETRY_DELAYS_MS[retries]||5000);
         retries++;
         continue;
@@ -1037,8 +1034,7 @@ async function callCerebras(prompt,temperature=0.85,opts={}){
         const errBody=await resp.text().catch(()=>"");
         if(resp.status===429){
           if(retries<2){
-            window.dispatchEvent(new CustomEvent("bfai:retry",{detail:{attempt:retries+1}}));
-            playRetryChime();
+            notifyRetry(retries+1,3,"rate","Cerebras");
             await sleep(RETRY_DELAYS_MS[retries]||5000);
             retries++;continue;
           }
@@ -1055,8 +1051,7 @@ async function callCerebras(prompt,temperature=0.85,opts={}){
       if(timeout)clearTimeout(timeout);
       if(e?.name==="AbortError"){
         if(retries<2){
-          window.dispatchEvent(new CustomEvent("bfai:retry",{detail:{attempt:retries+1}}));
-          playRetryChime();
+          notifyRetry(retries+1,3,"timeout","Cerebras");
           await sleep(RETRY_DELAYS_MS[retries]||5000);
           retries++;continue;
         }
@@ -1064,8 +1059,7 @@ async function callCerebras(prompt,temperature=0.85,opts={}){
       }
       if(e?.code==="QUOTA"||e?.code==="BAD_KEY"||e?.code==="EMPTY")throw e;
       if(retries<2&&(e?.message?.includes("fetch")||e?.message?.includes("network"))){
-        window.dispatchEvent(new CustomEvent("bfai:retry",{detail:{attempt:retries+1}}));
-        playRetryChime();
+        notifyRetry(retries+1,3,"network","Cerebras");
         await sleep(RETRY_DELAYS_MS[retries]||5000);
         retries++;continue;
       }
@@ -1126,8 +1120,7 @@ async function callKilo(prompt,temperature=0.85,opts={}){
         const errBody=await resp.text().catch(()=>"");
         if(resp.status===429){
           if(retries<2){
-            window.dispatchEvent(new CustomEvent("bfai:retry",{detail:{attempt:retries+1}}));
-            playRetryChime();
+            notifyRetry(retries+1,3,"rate","Kilo");
             await sleep(RETRY_DELAYS_MS[retries]||5000);
             retries++;continue;
           }
@@ -1143,8 +1136,7 @@ async function callKilo(prompt,temperature=0.85,opts={}){
       if(timeout)clearTimeout(timeout);
       if(e?.name==="AbortError"){
         if(retries<2){
-          window.dispatchEvent(new CustomEvent("bfai:retry",{detail:{attempt:retries+1}}));
-          playRetryChime();
+          notifyRetry(retries+1,3,"timeout","Kilo");
           await sleep(RETRY_DELAYS_MS[retries]||5000);
           retries++;continue;
         }
@@ -1152,8 +1144,7 @@ async function callKilo(prompt,temperature=0.85,opts={}){
       }
       if(e?.code==="QUOTA"||e?.code==="EMPTY")throw e;
       if(retries<2&&(e?.message?.includes("fetch")||e?.message?.includes("network"))){
-        window.dispatchEvent(new CustomEvent("bfai:retry",{detail:{attempt:retries+1}}));
-        playRetryChime();
+        notifyRetry(retries+1,3,"network","Kilo");
         await sleep(RETRY_DELAYS_MS[retries]||5000);
         retries++;continue;
       }
@@ -1218,8 +1209,7 @@ async function callCloudflare(prompt,temperature=0.85,opts={}){
         const errBody=await resp.text().catch(()=>"");
         if(resp.status===429){
           if(retries<2){
-            window.dispatchEvent(new CustomEvent("bfai:retry",{detail:{attempt:retries+1}}));
-            playRetryChime();
+            notifyRetry(retries+1,3,"rate","Cloudflare");
             await sleep(RETRY_DELAYS_MS[retries]||5000);
             retries++;continue;
           }
@@ -1236,8 +1226,7 @@ async function callCloudflare(prompt,temperature=0.85,opts={}){
       if(timeout)clearTimeout(timeout);
       if(e?.name==="AbortError"){
         if(retries<2){
-          window.dispatchEvent(new CustomEvent("bfai:retry",{detail:{attempt:retries+1}}));
-          playRetryChime();
+          notifyRetry(retries+1,3,"timeout","Cloudflare");
           await sleep(RETRY_DELAYS_MS[retries]||5000);
           retries++;continue;
         }
@@ -1247,8 +1236,7 @@ async function callCloudflare(prompt,temperature=0.85,opts={}){
       if(e?.code==="CF_CORS")throw e;
       if(e?.message==="Failed to fetch"||e?.name==="TypeError")throw{code:"CF_CORS",msg:"Cloudflare blocked the browser request (CORS) — no point retrying this session."};
       if(retries<2&&(e?.message?.includes("fetch")||e?.message?.includes("network"))){
-        window.dispatchEvent(new CustomEvent("bfai:retry",{detail:{attempt:retries+1}}));
-        playRetryChime();
+        notifyRetry(retries+1,3,"network","Cloudflare");
         await sleep(RETRY_DELAYS_MS[retries]||5000);
         retries++;continue;
       }
@@ -1435,6 +1423,13 @@ async function callAI(prompt,temperature=0.85,opts={},_depth=0){
         const next=nextAvailableBackend(backend);
         if(next){notifyOutageSwitch(backend,next);return callAI(prompt,temperature,{...opts,__forceBackend:next},_depth+1);}
       }
+      // Any provider hard-error (GROQ_ERROR / CEREBRAS_ERROR / CF_ERROR / PUTER_ERROR /
+      // API_ERROR from the shared OpenAI-compat caller): switch instead of dying
+      if((e?.code||"").endsWith("_ERROR")||e?.code==="API_ERROR"){
+        markBackendExhausted(backend);
+        const next=nextAvailableBackend(backend);
+        if(next){notifyOutageSwitch(backend,next);return callAI(prompt,temperature,{...opts,__forceBackend:next},_depth+1);}
+      }
     }
     throw e;
   }
@@ -1500,6 +1495,13 @@ async function callAIStream(prompt,temperature=0.85,opts={},_depth=0){
       }
       if(e?.code==="BAD_KEY"){
         markBackendExhausted(backend,12*3600e3);
+        const next=nextAvailableBackend(backend);
+        if(next){notifyOutageSwitch(backend,next);return callAIStream(prompt,temperature,{...opts,__forceBackend:next},_depth+1);}
+      }
+      // Any provider hard-error (GROQ_ERROR / CEREBRAS_ERROR / CF_ERROR / PUTER_ERROR /
+      // API_ERROR from the shared OpenAI-compat caller): switch instead of dying
+      if((e?.code||"").endsWith("_ERROR")||e?.code==="API_ERROR"){
+        markBackendExhausted(backend);
         const next=nextAvailableBackend(backend);
         if(next){notifyOutageSwitch(backend,next);return callAIStream(prompt,temperature,{...opts,__forceBackend:next},_depth+1);}
       }
@@ -9294,9 +9296,9 @@ function App(){
   },[]);
   useEffect(()=>{
     const onRetry=e=>{
-      const{attempt,totalAttempts,reason,msg}=e.detail||{};
+      const{attempt,totalAttempts,reason,msg,backend}=e.detail||{};
       const total=totalAttempts||3;
-      const label=reason==="timeout"?"⏱️ Timed out":reason==="network"?"📡 Network hiccup":reason==="notice"?null:"⚠️ Server hiccup";
+      const label=reason==="timeout"?"⏱️ Timed out":reason==="network"?"📡 Network hiccup":reason==="rate"?"📊 Rate limit — backing off":reason==="notice"?null:"⚠️ Server hiccup";
       if(label===null){
         const nid=Date.now()+Math.random();
         setRetryToasts(prev=>[...prev,{id:nid,msg}]);
@@ -9304,7 +9306,7 @@ function App(){
         return;
       }
       const id=Date.now()+Math.random();
-      setRetryToasts(prev=>[...prev,{id,msg:`${label} — auto-retrying (${attempt}/${total})…`}]);
+      setRetryToasts(prev=>[...prev,{id,msg:`${label}${backend?" · "+backend:""} — auto-retrying (${attempt}/${total})…`}]);
       setTimeout(()=>setRetryToasts(prev=>prev.filter(t=>t.id!==id)),4000);
     };
     window.addEventListener("bfai:retry",onRetry);
